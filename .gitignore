@@ -1,0 +1,14 @@
+.build/
+.swiftpm/
+.DS_Store
+*.xcodeproj
+xcuserdata/
+
+# Built app bundle (regenerate with build-app.sh)
+dist/
+
+# Stray swiftc build artifacts (from ad-hoc compiles, not SwiftPM)
+*.o
+*.d
+*.swiftdeps
+*.swiftdeps~
