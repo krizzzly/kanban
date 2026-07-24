@@ -52,6 +52,11 @@ public struct TmuxController: Sendable {
         _ = run(["set-option", "-t", session, "status", visible ? "on" : "off"])
     }
 
+    /// Kills a session (used when the user closes an extra terminal tab).
+    public func killSession(_ name: String) {
+        _ = run(["kill-session", "-t", name])
+    }
+
     // MARK: - Scroll / copy-mode (used by the scroll-wheel handler)
 
     public func enterCopyMode(_ session: String) { _ = run(["copy-mode", "-t", session]) }

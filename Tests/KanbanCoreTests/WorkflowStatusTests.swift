@@ -206,6 +206,33 @@ final class TaskFileParsingTests: XCTestCase {
         XCTAssertEqual(tf.statusMarker, .review)
     }
 
+    func testReviewFileExcludedFromFindButFoundSeparately() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("kanban-review-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        // Main file sorts AFTER "review" alphabetically → without the exclusion, find() would wrongly
+        // pick the review file.
+        try "# main".write(to: dir.appendingPathComponent("BFEZVM-4569_show_stuff.md"), atomically: true, encoding: .utf8)
+        try "# Code-Review\n\nBody.".write(to: dir.appendingPathComponent("BFEZVM-4569_review.md"), atomically: true, encoding: .utf8)
+
+        // A second review file for the same ticket.
+        try "# Prong B".write(to: dir.appendingPathComponent("BFEZVM-4569_review_prong_b.md"), atomically: true, encoding: .utf8)
+        // A different ticket whose key shares a prefix — must NOT be attributed to BFEZVM-4569.
+        try "# other".write(to: dir.appendingPathComponent("BFEZVM-45690_review.md"), atomically: true, encoding: .utf8)
+
+        let main = TaskFileLoader.find(ticketKey: "BFEZVM-4569", in: dir.path)
+        XCTAssertEqual(main?.lastPathComponent, "BFEZVM-4569_show_stuff.md")
+
+        let reviews = TaskFileLoader.reviewFiles(ticketKey: "bfezvm-4569", in: dir.path)   // case-insensitive
+        XCTAssertEqual(reviews.map(\.lastPathComponent),
+                       ["BFEZVM-4569_review.md", "BFEZVM-4569_review_prong_b.md"])   // sorted → stable numbering
+
+        XCTAssertEqual(TaskFileLoader.loadReviewMarkdown(reviews[0]), "# Code-Review\n\nBody.")
+        XCTAssertTrue(TaskFileLoader.reviewFiles(ticketKey: "BFEZVM-9999", in: dir.path).isEmpty)
+    }
+
     func testImagePathRewrite() throws {
         // A real local image next to the task file is inlined as a data: URI (WKWebView can't load
         // file:// resources from loadHTMLString); remote and missing images are left untouched.

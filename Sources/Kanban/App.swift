@@ -24,7 +24,7 @@ struct KanbanApp: App {
     }
 
     var body: some Scene {
-        Window("Kanban", id: "main") {
+        Window("", id: "main") {
             ContentView()
                 .frame(minWidth: 900, minHeight: 540)
         }

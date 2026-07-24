@@ -33,12 +33,21 @@ final class AppModel {
     // Detail
     private(set) var selectedTicketKey: String?
     private(set) var taskFile: TaskFile?
+    private(set) var reviewMarkdowns: [String] = []   // full content of each <KEY>_review*.md → "Review" tab(s)
     private(set) var fallbackSections: [TaskSection] = []
     private(set) var detailLoading = false
 
     // Terminal
     private(set) var activeTerminalSession: String?           // left: Claude, main-tree cwd
     private(set) var activeWorktreeTerminalSession: String?   // right: plain shell, worktree cwd
+    // Extra, user-spawned terminals, kept per ticket so they survive ticket switches.
+    private var extraTerminalsByTicket: [String: [String]] = [:]
+
+    // Worktree stack control panel (the "Worktree" tab)
+    private(set) var worktreeStatusText: String = ""     // output of `iwf stack ps`
+    private(set) var worktreeCommandOutput: String = ""  // stdout of the last lifecycle command
+    private(set) var worktreeBusy = false
+    private(set) var worktreeDbDump: StagedDbDump?       // staged DB seed file (path/size/age)
 
     // Status
     private(set) var isLoadingSprints = false
@@ -51,6 +60,8 @@ final class AppModel {
     private var pollTask: Task<Void, Never>?
     private var watcher: TaskFileWatcher?
     private var watchTask: Task<Void, Never>?
+    private var reviewWatcher: TaskFileWatcher?
+    private var reviewWatchTask: Task<Void, Never>?
 
     // Preferred tab order; everything else follows in file order.
     private static let preferredOrder = [
@@ -224,6 +235,12 @@ final class AppModel {
                     gitlabProjectPath: selectedProject?.gitlabProjectPath)
                 result.append(TaskSection(id: -1, title: "Status", markdown: linked))
             }
+            // Each review file as its own tab (ids -2, -3, …), right after Status so they're easy to
+            // find. Numbered "Review #1"… when there are several, plain "Review" when there's one.
+            for (i, md) in reviewMarkdowns.enumerated() where !md.isEmpty {
+                let title = reviewMarkdowns.count > 1 ? "Review #\(i + 1)" : "Review"
+                result.append(TaskSection(id: -2 - i, title: title, markdown: md))
+            }
             result.append(contentsOf: ordered(tf.sections))
             if !result.isEmpty { return result }
         }
@@ -289,8 +306,14 @@ final class AppModel {
     private func clearDetail() {
         watcher?.cancel(); watcher = nil
         watchTask?.cancel(); watchTask = nil
+        reviewWatcher?.cancel(); reviewWatcher = nil
+        reviewWatchTask?.cancel(); reviewWatchTask = nil
         taskFile = nil
+        reviewMarkdowns = []
         fallbackSections = []
+        worktreeStatusText = ""
+        worktreeCommandOutput = ""
+        worktreeDbDump = nil
         selectedTicketKey = nil
         activeTerminalSession = nil
         activeWorktreeTerminalSession = nil
@@ -356,11 +379,124 @@ final class AppModel {
         }
     }
 
+    // MARK: - Extra terminals
+
+    /// The selected ticket's extra (user-spawned) terminal sessions.
+    var extraTerminalSessions: [String] {
+        guard let key = selectedTicketKey else { return [] }
+        return extraTerminalsByTicket[key] ?? []
+    }
+
+    /// Spawns another terminal for the current ticket (plain shell in the worktree, else the repo),
+    /// registers its tab, and returns the new tmux session name so the caller can select it.
+    @discardableResult
+    func addExtraTerminal() -> String? {
+        guard let key = selectedTicketKey, let project = selectedProject else { return nil }
+        let cwd = WorktreeScanner.worktree(for: key, in: worktrees)?.path ?? project.repoDir
+        let suffix = UUID().uuidString.prefix(6).lowercased()
+        let name = "kanban-\(key.uppercased())-term-\(suffix)"
+        extraTerminalsByTicket[key, default: []].append(name)
+        Task.detached {
+            let tmux = TmuxController()
+            guard tmux.isAvailable else { return }
+            _ = tmux.createSession(name: name, cwd: cwd, command: nil)
+            tmux.setStatusBar(name, visible: false)
+            tmux.cancelCopyMode(name)
+        }
+        return name
+    }
+
+    /// Closes an extra terminal: detaches the view, kills its tmux session, and drops the tab.
+    func closeExtraTerminal(_ session: String) {
+        guard let key = selectedTicketKey else { return }
+        extraTerminalsByTicket[key]?.removeAll { $0 == session }
+        if (extraTerminalsByTicket[key]?.isEmpty ?? false) { extraTerminalsByTicket[key] = nil }
+        TerminalCache.shared.remove(session)
+        Task.detached { TmuxController().killSession(session) }
+    }
+
+    // MARK: - Worktree stack
+
+    /// The worktree of the currently selected ticket (nil if it has none yet).
+    var currentWorktree: Worktree? {
+        guard let key = selectedTicketKey else { return nil }
+        return WorktreeScanner.worktree(for: key, in: worktrees)
+    }
+
+    /// The ticket's numeric id used by `iwf worktree create` (e.g. BFEZVM-4569 → "4569").
+    private var worktreeId: String? {
+        selectedTicketKey?.split(separator: "-").last.map(String.init)
+    }
+
+    private enum WtOutput { case status, command }
+
+    func refreshWorktreeStatus() {
+        guard let cwd = currentWorktree?.path else { return }
+        worktreeDbDump = WorktreeDbSeed.staged(worktreePath: cwd)
+        runIwf(["stack", "ps"], cwd: cwd, into: .status)
+    }
+
+    func worktreeStart()   { runWorktreeLifecycle(["worktree", "start"]) }
+    func worktreeStop()    { runWorktreeLifecycle(["worktree", "stop"]) }
+    func worktreeRestart() { runWorktreeLifecycle(["worktree", "restart"]) }
+    func worktreeDestroy() { runWorktreeLifecycle(["worktree", "destroy", "-f"]) }
+
+    /// Creates the worktree + stack for a ticket that has none yet (run from the main repo).
+    func worktreeCreate() {
+        guard let id = worktreeId, let repo = selectedProject?.repoDir else { return }
+        runIwf(["worktree", "create", id, "--start"], cwd: repo, into: .command, thenRefresh: true)
+    }
+
+    private func runWorktreeLifecycle(_ args: [String]) {
+        guard let cwd = currentWorktree?.path else { return }
+        runIwf(args, cwd: cwd, into: .command, thenRefresh: true)
+    }
+
+    private func runIwf(_ args: [String], cwd: String, into target: WtOutput, thenRefresh: Bool = false) {
+        guard !worktreeBusy else { return }
+        worktreeBusy = true
+        switch target {
+        case .status:  worktreeStatusText = "Lade Status…\n"
+        case .command: worktreeCommandOutput = "$ iwf \(args.joined(separator: " "))\n\n"
+        }
+        Task.detached { [weak self] in
+            let code = WorktreeStackController().run(iwfArgs: args, cwd: cwd) { chunk in
+                Task { @MainActor [weak self] in self?.appendWorktree(chunk, into: target) }
+            }
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                self.worktreeBusy = false
+                if target == .command { self.worktreeCommandOutput += "\n— fertig (exit \(code)) —\n" }
+                if thenRefresh { self.refreshWorktreeStatus() }
+            }
+        }
+    }
+
+    @MainActor
+    private func appendWorktree(_ chunk: String, into target: WtOutput) {
+        switch target {
+        case .status:
+            if worktreeStatusText == "Lade Status…\n" { worktreeStatusText = "" }
+            worktreeStatusText += chunk
+        case .command:
+            worktreeCommandOutput += chunk
+            if worktreeCommandOutput.count > 60_000 {
+                worktreeCommandOutput = String(worktreeCommandOutput.suffix(50_000))
+            }
+        }
+    }
+
     private func loadDetail(for key: String) {
         watcher?.cancel(); watcher = nil
         watchTask?.cancel(); watchTask = nil
+        reviewWatcher?.cancel(); reviewWatcher = nil
+        reviewWatchTask?.cancel(); reviewWatchTask = nil
         taskFile = nil
+        reviewMarkdowns = []
         fallbackSections = []
+        worktreeStatusText = ""
+        worktreeCommandOutput = ""
+        worktreeDbDump = nil
         guard let project = selectedProject else { return }
         let dir = project.tasksPathAbsolute
 
@@ -375,9 +511,30 @@ final class AppModel {
                     self.taskFile = TaskFileLoader.load(url)
                 }
             }
+            loadReviews(for: key, in: dir)
         } else {
             loadJiraFallback(for: key, project: project)
         }
+    }
+
+    /// Loads all `<KEY>_review*.md` (shown as numbered "Review" tabs). Watches the **tasks directory**
+    /// so new/removed review files and their (atomic) content changes are all picked up live.
+    private func loadReviews(for key: String, in dir: String) {
+        rescanReviews(for: key, in: dir)
+        let w = TaskFileWatcher(path: dir)
+        reviewWatcher = w
+        reviewWatchTask = Task { [weak self] in
+            for await _ in w.events {
+                try? await Task.sleep(nanoseconds: 200_000_000)  // debounce (the dir is chatty)
+                guard let self, self.selectedTicketKey == key else { return }
+                self.rescanReviews(for: key, in: dir)
+            }
+        }
+    }
+
+    private func rescanReviews(for key: String, in dir: String) {
+        reviewMarkdowns = TaskFileLoader.reviewFiles(ticketKey: key, in: dir)
+            .compactMap { TaskFileLoader.loadReviewMarkdown($0) }
     }
 
     private func loadJiraFallback(for key: String, project: ProjectConfig) {

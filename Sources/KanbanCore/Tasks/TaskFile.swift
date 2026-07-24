@@ -22,16 +22,57 @@ public struct TaskFile: Sendable {
 }
 
 public enum TaskFileLoader {
-    /// Finds the task file for a ticket via glob `<KEY>*.md` in the tasks directory.
+    /// Finds the task file for a ticket via glob `<KEY>*.md` in the tasks directory. Review files
+    /// (`<KEY>_review*.md`) are excluded — they're surfaced as their own "Review" tabs, not the main.
     public static func find(ticketKey: String, in tasksDirectory: String) -> URL? {
         let dir = URL(fileURLWithPath: tasksDirectory)
         guard let entries = try? FileManager.default.contentsOfDirectory(
             at: dir, includingPropertiesForKeys: nil) else { return nil }
         let prefix = ticketKey.uppercased()
         return entries
-            .filter { $0.pathExtension == "md" && $0.lastPathComponent.uppercased().hasPrefix(prefix) }
+            .filter { $0.pathExtension == "md"
+                && belongsToTicket($0.lastPathComponent, keyPrefix: prefix)
+                && !isReviewFilename($0.lastPathComponent, keyPrefix: prefix) }
             .sorted { $0.lastPathComponent < $1.lastPathComponent }
             .first
+    }
+
+    /// Whether a filename belongs to exactly this ticket: the key must be followed by a `_` or `.`
+    /// boundary, so `BFEZVM-4569` does not swallow `BFEZVM-45690_…`. Case-insensitive.
+    static func belongsToTicket(_ name: String, keyPrefix: String) -> Bool {
+        let upper = name.uppercased()
+        guard upper.hasPrefix(keyPrefix) else { return false }
+        let rest = upper.dropFirst(keyPrefix.count)
+        return rest.hasPrefix("_") || rest.hasPrefix(".")
+    }
+
+    /// All review files for a ticket — `<KEY>_review.md`, `<KEY>_review_prong_b.md`, … — sorted by
+    /// name so their tab numbering ("Review #1", "Review #2", …) is stable.
+    public static func reviewFiles(ticketKey: String, in tasksDirectory: String) -> [URL] {
+        let dir = URL(fileURLWithPath: tasksDirectory)
+        guard let entries = try? FileManager.default.contentsOfDirectory(
+            at: dir, includingPropertiesForKeys: nil) else { return [] }
+        let prefix = ticketKey.uppercased()
+        return entries
+            .filter { $0.pathExtension == "md" && isReviewFilename($0.lastPathComponent, keyPrefix: prefix) }
+            .sorted { $0.lastPathComponent < $1.lastPathComponent }
+    }
+
+    /// A review file is `<KEY>_review…` — the `_review` token immediately follows the ticket key
+    /// (so `BFEZVM-45690_review.md` is not mistaken for a review of `BFEZVM-4569`). Case-insensitive.
+    static func isReviewFilename(_ name: String, keyPrefix: String) -> Bool {
+        let upper = name.uppercased()
+        guard upper.hasPrefix(keyPrefix) else { return false }
+        return upper.dropFirst(keyPrefix.count).hasPrefix("_REVIEW")
+    }
+
+    /// Loads a review file's **entire** content as one markdown blob (shown in a single "Review"
+    /// tab), with local image paths inlined. Returns nil if the file can't be read.
+    public static func loadReviewMarkdown(_ url: URL) -> String? {
+        guard let content = try? String(contentsOf: url, encoding: .utf8) else { return nil }
+        let directory = url.deletingLastPathComponent()
+        let body = content.trimmingCharacters(in: .whitespacesAndNewlines)
+        return body.isEmpty ? nil : rewriteImagePaths(body, directory: directory)
     }
 
     /// Whether *any* task file exists for the ticket (cheaper than a full load).
