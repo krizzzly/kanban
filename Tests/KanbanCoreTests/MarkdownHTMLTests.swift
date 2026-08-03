@@ -64,6 +64,35 @@ final class MarkdownHTMLTests: XCTestCase {
         XCTAssertEqual(out, md)
     }
 
+    func testVideoIsLinkedNotInlined() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("kanban-vid-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try Data(repeating: 0, count: 2048).write(to: dir.appendingPathComponent("clip.mp4"))
+
+        let md = "![clip.mp4](clip.mp4)"
+        let out = TaskFileLoader.rewriteImagePaths(md, directory: dir)
+        XCTAssertFalse(out.contains("data:"), "video must NOT be inlined as base64: \(out)")
+        XCTAssertFalse(out.hasPrefix("!"), "video must become a plain link, not an image: \(out)")
+        XCTAssertTrue(out.contains("clip.mp4"), out)
+        XCTAssertTrue(out.contains("file://"), out)
+    }
+
+    func testOversizedImageIsLinkedNotInlined() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("kanban-bigimg-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        // Over the inline cap → link instead of a multi-MB base64 blob.
+        try Data(repeating: 0, count: TaskFileLoader.maxInlineImageBytes + 1)
+            .write(to: dir.appendingPathComponent("huge.png"))
+
+        let out = TaskFileLoader.rewriteImagePaths("![big](huge.png)", directory: dir)
+        XCTAssertFalse(out.contains("data:image"), out)
+        XCTAssertTrue(out.contains("file://"), out)
+    }
+
     /// Real-data smoke: across the actual bfezvm task files, at least one styled `<span>`/`<u>`
     /// must survive rendering (proves the passthrough on real content). Spans inside fenced code
     /// are correctly escaped and don't count — which is the intended behaviour.

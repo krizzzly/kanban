@@ -42,6 +42,7 @@ struct TicketCard: View {
                                 .lineLimit(1)
                         }
                     }
+                    if card.needsAttention { AttentionBadge() }
                     ForEach(Array(card.badges.enumerated()), id: \.offset) { _, badge in
                         BadgeView(badge: badge)
                     }
@@ -109,6 +110,27 @@ extension TaskStatusMarker {
         case .review: return .blue
         case .done: return .green
         }
+    }
+}
+
+/// Very prominent "this console is waiting for your answer" marker. Sits left of the worktree badge
+/// (see `TicketCard`), pulsing red so it's impossible to miss across a busy board.
+struct AttentionBadge: View {
+    @State private var pulse = false
+
+    var body: some View {
+        Image(systemName: "questionmark.circle.fill")
+            .font(.system(size: 15, weight: .bold))
+            .foregroundStyle(.white, .red)
+            .scaleEffect(pulse ? 1.0 : 0.82)
+            .shadow(color: .red.opacity(0.6), radius: pulse ? 4 : 1)
+            .onAppear {
+                withAnimation(.easeInOut(duration: 0.7).repeatForever(autoreverses: true)) {
+                    pulse = true
+                }
+            }
+            .help("Die Claude-Console dieses Tickets wartet auf eine Antwort")
+            .accessibilityLabel("Wartet auf Antwort")
     }
 }
 

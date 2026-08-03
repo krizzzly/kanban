@@ -14,8 +14,15 @@ final class TerminalSessionResolverTests: XCTestCase {
         XCTAssertEqual(plan.name, "kanban-EVEN-1")
         XCTAssertEqual(plan.cwd, repo)              // main tree
         XCTAssertTrue(plan.needsCreate)
-        XCTAssertEqual(plan.launchCommand,
-                       "claude --resume 'abc-123' 2>/dev/null || claude --session-id 'abc-123'")
+        // No transcript yet → create the conversation with exactly this id.
+        XCTAssertEqual(plan.launchCommand, "claude --session-id 'abc-123'")
+    }
+
+    func testResumesWhenTranscriptExists() {
+        let plan = TerminalSessionResolver.resolve(
+            ticketKey: "EVEN-1", repoDir: repo, worktree: nil, sessionId: "abc-123",
+            hasTranscript: true, existing: [])
+        XCTAssertEqual(plan.launchCommand, "claude --resume 'abc-123'")
     }
 
     func testOwnSessionExistsAttachesWithoutCommand() {

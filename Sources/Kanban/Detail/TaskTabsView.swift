@@ -29,15 +29,39 @@ struct TaskTabsView: View {
     private var header: some View {
         HStack(spacing: 10) {
             Text(model.selectedTicketKey ?? "")
-                .font(.headline.monospaced())
+                .font(.system(size: 13, weight: .semibold, design: .monospaced))
+            if !model.claudeCommands.isEmpty { commandsMenu }
             if let file = model.taskFile {
                 Text(file.url.lastPathComponent)
-                    .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    .font(.system(size: 13)).foregroundStyle(.secondary).lineLimit(1)
             }
             Spacer()
             if model.canEditStatus { statusMenu }
         }
         .padding(.horizontal, 14).padding(.vertical, 8)
+    }
+
+    /// Ticket slash commands from the project's `.claude/commands`. Selecting one types
+    /// `/command <TICKET>` into the Claude console — Enter is left to the user.
+    private var commandsMenu: some View {
+        Menu {
+            ForEach(model.claudeCommands) { command in
+                Button {
+                    model.sendClaudeCommand(command)
+                } label: {
+                    Text("/\(command.name)")
+                    if let description = command.description { Text(description) }
+                }
+            }
+        } label: {
+            Label("Commands", systemImage: "terminal")
+                .font(.system(size: 13))
+        }
+        .menuStyle(.button)
+        .buttonStyle(.bordered)
+        .fixedSize()
+        .disabled(model.activeTerminalSession == nil)
+        .help("Slash-Command mit dem aktuellen Ticket in die Claude-Console eintragen")
     }
 
     /// Sets Claude's task-file `### Status` marker (shown as the coloured dot on the card).
@@ -55,7 +79,7 @@ struct TaskTabsView: View {
         }
         .menuStyle(.button)
         .buttonStyle(.bordered)
-        .controlSize(.small)
+        .font(.system(size: 13))
         .tint(current?.statusColor ?? .secondary)
         .fixedSize()
         .help("Task-Status setzen (Farbpunkt auf der Karte)")
@@ -103,17 +127,43 @@ struct TaskTabsView: View {
 
     private func tabButton(_ section: TaskSection) -> some View {
         let isActive = current?.id == section.id
+        let hasQuestion = model.questionSectionIDs.contains(section.id)
+        let hasDecision = model.decisionSectionIDs.contains(section.id)
         return Button {
             selectedTitle = section.title
         } label: {
-            Text(section.title)
-                .font(.system(size: 13, weight: isActive ? .semibold : .regular))
-                .padding(.horizontal, 13).padding(.vertical, 6)
-                .background(isActive ? Color.accentColor.opacity(0.18) : Color.clear,
-                            in: Capsule())
-                .foregroundStyle(isActive ? Color.accentColor : Color.secondary)
+            HStack(spacing: 5) {
+                if hasQuestion {
+                    Image(systemName: "questionmark.circle.fill")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundStyle(.red)
+                }
+                if hasDecision {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundStyle(.green)
+                }
+                Text(section.title)
+                    .font(.system(size: 13, weight: isActive ? .semibold : .regular))
+            }
+            .padding(.horizontal, 13).padding(.vertical, 6)
+            .background(isActive ? Color.accentColor.opacity(0.18)
+                        : (hasQuestion ? Color.red.opacity(0.10)
+                           : (hasDecision ? Color.green.opacity(0.10) : Color.clear)),
+                        in: Capsule())
+            .foregroundStyle(isActive ? Color.accentColor : Color.secondary)
         }
         .buttonStyle(.plain)
+        .help(tabHelp(question: hasQuestion, decision: hasDecision))
+    }
+
+    private func tabHelp(question: Bool, decision: Bool) -> String {
+        switch (question, decision) {
+        case (true, true): return "Enthält offene Fragen und getroffene Entscheidungen"
+        case (true, false): return "Diese Sektion enthält offene Fragen"
+        case (false, true): return "Diese Sektion enthält Entscheidungen"
+        case (false, false): return ""
+        }
     }
 
     @ViewBuilder

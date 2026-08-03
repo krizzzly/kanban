@@ -4,8 +4,9 @@ A standalone native macOS app: a **sprint board + task-file cockpit** for Claude
 Reduced to a single view — top bar (project + sprint picker), a vertical Kanban board on the
 left, and the structured task-file content as tabs on the right.
 
-This project is **independent of Hermes** — it only reads `~/.hermes/config.json` read-only to
-discover projects + credentials. Hermes itself is never modified.
+This project is **independent of Hermes** — it reads `~/.hermes/config.json` to discover
+projects + credentials, and can **edit** that file via the settings sheet (gear button; round-trip
+über `ConfigStore`, Backup als `config.json.bak`). The Hermes **repo** itself is never modified.
 
 ## Key idea: derived workflow status (NOT Jira status)
 

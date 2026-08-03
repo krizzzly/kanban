@@ -38,12 +38,13 @@ public enum TerminalSessionResolver {
         "kanban-\(key.uppercased())"
     }
 
-    /// The command that starts (or resumes) the ticket's Claude conversation. Deterministic:
-    /// `--resume` reuses the stored id; on the very first launch resume fails fast and the
-    /// `||` fallback creates the session with exactly that id.
-    public static func claudeLaunchCommand(sessionId: String?) -> String {
+    /// The command that starts (or resumes) the ticket's Claude conversation. The caller checks
+    /// via `ClaudeTranscripts` whether a conversation for the id already exists in the cwd:
+    /// `--resume` when it does, `--session-id` (create with exactly that id) when it doesn't.
+    /// No `||` fallback — its "No conversation found" noise confused every fresh console.
+    public static func claudeLaunchCommand(sessionId: String?, hasTranscript: Bool = false) -> String {
         guard let id = sessionId, !id.isEmpty else { return "claude" }
-        return "claude --resume '\(id)' 2>/dev/null || claude --session-id '\(id)'"
+        return hasTranscript ? "claude --resume '\(id)'" : "claude --session-id '\(id)'"
     }
 
     /// Resolution order (first match wins):
@@ -54,6 +55,7 @@ public enum TerminalSessionResolver {
                                repoDir: String,
                                worktree: Worktree?,
                                sessionId: String?,
+                               hasTranscript: Bool = false,
                                existing: [TmuxSession]) -> TerminalSessionPlan {
         let own = sessionName(forTicket: ticketKey)
 
@@ -67,7 +69,8 @@ public enum TerminalSessionResolver {
         }
 
         return TerminalSessionPlan(name: own, cwd: repoDir,
-                                   launchCommand: claudeLaunchCommand(sessionId: sessionId))
+                                   launchCommand: claudeLaunchCommand(sessionId: sessionId,
+                                                                      hasTranscript: hasTranscript))
     }
 
     /// Mirrors kanban-code's `findSessionForWorktree` matching so we reuse sessions started by

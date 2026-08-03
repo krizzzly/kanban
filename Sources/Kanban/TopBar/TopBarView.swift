@@ -12,6 +12,7 @@ struct TopBarToolbar: ToolbarContent {
         ToolbarItem(placement: .navigation) { sprintMenu }
         ToolbarItem(placement: .navigation) { statusView }
         ToolbarItem(placement: .primaryAction) { refreshButton }
+        ToolbarItem(placement: .primaryAction) { settingsButton }
     }
 
     private var projectMenu: some View {
@@ -86,5 +87,14 @@ struct TopBarToolbar: ToolbarContent {
         }
         .help("Aktualisieren")
         .disabled(model.selectedSprint == nil || model.isRefreshing)
+    }
+
+    private var settingsButton: some View {
+        Button {
+            model.settingsPresented = true
+        } label: {
+            Image(systemName: "gearshape")
+        }
+        .help("Einstellungen (~/.hermes/config.json)")
     }
 }

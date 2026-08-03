@@ -1,13 +1,18 @@
 import Foundation
 
-/// Read-only GitLab client. Auth = `PRIVATE-TOKEN` header, host-guarded.
+/// Read-only GitLab client. The transport follows `modules.gitlab.backend`, mirroring Hermes:
+///   • `api`       → direct REST with the `PRIVATE-TOKEN` header (needs a token with `read_api`),
+///   • `extension` → via the Hermes daemon's browser session (default; works when the configured
+///     token is an AI/MCP token that GitLab rejects for the REST merge-request API). See `HermesDaemon`.
 public struct GitLabClient: Sendable {
     private let apiBaseUrl: String   // e.g. https://git.iwf.io/api/v4
     private let token: String
+    private let useDirectAPI: Bool   // true when backend == "api"
 
-    public init(apiBaseUrl: String, token: String) {
+    public init(apiBaseUrl: String, token: String, backend: String? = nil) {
         self.apiBaseUrl = apiBaseUrl
         self.token = token
+        self.useDirectAPI = (backend == "api")
     }
 
     private var headers: [String: String] { ["PRIVATE-TOKEN": token, "Accept": "application/json"] }
@@ -16,7 +21,9 @@ public struct GitLabClient: Sendable {
     public func listMergeRequests(projectPath: String, state: String) async throws -> [MergeRequestRef] {
         let encoded = projectPath.replacingOccurrences(of: "/", with: "%2F")
         let url = "\(apiBaseUrl)/projects/\(encoded)/merge_requests?state=\(state)&per_page=100"
-        let raw: [RawMR] = try await HTTPHelper.getJSON(url, headers: headers)
+        let raw: [RawMR] = useDirectAPI
+            ? try await HTTPHelper.getJSON(url, headers: headers)
+            : try await HermesDaemon.fetchJSON(url, as: [RawMR].self)
         return raw.map {
             MergeRequestRef(
                 iid: $0.iid,

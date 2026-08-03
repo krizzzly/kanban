@@ -23,6 +23,7 @@ struct TerminalTabsView: View {
                 content(claude: claude)
             }
             .onChange(of: model.selectedTicketKey) { selected = .claude }
+            .onChange(of: model.claudeTerminalFocusRequest) { selected = .claude }
             .onChange(of: worktreeSession) {
                 if worktreeSession == nil, selected == .worktree { selected = .claude }
             }

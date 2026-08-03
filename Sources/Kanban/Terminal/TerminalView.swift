@@ -54,6 +54,11 @@ final class KanbanTerminalView: LocalProcessTerminalView {
         // Let ⌥ Option produce composed characters (#, @, {, }, … on Swiss/German layouts) instead
         // of acting as the Meta key. Configurable via `terminal.optionAsMeta`.
         optionAsMetaKey = Self.settings.optionAsMeta
+        // With mouse reporting on, SwiftTerm clears the local selection on every data feed
+        // (`feedPrepare`) — Claude's continuously repainting TUI made any selection vanish
+        // instantly. Neither Claude nor our tmux setup (mouse off) requests mouse events, and
+        // scrolling is intercepted app-side (`TerminalCache`), so reporting is safe to disable.
+        allowMouseReporting = false
     }
 
     @available(*, unavailable)

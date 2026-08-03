@@ -32,6 +32,7 @@ public struct TmuxController: Sendable {
     @discardableResult
     public func createSession(name: String, cwd: String, command: String?) -> Bool {
         if hasSession(name) { return true }
+        ensureServerUTF8Locale()
         guard run(["new-session", "-d", "-s", name, "-c", cwd])?.exitCode == 0 else { return false }
         if let command, !command.isEmpty {
             _ = run(["send-keys", "-t", name, command, "Enter"])
@@ -68,13 +69,49 @@ public struct TmuxController: Sendable {
 
     public func cancelCopyMode(_ session: String) { _ = run(["send-keys", "-t", session, "-X", "cancel"]) }
 
+    /// Snapshots the visible pane text of a session (used to detect a blocking prompt). nil if the
+    /// session is gone. `-p` prints to stdout, `-t` targets the session's active pane.
+    public func capturePane(_ session: String) -> String? {
+        guard let result = run(["capture-pane", "-p", "-t", session]), result.exitCode == 0 else { return nil }
+        return result.stdout
+    }
+
     /// Sends literal keystrokes (e.g. after exiting copy-mode on a keypress).
     public func sendKeys(_ session: String, _ keys: String) { _ = run(["send-keys", "-t", session, keys]) }
+
+    /// Types literal text into the session's input line — no Enter, the user confirms manually.
+    /// `-l` keeps tmux from interpreting the text as key names.
+    public func sendText(_ session: String, _ text: String) {
+        _ = run(["send-keys", "-t", session, "-l", text])
+    }
 
     /// tmux `#{scroll_position}` — "0" means scrolled to the bottom (copy-mode should exit).
     public func scrollPosition(_ session: String) -> String? {
         run(["display-message", "-p", "-t", session, "#{scroll_position}"])?
             .stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    // MARK: - Locale
+
+    /// GUI apps inherit no `LANG`/`LC_*`, so a tmux server we spawn runs its panes in the C locale —
+    /// zsh prompt themes then fail with "prompt_segment: character not in range" and multibyte
+    /// redraws garble. Preferred value: the user's own UTF-8 `LANG`, else `en_US.UTF-8`.
+    private static var utf8Lang: String {
+        if let lang = ProcessInfo.processInfo.environment["LANG"],
+           lang.uppercased().contains("UTF") {
+            return lang
+        }
+        return "en_US.UTF-8"
+    }
+
+    /// Sets a UTF-8 `LANG` in the global environment of an already-running tmux server so newly
+    /// created sessions get it. (A server we auto-start inherits it from `run`'s environment.)
+    private func ensureServerUTF8Locale() {
+        if let current = run(["show-environment", "-g", "LANG"]),
+           current.exitCode == 0, current.stdout.uppercased().contains("UTF") {
+            return
+        }
+        _ = run(["set-environment", "-g", "LANG", Self.utf8Lang])
     }
 
     // MARK: - Process plumbing
@@ -85,6 +122,9 @@ public struct TmuxController: Sendable {
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: tmuxPath)
         proc.arguments = args
+        var env = ProcessInfo.processInfo.environment
+        if env["LANG"]?.uppercased().contains("UTF") != true { env["LANG"] = Self.utf8Lang }
+        proc.environment = env
         let outPipe = Pipe(), errPipe = Pipe()
         proc.standardOutput = outPipe
         proc.standardError = errPipe

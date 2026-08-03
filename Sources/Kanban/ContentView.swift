@@ -7,7 +7,7 @@ struct ContentView: View {
     var body: some View {
         Group {
             if let error = model.configError {
-                ConfigErrorView(message: error)
+                ConfigErrorView(message: error) { model.settingsPresented = true }
             } else {
                 HSplitView {
                     BoardSidebar(model: model)
@@ -19,11 +19,16 @@ struct ContentView: View {
             }
         }
         .task { model.bootstrap() }
+        .sheet(isPresented: $model.settingsPresented) {
+            SettingsSheet { model.reloadConfig() }
+        }
     }
 }
 
 struct ConfigErrorView: View {
     let message: String
+    let openSettings: () -> Void
+
     var body: some View {
         VStack(spacing: 12) {
             Image(systemName: "exclamationmark.triangle")
@@ -38,6 +43,8 @@ struct ConfigErrorView: View {
             Text("Erwartet: ~/.hermes/config.json mit modules.jira.{baseUrl,email,apiToken}.")
                 .font(.caption)
                 .foregroundStyle(.tertiary)
+            Button("Einstellungen öffnen…", action: openSettings)
+                .padding(.top, 6)
         }
         .padding(40)
         .frame(maxWidth: .infinity, maxHeight: .infinity)

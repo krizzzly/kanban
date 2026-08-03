@@ -20,6 +20,7 @@ public struct HermesConfig: Sendable {
     public let jiraDefaultBaseUrl: String
     public let gitlabBaseUrl: String?
     public let gitlabApiToken: String?
+    public let gitlabBackend: String?     // "api" = direct REST with token; else via Hermes daemon
     public let projects: [ProjectConfig]
 
     public var hasGitlab: Bool { gitlabBaseUrl != nil && (gitlabApiToken?.isEmpty == false) }
@@ -92,6 +93,7 @@ public enum HermesConfigLoader {
             jiraDefaultBaseUrl: jiraBase,
             gitlabBaseUrl: gitlab?.baseUrl,
             gitlabApiToken: gitlab?.apiToken,
+            gitlabBackend: gitlab?.backend,
             projects: projects
         )
     }
@@ -129,6 +131,7 @@ private struct RawJiraProject: Decodable {
 private struct RawGitlab: Decodable {
     let baseUrl: String?
     let apiToken: String?
+    let backend: String?
     let projects: [String: RawGitlabProject]?
 }
 

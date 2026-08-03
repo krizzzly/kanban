@@ -93,6 +93,14 @@ public enum TaskFileLoader {
         return parse(content: content, url: url)
     }
 
+    /// Reads the ticket's stored Claude session id **without** creating one. Returns nil if there's
+    /// no task file or no marker yet. Used to map hook attention-markers back to tickets.
+    public static func peekSessionId(ticketKey: String, in tasksDirectory: String) -> String? {
+        guard let url = find(ticketKey: ticketKey, in: tasksDirectory),
+              let content = try? String(contentsOf: url, encoding: .utf8) else { return nil }
+        return ClaudeSession.parseSessionId(content)
+    }
+
     /// Returns the ticket's persisted Claude session id, generating and writing one if absent.
     /// The id lives in an invisible HTML comment (see `ClaudeSession`); writing it back is a
     /// one-time event per task file. Returns nil only if the file can't be read.
@@ -138,6 +146,93 @@ public enum TaskFileLoader {
         let insertAt = lines.firstIndex { $0.hasPrefix("# ") && !$0.hasPrefix("## ") }.map { $0 + 1 } ?? 0
         lines.insert(contentsOf: ["", "### Status", statusLine], at: insertAt)
         return lines.joined(separator: "\n")
+    }
+
+    /// Writes the feature branch (from the ticket's GitLab MR) into the task file's
+    /// `🌿 **BRANCH**` line. No-op if there's no BRANCH line or it already matches. Returns false
+    /// only on a read/write error.
+    @discardableResult
+    public static func writeBranch(_ branch: String, url: URL) -> Bool {
+        guard let content = try? String(contentsOf: url, encoding: .utf8) else { return false }
+        let updated = settingBranch(branch, in: content)
+        guard updated != content else { return true }
+        do { try updated.write(to: url, atomically: true, encoding: .utf8); return true }
+        catch { return false }
+    }
+
+    /// Returns `content` with the ticket's feature branch set to `branch`. If a `**BRANCH**` line
+    /// exists, its first backtick code-span is replaced (preserving blockquote `>`, emoji, trailing
+    /// `\`). Otherwise a `> 🌿 **BRANCH**: \`<branch>\`` line is inserted directly under the H1 title
+    /// (or at the top if there is none). Unchanged if it already shows `branch`. Pure — unit-testable.
+    static func settingBranch(_ branch: String, in content: String) -> String {
+        var lines = content.components(separatedBy: "\n")
+
+        if let idx = lines.firstIndex(where: { $0.contains("**BRANCH**") }) {
+            let line = lines[idx]
+            guard let open = line.firstIndex(of: "`") else { return content }
+            let afterOpen = line.index(after: open)
+            guard let close = line[afterOpen...].firstIndex(of: "`") else { return content }
+            guard String(line[afterOpen..<close]) != branch else { return content }
+            lines[idx] = line.replacingCharacters(in: afterOpen..<close, with: branch)
+            return lines.joined(separator: "\n")
+        }
+
+        // No BRANCH line yet → insert one right under the task title (H1), else at the very top.
+        let newLine = "> 🌿 **BRANCH**: `\(branch)`"
+        let insertAt = lines.firstIndex { $0.hasPrefix("# ") && !$0.hasPrefix("## ") }.map { $0 + 1 } ?? 0
+        lines.insert(newLine, at: insertAt)
+        return lines.joined(separator: "\n")
+    }
+
+    /// Writes/updates the `**Merge Request:**` line (with the MR URL) at the bottom of the task file.
+    /// Idempotent: updates the existing line in place, or appends one if absent. Returns false only
+    /// on a read/write error.
+    @discardableResult
+    public static func writeMergeRequest(url mrURL: String, file: URL) -> Bool {
+        guard let content = try? String(contentsOf: file, encoding: .utf8) else { return false }
+        let updated = settingMergeRequest(mrURL, in: content)
+        guard updated != content else { return true }
+        do { try updated.write(to: file, atomically: true, encoding: .utf8); return true }
+        catch { return false }
+    }
+
+    /// Returns `content` with a `**Merge Request:** <url>` line: replaced in place if one already
+    /// exists, otherwise appended at the bottom (after a blank line). Unchanged if already correct.
+    /// Pure — unit-testable.
+    static func settingMergeRequest(_ mrURL: String, in content: String) -> String {
+        let newLine = "**Merge Request:** \(mrURL)"
+        var lines = content.components(separatedBy: "\n")
+        if let idx = lines.firstIndex(where: { $0.contains("**Merge Request:**") }) {
+            guard lines[idx] != newLine else { return content }
+            lines[idx] = newLine
+            return lines.joined(separator: "\n")
+        }
+        var trimmed = content
+        while trimmed.hasSuffix("\n") { trimmed.removeLast() }
+        return trimmed + "\n\n" + newLine + "\n"
+    }
+
+    /// The task-file name derived from a feature branch: the branch's last path segment plus `.md`
+    /// (e.g. `feature/ZBA-489_pdf_access` → `ZBA-489_pdf_access.md`). nil if empty.
+    static func fileName(forBranch branch: String) -> String? {
+        let base = (branch.split(separator: "/").last.map(String.init) ?? branch)
+            .trimmingCharacters(in: .whitespaces)
+        guard !base.isEmpty else { return nil }
+        return base.hasSuffix(".md") ? base : base + ".md"
+    }
+
+    /// Renames the task file so its name matches the MR's feature branch. Safe: only renames when the
+    /// derived name **still belongs to the ticket** (so `find` keeps locating it), the name actually
+    /// differs, and no other file already occupies the target. Returns the new URL, or nil (no change).
+    @discardableResult
+    public static func renameToMatchBranch(currentURL: URL, branch: String, ticketKey: String) -> URL? {
+        guard let desired = fileName(forBranch: branch),
+              belongsToTicket(desired, keyPrefix: ticketKey.uppercased()),
+              desired.lowercased() != currentURL.lastPathComponent.lowercased() else { return nil }
+        let target = currentURL.deletingLastPathComponent().appendingPathComponent(desired)
+        guard !FileManager.default.fileExists(atPath: target.path) else { return nil }
+        do { try FileManager.default.moveItem(at: currentURL, to: target); return target }
+        catch { return nil }
     }
 
     static func parse(content: String, url: URL) -> TaskFile {
@@ -249,6 +344,11 @@ public enum TaskFileLoader {
     /// does not grant filesystem read access, so `file://` image URLs never load (broken-image
     /// placeholder). Embedding the bytes as a `data:` URI sidesteps that entirely. Remote (`http(s)`)
     /// and existing `data:` URIs are left untouched; local files that can't be read are left as-is.
+    /// Local media larger than this — and every non-image type (videos, PDFs, …) — is rendered as a
+    /// clickable link instead of inlined. A multi-MB base64 `data:` URI makes the generated HTML huge
+    /// and chokes WKWebView (and a video can't render as an `<img>` anyway; it just showed nothing).
+    static let maxInlineImageBytes = 6 * 1024 * 1024
+
     static func rewriteImagePaths(_ markdown: String, directory: URL) -> String {
         let pattern = "!\\[([^\\]]*)\\]\\(([^)]+)\\)"
         guard let regex = try? NSRegularExpression(pattern: pattern) else { return markdown }
@@ -257,13 +357,27 @@ public enum TaskFileLoader {
         // Iterate matches back-to-front so ranges stay valid while replacing.
         let matches = regex.matches(in: markdown, range: NSRange(location: 0, length: ns.length))
         for match in matches.reversed() {
-            let urlRange = match.range(at: 2)
-            let (dest, title) = splitDestination(ns.substring(with: urlRange))
+            let alt = ns.substring(with: match.range(at: 1))
+            let (dest, title) = splitDestination(ns.substring(with: match.range(at: 2)))
             let lower = dest.lowercased()
             if lower.hasPrefix("http://") || lower.hasPrefix("https://") || lower.hasPrefix("data:") { continue }
-            guard let dataURI = imageDataURI(for: dest, directory: directory) else { continue }
-            let replacement = title.map { "\(dataURI) \($0)" } ?? dataURI
-            result = (result as NSString).replacingCharacters(in: urlRange, with: replacement)
+            guard let fileURL = resolveLocalFile(dest, directory: directory) else { continue }
+            let mime = mimeType(forExtension: fileURL.pathExtension.lowercased())
+            let bytes = fileSize(fileURL)
+
+            if mime.hasPrefix("image/"), let bytes, bytes <= maxInlineImageBytes,
+               let data = try? Data(contentsOf: fileURL) {
+                // Inline the image bytes (WKWebView's loadHTMLString grants no filesystem access).
+                let dataURI = "data:\(mime);base64,\(data.base64EncodedString())"
+                let replacement = title.map { "\(dataURI) \($0)" } ?? dataURI
+                result = (result as NSString).replacingCharacters(in: match.range(at: 2), with: replacement)
+            } else {
+                // Video / other media / oversized image → clickable link (opens externally on click).
+                let label = alt.isEmpty ? fileURL.lastPathComponent : alt
+                let icon = mime.hasPrefix("video/") ? "▶ " : (mime.hasPrefix("image/") ? "🖼 " : "📎 ")
+                let link = "[\(icon)\(label)](\(fileURL.absoluteString))"
+                result = (result as NSString).replacingCharacters(in: match.range(at: 0), with: link)
+            }
         }
         return result
     }
@@ -284,20 +398,22 @@ public enum TaskFileLoader {
         return (s, nil)
     }
 
-    /// Reads a local image (relative to `directory`, or absolute / `file://`) and encodes it as a
-    /// `data:<mime>;base64,…` URI. Returns nil when the file can't be read.
-    static func imageDataURI(for dest: String, directory: URL) -> String? {
+    /// Resolves a local media destination (relative to `directory`, or absolute / `file://`) to an
+    /// existing file URL, or nil if it's missing.
+    static func resolveLocalFile(_ dest: String, directory: URL) -> URL? {
         var path = dest
         if path.lowercased().hasPrefix("file://") {
             path = URL(string: path)?.path ?? path
         }
         let decoded = path.removingPercentEncoding ?? path
-        let fileURL = decoded.hasPrefix("/")
+        let fileURL = (decoded.hasPrefix("/")
             ? URL(fileURLWithPath: decoded)
-            : directory.appendingPathComponent(decoded)
-        guard let data = try? Data(contentsOf: fileURL.standardizedFileURL) else { return nil }
-        let mime = mimeType(forExtension: fileURL.pathExtension.lowercased())
-        return "data:\(mime);base64,\(data.base64EncodedString())"
+            : directory.appendingPathComponent(decoded)).standardizedFileURL
+        return FileManager.default.fileExists(atPath: fileURL.path) ? fileURL : nil
+    }
+
+    private static func fileSize(_ url: URL) -> Int? {
+        (try? FileManager.default.attributesOfItem(atPath: url.path))?[.size] as? Int
     }
 
     private static func mimeType(forExtension ext: String) -> String {
@@ -311,6 +427,11 @@ public enum TaskFileLoader {
         case "heic", "heif": return "image/heic"
         case "tif", "tiff":  return "image/tiff"
         case "avif":         return "image/avif"
+        case "mp4", "m4v":   return "video/mp4"
+        case "mov":          return "video/quicktime"
+        case "webm":         return "video/webm"
+        case "avi":          return "video/x-msvideo"
+        case "mkv":          return "video/x-matroska"
         default:             return "application/octet-stream"
         }
     }

@@ -26,6 +26,97 @@ final class WorkflowStatusTests: XCTestCase {
         XCTAssertEqual(r.column, .review)
     }
 
+    // MARK: - Auto-set Review marker
+
+    func testAutoSetReviewWhenOpenMRAndInArbeit() {
+        XCTAssertTrue(WorkflowStatus.shouldAutoSetReview(
+            ticketKey: "EVEN-1", hasTaskFile: true, currentMarker: .inArbeit,
+            mergeRequests: [mr(7, "opened", branch: "feature/EVEN-1_x")]))
+    }
+
+    func testAutoSetReviewOverridesAbgeschlossen() {
+        XCTAssertTrue(WorkflowStatus.shouldAutoSetReview(
+            ticketKey: "EVEN-1", hasTaskFile: true, currentMarker: .abgeschlossen,
+            mergeRequests: [mr(7, "opened", branch: "feature/EVEN-1_x")]))
+    }
+
+    func testNoAutoSetWhenAlreadyReview() {
+        XCTAssertFalse(WorkflowStatus.shouldAutoSetReview(
+            ticketKey: "EVEN-1", hasTaskFile: true, currentMarker: .review,
+            mergeRequests: [mr(7, "opened", branch: "feature/EVEN-1_x")]))
+    }
+
+    func testNoAutoSetWhenDoneMarker() {
+        XCTAssertFalse(WorkflowStatus.shouldAutoSetReview(
+            ticketKey: "EVEN-1", hasTaskFile: true, currentMarker: .done,
+            mergeRequests: [mr(7, "opened", branch: "feature/EVEN-1_x")]))
+    }
+
+    func testNoAutoSetWhenMerged() {
+        XCTAssertFalse(WorkflowStatus.shouldAutoSetReview(
+            ticketKey: "EVEN-1", hasTaskFile: true, currentMarker: .inArbeit,
+            mergeRequests: [mr(7, "merged", branch: "feature/EVEN-1_x")]))
+    }
+
+    func testNoAutoSetWithoutTaskFile() {
+        XCTAssertFalse(WorkflowStatus.shouldAutoSetReview(
+            ticketKey: "EVEN-1", hasTaskFile: false, currentMarker: nil,
+            mergeRequests: [mr(7, "opened", branch: "feature/EVEN-1_x")]))
+    }
+
+    func testNoAutoSetWhenNoMatchingMR() {
+        XCTAssertFalse(WorkflowStatus.shouldAutoSetReview(
+            ticketKey: "EVEN-1", hasTaskFile: true, currentMarker: .inArbeit,
+            mergeRequests: [mr(7, "opened", branch: "feature/OTHER-9_x")]))
+    }
+
+    // MARK: - MR source branch
+
+    func testMRSourceBranchPrefersNewestOpened() {
+        let mrs = [
+            mr(5, "opened", branch: "feature/EVEN-1_old"),
+            mr(9, "opened", branch: "feature/EVEN-1_new"),
+            mr(3, "merged", branch: "feature/EVEN-1_merged"),
+        ]
+        XCTAssertEqual(WorkflowStatus.mrSourceBranch(ticketKey: "EVEN-1", mergeRequests: mrs),
+                       "feature/EVEN-1_new")
+    }
+
+    func testMRSourceBranchFallsBackToMerged() {
+        let mrs = [mr(3, "merged", branch: "feature/EVEN-1_merged")]
+        XCTAssertEqual(WorkflowStatus.mrSourceBranch(ticketKey: "EVEN-1", mergeRequests: mrs),
+                       "feature/EVEN-1_merged")
+    }
+
+    func testMRSourceBranchNilWhenNoMatch() {
+        let mrs = [mr(3, "opened", branch: "feature/OTHER-9_x")]
+        XCTAssertNil(WorkflowStatus.mrSourceBranch(ticketKey: "EVEN-1", mergeRequests: mrs))
+    }
+
+    // MARK: - Auto-set Done marker (Jira Erledigt/Geschlossen)
+
+    func testAutoSetDoneWhenJiraDone() {
+        XCTAssertTrue(WorkflowStatus.shouldAutoSetDone(
+            hasTaskFile: true, currentMarker: .inArbeit, jiraDone: true))
+        XCTAssertTrue(WorkflowStatus.shouldAutoSetDone(
+            hasTaskFile: true, currentMarker: .review, jiraDone: true))
+    }
+
+    func testNoAutoSetDoneWhenNotJiraDone() {
+        XCTAssertFalse(WorkflowStatus.shouldAutoSetDone(
+            hasTaskFile: true, currentMarker: .inArbeit, jiraDone: false))
+    }
+
+    func testNoAutoSetDoneWhenAlreadyDone() {
+        XCTAssertFalse(WorkflowStatus.shouldAutoSetDone(
+            hasTaskFile: true, currentMarker: .done, jiraDone: true))
+    }
+
+    func testNoAutoSetDoneWithoutTaskFile() {
+        XCTAssertFalse(WorkflowStatus.shouldAutoSetDone(
+            hasTaskFile: false, currentMarker: nil, jiraDone: true))
+    }
+
     func testJiraDoneStatusIsDone() {
         // Resolved/closed in Jira (statusCategory "done") → Done, even mid-work with no merged MR.
         let r = WorkflowStatus.resolve(

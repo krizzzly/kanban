@@ -8,6 +8,7 @@ struct CardVM: Identifiable, Hashable {
     let column: KanbanColumn
     let badges: [CardBadge]
     let statusMarker: TaskStatusMarker?   // Claude's task-file status (shown as a dot, separate from column)
+    var needsAttention: Bool = false      // the ticket's Claude console is waiting for an answer
     var id: String { ticket.key }
 }
 
@@ -40,6 +41,10 @@ final class AppModel {
     // Terminal
     private(set) var activeTerminalSession: String?           // left: Claude, main-tree cwd
     private(set) var activeWorktreeTerminalSession: String?   // right: plain shell, worktree cwd
+    // Ticket slash commands from the project's .claude/commands (header menu next to the ticket key).
+    private(set) var claudeCommands: [ClaudeCommand] = []
+    // Bumped when a command is typed into the Claude console, so the terminal pane shows that tab.
+    private(set) var claudeTerminalFocusRequest = 0
     // Extra, user-spawned terminals, kept per ticket so they survive ticket switches.
     private var extraTerminalsByTicket: [String: [String]] = [:]
 
@@ -54,6 +59,30 @@ final class AppModel {
     private(set) var isRefreshing = false
     private(set) var errorMessage: String?
     private(set) var lastRefresh: Date?
+
+    // Settings sheet (gear button); writable — bound to the sheet presentation.
+    var settingsPresented = false
+
+    // Attention: which tickets' Claude consoles are waiting for an answer (hook markers + pane
+    // fallback). Which sections hold open questions is derived on demand (see questionSectionIDs).
+    private(set) var attentionTickets: Set<String> = []
+    private var sessionIdByTicket: [String: String] = [:]
+    private var attentionWatcher: TaskFileWatcher?
+    private var attentionWatchTask: Task<Void, Never>?
+
+    /// Ids of the selected task file's sections that hold open questions (tab-pill ❓) or record
+    /// decisions (tab-pill green ✓). **Cached** — recomputed only when the detail content changes
+    /// (see `refreshSectionSignals`), never per view render, so switching tabs stays instant.
+    private(set) var questionSectionIDs: Set<Int> = []
+    private(set) var decisionSectionIDs: Set<Int> = []
+
+    /// Rebuilds the cached `displaySections` and the per-section pill signals. Call whenever the
+    /// detail content (task file / reviews / fallback / selection) changes.
+    private func refreshSectionSignals() {
+        displaySections = computeDisplaySections()
+        questionSectionIDs = TaskQuestions.openQuestionSectionIDs(displaySections)
+        decisionSectionIDs = TaskQuestions.decisionSectionIDs(displaySections)
+    }
 
     private var jira: JiraClient?
     private var gitlab: GitLabClient?
@@ -78,7 +107,7 @@ final class AppModel {
             projects = cfg.projects
             jira = JiraClient(email: cfg.jiraEmail, apiToken: cfg.jiraApiToken)
             if let apiUrl = cfg.gitlabApiUrl, let token = cfg.gitlabApiToken, !token.isEmpty {
-                gitlab = GitLabClient(apiBaseUrl: apiUrl, token: token)
+                gitlab = GitLabClient(apiBaseUrl: apiUrl, token: token, backend: cfg.gitlabBackend)
             }
             let creds = Data("\(cfg.jiraEmail):\(cfg.jiraApiToken)".utf8).base64EncodedString()
             AvatarCache.shared.configure(
@@ -93,6 +122,11 @@ final class AppModel {
                 selectProject(first)
             }
             startPolling()
+            startAttentionWatch()
+            AttentionNotifier.shared.configure { [weak self] ticketKey in
+                guard let self, self.cards.contains(where: { $0.ticket.key == ticketKey }) else { return }
+                self.selectTicket(ticketKey)
+            }
         } catch {
             configError = error.localizedDescription
         }
@@ -100,7 +134,35 @@ final class AppModel {
 
     var hasGitlab: Bool { gitlab != nil }
 
+    /// Re-reads the Hermes config after the settings sheet saved it: rebuilds clients + project
+    /// list via `bootstrap()` and restores the previous selection where it still exists.
+    func reloadConfig() {
+        let previousProject = selectedProject?.key
+        let previousTicket = selectedTicketKey
+        pollTask?.cancel()
+        pollTask = nil
+        config = nil
+        configError = nil
+        jira = nil
+        gitlab = nil
+        projects = []
+        selectedProject = nil
+        bootstrap()
+        if let previousProject,
+           let project = projects.first(where: { $0.key == previousProject }),
+           project.id != selectedProject?.id {
+            selectProject(project)
+        }
+        if let previousTicket, selectedProject != nil {
+            selectTicket(previousTicket)
+        }
+    }
+
     // MARK: - Selection
+
+    /// The ticket-workflow commands offered in the header menu, in workflow order.
+    /// `create-task` is deliberately absent — it starts from a description, not a ticket.
+    private static let ticketCommandNames = ["get-task", "start-task", "solve-task", "review-task"]
 
     func selectProject(_ project: ProjectConfig) {
         guard project.id != selectedProject?.id else { return }
@@ -109,6 +171,8 @@ final class AppModel {
         selectedSprint = nil
         cards = []
         columns = []
+        claudeCommands = ClaudeCommandScanner.scan(repoDir: project.repoDir,
+                                                   only: Self.ticketCommandNames)
         clearDetail()
         Task { await loadSprints() }
     }
@@ -171,9 +235,46 @@ final class AppModel {
             self.lastMergeRequests = mrs
 
             let dir = project.tasksPathAbsolute
+            var sessionMap: [String: String] = [:]
             cards = issues.map { ticket in
-                let info = TaskFileLoader.statusMarker(ticketKey: ticket.key, in: dir)
+                var info = TaskFileLoader.statusMarker(ticketKey: ticket.key, in: dir)
                 let wt = WorktreeScanner.worktree(for: ticket.key, in: worktrees)
+                if let sid = TaskFileLoader.peekSessionId(ticketKey: ticket.key, in: dir) {
+                    sessionMap[ticket.key] = sid
+                }
+
+                let mr = WorkflowStatus.primaryMR(ticketKey: ticket.key, mergeRequests: mrs)
+
+                // Rename the task file to match the MR's feature branch. First, so the writes below
+                // re-find the renamed file. Safe: only when the new name still belongs to the ticket.
+                if info.exists, let branch = mr?.sourceBranch,
+                   let currentURL = TaskFileLoader.find(ticketKey: ticket.key, in: dir) {
+                    TaskFileLoader.renameToMatchBranch(currentURL: currentURL, branch: branch, ticketKey: ticket.key)
+                }
+
+                // Auto-advance the persisted task-file status marker, idempotently, to match reality:
+                //   • ✅ Done   when Jira says Erledigt/Geschlossen (statusCategory "done"), or
+                //   • 🔵 Review when an MR is open for this ticket.
+                // Done wins (higher precedence); neither overrides an existing ✅ Done. Keeps the
+                // dot/marker in sync with the derived column so Claude and other tools see it too.
+                if WorkflowStatus.shouldAutoSetDone(hasTaskFile: info.exists, currentMarker: info.marker,
+                                                    jiraDone: ticket.isDoneInJira),
+                   let url = TaskFileLoader.find(ticketKey: ticket.key, in: dir),
+                   TaskFileLoader.writeStatus(.done, url: url) {
+                    info.marker = .done
+                } else if WorkflowStatus.shouldAutoSetReview(ticketKey: ticket.key, hasTaskFile: info.exists,
+                                                             currentMarker: info.marker, mergeRequests: mrs),
+                          let url = TaskFileLoader.find(ticketKey: ticket.key, in: dir),
+                          TaskFileLoader.writeStatus(.review, url: url) {
+                    info.marker = .review
+                }
+
+                // Sync the MR's feature branch (🌿 BRANCH line) and URL (Merge Request line) in.
+                if info.exists, let mr, let url = TaskFileLoader.find(ticketKey: ticket.key, in: dir) {
+                    TaskFileLoader.writeBranch(mr.sourceBranch, url: url)
+                    TaskFileLoader.writeMergeRequest(url: mr.webUrl, file: url)
+                }
+
                 let res = WorkflowStatus.resolve(
                     ticketKey: ticket.key,
                     hasTaskFile: info.exists,
@@ -184,7 +285,17 @@ final class AppModel {
                 )
                 return CardVM(ticket: ticket, column: res.column, badges: res.badges, statusMarker: info.marker)
             }
-            regroupColumns()
+            sessionIdByTicket = sessionMap
+            regroupColumns()                    // build columns from cards (always)
+            recomputeAttention(notify: false)   // paint the ❓ where a console is waiting
+            Task { await refreshPaneAttention() }
+            // If the selected ticket's file was renamed under it (branch sync), reload the detail
+            // on the new path so the tabs/watcher don't go stale.
+            if let key = selectedTicketKey,
+               let found = TaskFileLoader.find(ticketKey: key, in: dir),
+               taskFile != nil, taskFile?.url != found {
+                loadDetail(for: key)
+            }
             errorMessage = nil
             // Open a ticket (and its terminal) automatically on first load, so the terminal is
             // visible from the start instead of only after the user clicks a card.
@@ -221,7 +332,13 @@ final class AppModel {
 
     // MARK: - Detail
 
-    var displaySections: [TaskSection] {
+    /// The tabs shown for the selected ticket. **Cached** — `linkify` + ordering ran on every access,
+    /// and the tab bar reads it O(N) times per render (once per pill via `current`), so recomputing
+    /// on access made tab rendering quadratic. Rebuilt only when the detail content changes
+    /// (`refreshSectionSignals`).
+    private(set) var displaySections: [TaskSection] = []
+
+    private func computeDisplaySections() -> [TaskSection] {
         if let tf = taskFile {
             var result: [TaskSection] = []
             if !tf.preamble.isEmpty {
@@ -350,11 +467,16 @@ final class AppModel {
                 sessionId = SessionIdStore.ensure(forTicket: key)
             }
 
+            let hasTranscript = sessionId.map {
+                ClaudeTranscripts.transcriptExists(sessionId: $0, cwd: repoDir)
+            } ?? false
+
             let plan = TerminalSessionResolver.resolve(
                 ticketKey: key,
                 repoDir: repoDir,
                 worktree: worktree,
                 sessionId: sessionId,
+                hasTranscript: hasTranscript,
                 existing: tmux.listSessions()
             )
             _ = tmux.run(plan: plan)
@@ -376,6 +498,19 @@ final class AppModel {
                 self.activeTerminalSession = plan.name
                 self.activeWorktreeTerminalSession = worktreeSession
             }
+        }
+    }
+
+    /// Types `/command <TICKET>` into the ticket's Claude console (without Enter, so the user can
+    /// still edit/confirm) and switches the terminal pane to the Claude tab.
+    func sendClaudeCommand(_ command: ClaudeCommand) {
+        guard let key = selectedTicketKey, let session = activeTerminalSession else { return }
+        claudeTerminalFocusRequest += 1
+        Task.detached {
+            let tmux = TmuxController()
+            guard tmux.isAvailable else { return }
+            tmux.cancelCopyMode(session)   // a scrolled-back pane would swallow the keystrokes
+            tmux.sendText(session, "/\(command.name) \(key) ")
         }
     }
 
@@ -494,6 +629,8 @@ final class AppModel {
         taskFile = nil
         reviewMarkdowns = []
         fallbackSections = []
+        displaySections = []
+        questionSectionIDs = []; decisionSectionIDs = []
         worktreeStatusText = ""
         worktreeCommandOutput = ""
         worktreeDbDump = nil
@@ -509,9 +646,11 @@ final class AppModel {
                     try? await Task.sleep(nanoseconds: 150_000_000)  // debounce
                     guard let self, self.selectedTicketKey == key else { return }
                     self.taskFile = TaskFileLoader.load(url)
+                    self.refreshSectionSignals()
                 }
             }
             loadReviews(for: key, in: dir)
+            refreshSectionSignals()
         } else {
             loadJiraFallback(for: key, project: project)
         }
@@ -535,6 +674,7 @@ final class AppModel {
     private func rescanReviews(for key: String, in dir: String) {
         reviewMarkdowns = TaskFileLoader.reviewFiles(ticketKey: key, in: dir)
             .compactMap { TaskFileLoader.loadReviewMarkdown($0) }
+        refreshSectionSignals()
     }
 
     private func loadJiraFallback(for key: String, project: ProjectConfig) {
@@ -552,6 +692,7 @@ final class AppModel {
             let body = description.isEmpty ? "_(keine Beschreibung)_" : description
             self.fallbackSections = [TaskSection(id: 0, title: "Beschreibung", markdown: header + body)]
             self.detailLoading = false
+            self.refreshSectionSignals()
         }
     }
 
@@ -572,5 +713,86 @@ final class AppModel {
                 if self.selectedSprint != nil { await self.refresh() }
             }
         }
+    }
+
+    // MARK: - Attention (console waiting for an answer)
+
+    /// Watches the hook marker directory so a `Notification`/`UserPromptSubmit` flips the card ❓
+    /// within a moment, without waiting for the 45 s board poll.
+    private func startAttentionWatch() {
+        attentionWatchTask?.cancel()
+        let watcher = TaskFileWatcher(path: AttentionMarkers.directory.path)
+        attentionWatcher = watcher
+        attentionWatchTask = Task { [weak self] in
+            for await _ in watcher.events {
+                guard let self else { return }
+                self.recomputeAttention(notify: true)
+            }
+        }
+    }
+
+    /// Hook-marker view: tickets whose stored session id currently has an attention marker.
+    private func hookAttentionTickets() -> Set<String> {
+        let active = AttentionMarkers.activeSessionIds()
+        return Set(sessionIdByTicket.compactMap { active.contains($0.value) ? $0.key : nil })
+    }
+
+    /// Recomputes attention from hook markers, repaints the cards, and (optionally) fires a macOS
+    /// notification for tickets that just started waiting. The pane fallback augments this via
+    /// `refreshPaneAttention()`.
+    private func recomputeAttention(notify: Bool) {
+        let next = hookAttentionTickets().union(attentionTickets.intersection(paneOnlyTickets))
+        setAttention(next, notify: notify)
+    }
+
+    /// Tickets flagged purely by the pane fallback (no hook marker) — kept across hook recomputes so
+    /// a picker detected on a pre-hook session doesn't flicker off.
+    private var paneOnlyTickets: Set<String> = []
+
+    private func setAttention(_ next: Set<String>, notify: Bool) {
+        if notify {
+            for key in next.subtracting(attentionTickets) { notifyAttention(ticketKey: key) }
+        }
+        // A ticket that stopped waiting can re-notify immediately next time.
+        for key in attentionTickets.subtracting(next) { AttentionNotifier.shared.clearThrottle(ticketKey: key) }
+        AttentionNotifier.shared.updateBadge(count: next.count)   // red Dock badge = # waiting
+        guard next != attentionTickets || cards.contains(where: { $0.needsAttention != next.contains($0.ticket.key) }) else { return }
+        attentionTickets = next
+        cards = cards.map { var c = $0; c.needsAttention = next.contains($0.ticket.key); return c }
+        regroupColumns()
+    }
+
+    /// tmux-pane fallback: catches consoles started before the hook was installed and self-heals
+    /// stale markers (a session visibly working again gets its marker cleared). Runs off-main.
+    private func refreshPaneAttention() async {
+        let map = sessionIdByTicket
+        let tickets = Array(map.keys)
+        let (paneWaiting, resumedSessions): (Set<String>, [String]) = await Task.detached {
+            let tmux = TmuxController()
+            guard tmux.isAvailable else { return ([], []) }
+            let live = Set(tmux.listSessions().map(\.name))
+            var waiting: Set<String> = []
+            var resumed: [String] = []
+            for ticket in tickets {
+                let session = TerminalSessionResolver.sessionName(forTicket: ticket)
+                guard live.contains(session), let pane = tmux.capturePane(session) else { continue }
+                if PaneAttention.showsQuestion(pane) {
+                    waiting.insert(ticket)
+                } else if PaneAttention.isWorking(pane), let sid = map[ticket] {
+                    resumed.append(sid)   // clear a stale marker: Claude is busy again
+                }
+            }
+            return (waiting, resumed)
+        }.value
+
+        for sid in resumedSessions { AttentionMarkers.clear(sessionId: sid) }
+        paneOnlyTickets = paneWaiting.subtracting(hookAttentionTickets())
+        setAttention(hookAttentionTickets().union(paneWaiting), notify: true)
+    }
+
+    /// Posts a click-to-select macOS notification when a ticket's console starts waiting.
+    private func notifyAttention(ticketKey: String) {
+        let summary = cards.first { $0.ticket.key == ticketKey }?.ticket.summary
+        AttentionNotifier.shared.post(ticketKey: ticketKey, summary: summary)
     }
 }

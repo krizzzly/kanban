@@ -9,10 +9,14 @@ echo "==> swift build -c release"
 swift build -c release
 
 BIN="$(swift build -c release --show-bin-path)"
-APP="$ROOT/dist/Kanban.app"
+# Install straight into /Applications — that's where the app is launched from and the path macOS
+# has registered for notifications under bundle id ch.iwf.kanban. Building into dist/ left a second
+# stale bundle with the same id, which confused Launch Services / notifications.
+APP="/Applications/Kanban.app"
 
 echo "==> assembling $APP"
 rm -rf "$APP"
+rm -rf "$ROOT/dist/Kanban.app"   # drop the old duplicate bundle (same id → routing confusion)
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
 cp "$BIN/Kanban" "$APP/Contents/MacOS/Kanban"
@@ -41,6 +45,11 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
     <key>LSMinimumSystemVersion</key><string>15.0</string>
     <key>NSHighResolutionCapable</key><true/>
     <key>NSPrincipalClass</key><string>NSApplication</string>
+    <!-- Allow plain-HTTP calls to the local Hermes daemon (localhost:7891) for GitLab MRs. -->
+    <key>NSAppTransportSecurity</key>
+    <dict>
+        <key>NSAllowsLocalNetworking</key><true/>
+    </dict>
 </dict>
 </plist>
 PLIST

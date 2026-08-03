@@ -68,4 +68,46 @@ public enum WorkflowStatus {
 
         return WorkflowResolution(column: column, badges: badges)
     }
+
+    /// The ticket's most relevant GitLab MR (newest opened, else newest merged) — the one whose
+    /// branch and URL are synced into the task file. nil if no MR matches.
+    public static func primaryMR(ticketKey: String, mergeRequests: [MergeRequestRef]) -> MergeRequestRef? {
+        let matching = mergeRequests.filter {
+            TicketMatching.references($0.sourceBranch, ticketKey: ticketKey)
+                || TicketMatching.references($0.title, ticketKey: ticketKey)
+        }
+        let newestOpened = matching.filter { $0.state == "opened" }.max(by: { $0.iid < $1.iid })
+        let newestMerged = matching.filter { $0.state == "merged" }.max(by: { $0.iid < $1.iid })
+        return newestOpened ?? newestMerged
+    }
+
+    /// The source branch of the ticket's primary MR, for the `🌿 **BRANCH**` line. nil if none.
+    public static func mrSourceBranch(ticketKey: String, mergeRequests: [MergeRequestRef]) -> String? {
+        primaryMR(ticketKey: ticketKey, mergeRequests: mergeRequests)?.sourceBranch
+    }
+
+    /// Whether the persisted task-file `### Status` marker should be auto-advanced to ✅ Done: the
+    /// ticket is Erledigt/Geschlossen in Jira (statusCategory "done") and has a task file whose
+    /// marker isn't already ✅ Done. Pure — the caller performs the actual write.
+    public static func shouldAutoSetDone(hasTaskFile: Bool,
+                                         currentMarker: TaskStatusMarker?,
+                                         jiraDone: Bool) -> Bool {
+        jiraDone && hasTaskFile && currentMarker != .done
+    }
+
+    /// Whether the persisted task-file `### Status` marker should be auto-advanced to 🔵 Review:
+    /// an MR for the ticket is **opened** (and none merged), a task file exists, and the marker
+    /// isn't already Review or the final ✅ Done. Pure — the caller performs the actual write.
+    public static func shouldAutoSetReview(ticketKey: String,
+                                           hasTaskFile: Bool,
+                                           currentMarker: TaskStatusMarker?,
+                                           mergeRequests: [MergeRequestRef]) -> Bool {
+        guard hasTaskFile, currentMarker != .review, currentMarker != .done else { return false }
+        let matching = mergeRequests.filter {
+            TicketMatching.references($0.sourceBranch, ticketKey: ticketKey)
+                || TicketMatching.references($0.title, ticketKey: ticketKey)
+        }
+        guard !matching.contains(where: { $0.state == "merged" }) else { return false }
+        return matching.contains { $0.state == "opened" }
+    }
 }
