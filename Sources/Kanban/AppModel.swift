@@ -166,6 +166,11 @@ final class AppModel {
             let cfg = try HermesConfigLoader.load()
             config = cfg
             projects = cfg.projects
+            // project.json für ALLE Projekte aktualisieren, nicht nur das gewählte — die zentral
+            // verlinkten Commands lesen es in jedem Repo, unabhängig davon, was das Board zeigt.
+            for project in cfg.projects where FileManager.default.fileExists(atPath: project.repoDir) {
+                _ = try? ClaudeProjectFile.write(for: project)
+            }
             jira = JiraClient(email: cfg.jiraEmail, apiToken: cfg.jiraApiToken)
             if let apiUrl = cfg.gitlabApiUrl, let token = cfg.gitlabApiToken, !token.isEmpty {
                 gitlab = GitLabClient(apiBaseUrl: apiUrl, token: token, backend: cfg.gitlabBackend)
