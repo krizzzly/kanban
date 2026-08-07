@@ -19,8 +19,11 @@ struct ContentView: View {
             }
         }
         .task { model.bootstrap() }
-        .sheet(isPresented: $model.settingsPresented) {
-            SettingsSheet { model.reloadConfig() }
+        // Eigenes Fenster statt Sheet (wie der Commit-Dialog): frei zentrier- und vergrösserbar,
+        // nicht an die Grösse des Board-Fensters gebunden — der Claude-Workflow-Editor braucht Platz.
+        .onChange(of: model.settingsPresented) { _, presented in
+            if presented { SettingsWindow.shared.show(model: model) }
+            else { SettingsWindow.shared.close(model: model) }
         }
         .sheet(isPresented: $model.bookingSheetPresented) {
             BookingSheet(model: model)

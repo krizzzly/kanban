@@ -1,15 +1,17 @@
 import SwiftUI
 import KanbanCore
 
-/// Modal settings editor for `~/.hermes/config.json`, styled after the macOS System Settings:
+/// Settings editor for `~/.hermes/config.json`, styled after the macOS System Settings:
 /// section sidebar on the left, a grouped form on the right, save/restart footer at the bottom.
 /// Round-trip-safe — unknown keys in the config survive (see `ConfigStore`).
+/// Lebt in einem eigenen Fenster (`SettingsWindow`), gleiche Grösse wie der Commit-Dialog.
 struct SettingsSheet: View {
-    @Environment(\.dismiss) private var dismiss
     @State private var settings = SettingsModel()
     @State private var selection: String? = HermesConfigSchema.sections.first?.id
     /// Called after a successful save so the app reloads its config.
     let onSaved: () -> Void
+    /// Schliesst das umgebende Fenster.
+    let onClose: () -> Void
 
     var body: some View {
         VStack(spacing: 0) {
@@ -21,7 +23,7 @@ struct SettingsSheet: View {
             Divider()
             footer
         }
-        .frame(width: 860, height: 620)
+        .frame(minWidth: 1100, minHeight: 700)
         .onAppear { settings.load() }
     }
 
@@ -103,7 +105,7 @@ struct SettingsSheet: View {
                         .font(.caption).foregroundStyle(.orange)
                 }
                 Spacer()
-                Button("Schließen") { dismiss() }
+                Button("Schließen") { onClose() }
                     .keyboardShortcut(.cancelAction)
                 Button("Speichern") {
                     if settings.save() { onSaved() }
