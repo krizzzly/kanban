@@ -102,7 +102,8 @@ zba/reactbp bereits `.claude/tasks`.
 
 ```
 ~/Library/Application Support/Kanban/
-├── claude/commands/   create-task · get-task · start-task · solve-task · review-task   (0 Projektwerte)
+├── claude/commands/   create/get/start/solve/review/update-task · create/destroy-worktree ·
+│                      review-merge   (9 Stück, 0 Projektwerte, referenz-geschlossen)
 ├── claude/skills/     impact-analysis · quality-analysis
 ├── claude/rules/      db-access · git-commits · serena-first · task · translations
 └── tasks/<projekt>/   die Task-Files (284 Stück ziehen um)
@@ -183,6 +184,10 @@ Assets sind zentral. Der Umzug selbst, **pro Projekt einzeln** (erst eines testw
   Auslieferungsstand zurücksetzen)
 - [x] `repoDir` von `tasksPath` entkoppelt (optionaler Config-Override, abwärtskompatibel)
 - [x] `create-task` als fünfter kanonischer Command nachgezogen
+- [x] **Referenz-Schliessung** (Befund des Users 2026-08-07): kanonische Assets riefen
+  create/destroy-worktree, review-merge und update-task auf, die nicht im Set waren → alle vier
+  nachkonsolidiert (update-task existierte nur in even); bfezvm-Fachbeispiel im impact-analysis-Skill
+  neutralisiert. Jetzt gilt: jedes referenzierte Asset ist selbst kanonisch (grep-verifiziert)
 - [x] Symlinks installiert + **Projektkopien entfernt** (2026-08-07, Entscheidung 2): 5 Commands ×3 Repos,
   5 Rules (bfezvm/even; zba nur serena-first), 2 Skills (bfezvm/even) → Backup unter
   `~/Library/Application Support/Kanban/claude/projektkopien-backup-2026-08-07/`. Projektlokal

@@ -285,23 +285,23 @@ rg "/api/|callApi|createAsyncThunk" assets/                # FE-Aufruf (Profil.P
 ### 2d) Ergebnis dokumentieren (*Beispiel*)
 
 ```markdown
-### Impact-Pfad: Monitoringbericht erstellen
+### Impact-Pfad: Bericht erstellen (Namen exemplarisch)
 
 #### Write Flow
-`MonitoringListCard.jsx`
-→ `POST /target-agreement/{id}/provisional-monitoring-report/{year}`
-→ `CreateProvisionalMonitoringReportController`  (#[IsGranted('ZVM_MONITORING_REPORT_CREATE')])
-→ `CreateProvisionalMonitoringReportCommand`
-→ `CreateMonitoringReportHandler`
-→ `MonitoringReportDataManager` + `MonitoringStatusLogWriter`
+`ReportListCard.jsx`
+→ `POST /parent-entity/{id}/report/{year}`
+→ `CreateReportController`  (#[IsGranted('REPORT_CREATE')])
+→ `CreateReportCommand`
+→ `CreateReportHandler`
+→ `ReportDataManager` + `ReportStatusLogWriter`
 
-Risiko: hoch — Statuswechsel, Kopie aller Betriebsstätten, Listen-/Detailansicht muss aktualisiert werden.
+Risiko: hoch — Statuswechsel, Kopie abhängiger Datensätze, Listen-/Detailansicht muss aktualisiert werden.
 
 #### Read Flow
-`MonitoringReportList.jsx`
-→ `GET /monitoring-report`  (#[IsGranted('ZVM_MONITORING_REPORT_MYLIST')])
-→ `ListMonitoringReportsQuery` → `ListMonitoringReportsHandler` (IndexRequest, RecordsResponse)
-→ Repo + ModelMapping → `MonitoringReportList::fromArray()`
+`ReportList.jsx`
+→ `GET /report`  (#[IsGranted('REPORT_MYLIST')])
+→ `ListReportsQuery` → `ListReportsHandler` (IndexRequest, RecordsResponse)
+→ Repo + ModelMapping → `ReportList::fromArray()`
 
 Risiko: mittel — Restrict-Services filtern nach Mandant/Rolle; neue Felder müssen im ViewModel gemappt sein.
 ```
