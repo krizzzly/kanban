@@ -28,7 +28,7 @@ Beschreibung des neuen Tasks: $ARGUMENTS
 - **Opt-out:** Wenn `$ARGUMENTS` das Flag `--no-worktree` enthält, Worktree-Erstellung überspringen.
   Entferne `--no-worktree` aus der Beschreibung, bevor sie ins Task-File geschrieben wird.
 
-> Vollständige Befehls-/Flag-Referenz zu `iwf worktree`: `.claude/rules/worktree.md`.
+> Vollständige Befehls-/Flag-Referenz zu `iwf worktree`: `~/Library/Application Support/Kanban/claude/rules/worktree.md`.
 
 ---
 

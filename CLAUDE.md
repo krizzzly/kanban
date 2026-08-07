@@ -139,11 +139,13 @@ der Picker markiert ihn „✓"; kennt das Board die Id nicht mehr, gewinnt der 
 ## Claude-Assets auf Kanban-Ebene (HERMES-034)
 
 Kanban **besitzt** die 9 Workflow-Commands (create/get/start/solve/review/update-task,
-create/destroy-worktree, review-merge), 2 Skills (impact-/quality-analysis) und 5 Rules (db-access,
-git-commits, serena-first, task, translations) kanonisch — konsolidiert aus bfezvm/even/zba (die
-Drift dort waren verpasste Backports). Das Set ist **referenz-geschlossen**: jeder Command/Skill,
-den ein kanonisches Asset aufruft, ist selbst kanonisch (projektlokal bleiben nur worktree.md/
-testing.md und die Nischen-Commands wie open-task/get-mr/solve-support).
+create/destroy-worktree, review-merge), 2 Skills (impact-/quality-analysis) und 6 Rules (db-access,
+git-commits, serena-first, task, translations, worktree) kanonisch — konsolidiert aus bfezvm/even/zba
+(die Drift dort waren verpasste Backports; worktree.md stellte sich entgegen der ersten Analyse als
+~95 % generische iwf-Referenz heraus). Das Set ist **referenz-geschlossen**: jeder Command/Skill,
+den ein kanonisches Asset aufruft, ist selbst kanonisch — auch die worktree.md-Verweise zeigen auf
+den kanonischen Pfad. Projektlokal bleiben nur testing.md (+ bfezvms mail-testing.md) und die
+Nischen-Commands wie open-task/get-mr/solve-support.
 
 - **Drei Orte**: Auslieferungsstand im App-Bundle (`Sources/Kanban/Resources/ClaudeAssets`, SPM-
   Resource) → editierbarer Bestand `~/Library/Application Support/Kanban/claude/` (Seeding beim

@@ -51,7 +51,7 @@ um maximale Analyse-Tiefe zu gewährleisten.
 - **Opt-out:** Wenn `$ARGUMENTS` das Flag `--no-worktree` enthält, KEIN Worktree anlegen — Feature-Branch wird
   im Haupt-Repo erzeugt (altes Default-Verhalten). Das Flag wird beim Task-File-Lookup ignoriert.
 
-> Vollständige Befehls-/Flag-Referenz zu `iwf worktree`: `.claude/rules/worktree.md` (bzw. `iwf worktree --help`).
+> Vollständige Befehls-/Flag-Referenz zu `iwf worktree`: `~/Library/Application Support/Kanban/claude/rules/worktree.md` (bzw. `iwf worktree --help`).
 
 ---
 
@@ -110,7 +110,7 @@ git -C <WORKTREE_PATH> branch --show-current         # sollte = BRANCH sein
 
 1. Branch-Suffix aus dem Task-File-Namen ableiten (englischer Titel ohne `<PREFIX>-NNNN_` und `.md`; bzw. ohne Suffix).
 2. `iwf worktree create NNNN <suffix>` ausführen (NNNN = nackte Ticket-Nummer, nicht `<PREFIX>-NNNN`).
-   (Flag-/Befehls-Referenz: `.claude/rules/worktree.md` bzw. `iwf worktree --help`.)
+   (Flag-/Befehls-Referenz: `~/Library/Application Support/Kanban/claude/rules/worktree.md` bzw. `iwf worktree --help`.)
 3. Worktree-Block direkt unter die H1 des Task-Files einfügen (Format identisch zu `/create-worktree`).
 4. WORKTREE-ROUTING für den Rest der Session aktivieren.
 

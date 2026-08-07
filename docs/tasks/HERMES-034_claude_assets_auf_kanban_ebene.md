@@ -105,7 +105,7 @@ zba/reactbp bereits `.claude/tasks`.
 ├── claude/commands/   create/get/start/solve/review/update-task · create/destroy-worktree ·
 │                      review-merge   (9 Stück, 0 Projektwerte, referenz-geschlossen)
 ├── claude/skills/     impact-analysis · quality-analysis
-├── claude/rules/      db-access · git-commits · serena-first · task · translations
+├── claude/rules/      db-access · git-commits · serena-first · task · translations · worktree
 └── tasks/<projekt>/   die Task-Files (284 Stück ziehen um)
 
 Symlinks:  ~/.claude/commands/<name>.md   → Kanban   (global, jedes Projekt)
@@ -184,6 +184,11 @@ Assets sind zentral. Der Umzug selbst, **pro Projekt einzeln** (erst eines testw
   Auslieferungsstand zurücksetzen)
 - [x] `repoDir` von `tasksPath` entkoppelt (optionaler Config-Override, abwärtskompatibel)
 - [x] `create-task` als fünfter kanonischer Command nachgezogen
+- [x] `worktree.md` doch zentralisiert (Revision von Entscheidung 1, 2026-08-07): die Rule ist zu
+  ~95 % generische iwf-Referenz, projektspezifisch waren nur Namen (→ Platzhalter) — als **Rule**,
+  nicht als Skill (Referenzdokument, wird von Commands per Pfad gelesen, nicht invoziert). Merge
+  brachte evens `--branch`-Doku und bfezvms `.iwf.yml`-/Serena-Abschnitte zusammen; alle
+  Command-Verweise von relativ auf den kanonischen Pfad umgestellt. Nur `testing.md` bleibt projektlokal
 - [x] **Referenz-Schliessung** (Befund des Users 2026-08-07): kanonische Assets riefen
   create/destroy-worktree, review-merge und update-task auf, die nicht im Set waren → alle vier
   nachkonsolidiert (update-task existierte nur in even); bfezvm-Fachbeispiel im impact-analysis-Skill

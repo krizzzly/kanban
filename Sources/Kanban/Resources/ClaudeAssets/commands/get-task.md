@@ -32,7 +32,7 @@ $ARGUMENTS
 - **Worktree-Opt-out:** Wenn `$ARGUMENTS` das Flag `--no-worktree` enthält, Worktree-Erstellung überspringen.
 - Die Flags `--no-worktree`/`--stack` werden NICHT an das MCP-Tool weitergegeben — nur die Ticket-Nummer.
 
-> Vollständige Befehls-/Flag-Referenz zu `iwf worktree`: `.claude/rules/worktree.md`.
+> Vollständige Befehls-/Flag-Referenz zu `iwf worktree`: `~/Library/Application Support/Kanban/claude/rules/worktree.md`.
 
 ## Anweisungen
 

@@ -70,7 +70,7 @@ maximale Analyse-Tiefe zu gewährleisten.
 - **Opt-out:** Wenn `$ARGUMENTS` das Flag `--no-worktree` enthält, KEIN Worktree anlegen — Analyse läuft im
   Haupt-Repo (altes Default-Verhalten). Das Flag wird beim Task-File-Lookup ignoriert.
 
-> Vollständige Befehls-/Flag-Referenz zu `iwf worktree`: `.claude/rules/worktree.md`.
+> Vollständige Befehls-/Flag-Referenz zu `iwf worktree`: `~/Library/Application Support/Kanban/claude/rules/worktree.md`.
 
 ---
 
@@ -107,7 +107,7 @@ Task-File, CLAUDE.md, `.claude/`, Docs werden weiterhin aus dem Haupt-Repo geles
    (= Phase 1, Schritt 2 vorgezogen). Der Worktree-Branch wird aus diesem Namen abgeleitet, **niemals ohne Suffix**.
 1. Branch-Suffix = der `<english_title>`-Teil des (normalisierten) Dateinamens (immer gesetzt).
 2. `iwf worktree create NNNN <english_title>` ausführen (NNNN = nackte Ticket-Nummer, nicht `<PREFIX>-NNNN`).
-   (Befehls-/Flag-Referenz: `.claude/rules/worktree.md`.)
+   (Befehls-/Flag-Referenz: `~/Library/Application Support/Kanban/claude/rules/worktree.md`.)
 3. Nach erfolgreichem Lauf den Worktree-Block direkt unter die H1 des Task-Files einfügen
    (Format identisch zu `/create-worktree`).
 4. WORKTREE-ROUTING für den Rest der Session aktivieren.
