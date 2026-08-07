@@ -72,9 +72,12 @@ public enum HermesConfigLoader {
         var projects: [ProjectConfig] = []
         for (key, p) in (jira.projects ?? [:]) {
             guard let prefix = p.prefix, let tasksPath = p.tasksPath else { continue }
-            let tasksAbsolute = (basePathExpanded as NSString).appendingPathComponent(tasksPath)
+            let tasksAbsolute = resolve(tasksPath, against: basePathExpanded)
+            // Eigener `repoDir` je Projekt (HERMES-034): entkoppelt das Repo vom Tasks-Pfad, damit
+            // die Task-Files umziehen können. Ohne Override gilt die bisherige Ableitung.
             let firstSegment = tasksPath.split(separator: "/").first.map(String.init) ?? key
-            let repoDir = (basePathExpanded as NSString).appendingPathComponent(firstSegment)
+            let repoDir = p.repoDir.map { resolve($0, against: basePathExpanded) }
+                ?? (basePathExpanded as NSString).appendingPathComponent(firstSegment)
             projects.append(ProjectConfig(
                 key: key,
                 prefix: prefix,
@@ -101,6 +104,13 @@ public enum HermesConfigLoader {
     private static func expand(_ path: String) -> String {
         (path as NSString).expandingTildeInPath
     }
+
+    /// Absolut oder `~…` bleibt, alles andere ist relativ zum Basis-Pfad.
+    private static func resolve(_ path: String, against basePath: String) -> String {
+        let expanded = expand(path)
+        return expanded.hasPrefix("/") ? expanded
+            : (basePath as NSString).appendingPathComponent(expanded)
+    }
 }
 
 // MARK: - Raw decoding shapes
@@ -126,6 +136,7 @@ private struct RawJiraProject: Decodable {
     let prefix: String?
     let tasksPath: String?
     let baseUrl: String?
+    let repoDir: String?   // optionaler Override — sonst erstes Segment von tasksPath
 }
 
 private struct RawGitlab: Decodable {

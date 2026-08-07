@@ -27,6 +27,7 @@ struct SettingsSheet: View {
 
     private static let rawSectionID = "raw"
     private static let notificationsSectionID = "notifications"
+    private static let claudeWorkflowSectionID = "claude-workflow"
 
     private var sidebar: some View {
         List(selection: $selection) {
@@ -35,6 +36,7 @@ struct SettingsSheet: View {
             }
             Divider()
             Label("Benachrichtigungen", systemImage: "bell.badge").tag(Self.notificationsSectionID)
+            Label("Claude-Workflow", systemImage: "wand.and.stars").tag(Self.claudeWorkflowSectionID)
             Label("Roh-JSON", systemImage: "curlybraces").tag(Self.rawSectionID)
         }
         .listStyle(.sidebar)
@@ -56,6 +58,8 @@ struct SettingsSheet: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if selection == Self.notificationsSectionID {
             NotificationsSettingsView()
+        } else if selection == Self.claudeWorkflowSectionID {
+            ClaudeWorkflowSettingsView()
         } else if selection == Self.rawSectionID {
             RawJSONEditor(settings: settings)
         } else if let section = HermesConfigSchema.sections.first(where: { $0.id == selection }) {

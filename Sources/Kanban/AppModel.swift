@@ -235,6 +235,9 @@ final class AppModel {
         columns = []
         claudeCommands = ClaudeCommandScanner.scan(repoDir: project.repoDir,
                                                    only: Self.ticketCommandNames)
+        // Projektwerte für die kanonischen (projektunabhängigen) Commands/Skills bereitstellen.
+        // Still: ein fehlendes Repo darf den Projektwechsel nicht stören.
+        try? ClaudeProjectFile.write(for: project)
         clearDetail()
         Task { await loadSprints() }
     }

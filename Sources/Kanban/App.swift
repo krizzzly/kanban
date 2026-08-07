@@ -21,6 +21,7 @@ struct KanbanApp: App {
         if CommandLine.arguments.contains("--selftest") {
             SelfTest.runAndExit()
         }
+        ClaudeAssetFactory.seedAtLaunch()
     }
 
     var body: some Scene {

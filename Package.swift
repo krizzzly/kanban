@@ -22,6 +22,7 @@ let package = Package(
                 .product(name: "SwiftTerm", package: "SwiftTerm"),
             ],
             path: "Sources/Kanban",
+            resources: [.copy("Resources/ClaudeAssets")],
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),
         .target(

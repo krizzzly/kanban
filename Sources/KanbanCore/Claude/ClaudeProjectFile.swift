@@ -1,0 +1,56 @@
+import Foundation
+
+/// Generiert `<repo>/.claude/project.json` — die Übersetzung der Hermes-Config in die Projektwerte,
+/// die die kanonischen (projektunabhängigen) Commands/Rules/Skills zur Laufzeit nachschlagen.
+///
+/// Die Datei ist bewusst **generiert, nicht gepflegt**: Quelle der Wahrheit bleibt
+/// `~/.hermes/config.json`; Kanban schreibt sie beim Projektwechsel neu. `.claude/` ist in den
+/// Projekt-Repos gitignored, der Write betrifft also keine Kollegen.
+public enum ClaudeProjectFile {
+    public struct Values: Codable, Equatable, Sendable {
+        public let prefix: String            // Jira-Präfix, z.B. "EVEN"
+        public let tasksPath: String         // absoluter Task-File-Ordner
+        public let repoDir: String           // absolutes Haupt-Repo
+        public let worktreePrefix: String    // Ordner der Worktrees: <repoDir>-worktree (iwf-Konvention)
+        public let stackDomain: String       // TLD des lokalen Stacks; URL = https://<worktree-name>.<stackDomain>
+        public let gitlabProjectPath: String?
+        /// Hinweis an menschliche Leser — Kanban überschreibt die Datei beim Projektwechsel.
+        public let generatedBy: String
+    }
+
+    public static let fileName = ".claude/project.json"
+
+    public static func values(for project: ProjectConfig) -> Values {
+        Values(prefix: project.prefix,
+               tasksPath: project.tasksPathAbsolute,
+               repoDir: project.repoDir,
+               worktreePrefix: project.repoDir + "-worktree",
+               stackDomain: "test",
+               gitlabProjectPath: project.gitlabProjectPath,
+               generatedBy: "Kanban — generiert aus ~/.hermes/config.json, nicht von Hand editieren")
+    }
+
+    /// Schreibt die Datei nur bei inhaltlicher Änderung (kein mtime-Rauschen für File-Watcher).
+    /// Liefert true, wenn geschrieben wurde.
+    @discardableResult
+    public static func write(for project: ProjectConfig) throws -> Bool {
+        let url = URL(fileURLWithPath: project.repoDir).appendingPathComponent(fileName)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        var data = try encoder.encode(values(for: project))
+        data.append(UInt8(ascii: "\n"))
+
+        if let existing = try? Data(contentsOf: url), existing == data { return false }
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(),
+                                                withIntermediateDirectories: true)
+        try data.write(to: url, options: .atomic)
+        return true
+    }
+
+    /// Liest die aktuell generierten Werte (nil, wenn keine Datei existiert oder sie fremd ist).
+    public static func read(repoDir: String) -> Values? {
+        let url = URL(fileURLWithPath: repoDir).appendingPathComponent(fileName)
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        return try? JSONDecoder().decode(Values.self, from: data)
+    }
+}

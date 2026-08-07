@@ -7,6 +7,9 @@ disable-model-invocation: true
 
 # IMPACT-ANALYSE — Standalone
 
+> ⚙️ **Projektwerte** (`prefix`, `tasksPath`, `repoDir`, `worktreePrefix`, `stackDomain`, `gitlabProjectPath`):
+> stehen in `.claude/project.json` im Repo-Root. Platzhalter wie `<PREFIX>`/`<tasksPath>` stehen für diese Werte.
+
 Führe eine Test-Impact-Analyse für einen beliebigen Task durch — unabhängig davon,
 ob der Task offen, in Bearbeitung oder bereits abgeschlossen ist.
 
@@ -15,9 +18,9 @@ ob der Task offen, in Bearbeitung oder bereits abgeschlossen ist.
 $ARGUMENTS
 
 **Akzeptierte Formate:**
-- Task-File: `docs/tasks/BFEZVM-1234_feature.md`
-- Ticket-Nummer: `BFEZVM-1234`
-- Branch-Name: `feature/BFEZVM-1234_feature`
+- Task-File: `<tasksPath>/<PREFIX>-1234_feature.md`
+- Ticket-Nummer: `<PREFIX>-1234`
+- Branch-Name: `feature/<PREFIX>-1234_feature`
 - MR-Nummer: `!969` oder `969`
 - Kein Argument: Aktueller Branch wird verwendet
 
@@ -35,7 +38,7 @@ $ARGUMENTS
 
 2. **Task-File suchen:**
    ```bash
-   ls docs/tasks/BFEZVM-<NUMMER>*.md
+   ls <tasksPath>/<PREFIX>-<NUMMER>*.md
    ```
 
 3. **Branch ermitteln:**
@@ -165,7 +168,7 @@ Führe dann alle 6 Schritte der Anleitung aus:
 ## Wichtigste Risiken
 [Top 3 Findings kurz aufgelistet]
 
-📄 Dokumentiert in: docs/tasks/<TICKET>_<name>.md → ## Impact-Analyse
+📄 Dokumentiert in: <tasksPath>/<TICKET>_<name>.md → ## Impact-Analyse
 ```
 
 ---

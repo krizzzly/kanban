@@ -136,12 +136,37 @@ wieder her, solange er auf dem Board liegt — auch einen geschlossenen, denn di
 der Picker markiert ihn „✓"; kennt das Board die Id nicht mehr, gewinnt der aktive Sprint.
 `Kanban --select <TICKET>` sticht die Erinnerung.
 
+## Claude-Assets auf Kanban-Ebene (HERMES-034)
+
+Kanban **besitzt** die 4 Workflow-Commands (get/start/solve/review-task), 2 Skills (impact-/
+quality-analysis) und 5 Rules (db-access, git-commits, serena-first, task, translations) kanonisch —
+konsolidiert aus bfezvm/even/zba (die Drift dort waren verpasste Backports).
+
+- **Drei Orte**: Auslieferungsstand im App-Bundle (`Sources/Kanban/Resources/ClaudeAssets`, SPM-
+  Resource) → editierbarer Bestand `~/Library/Application Support/Kanban/claude/` (Seeding beim
+  App-Start: Fehlendes kopieren, Editiertes nie anfassen) → **Symlinks** nach `~/.claude/{commands,
+  skills}` (gelten in jedem Projekt). Rules werden **nicht** verlinkt (kein nativer Mechanismus).
+- **Präzedenz empirisch verifiziert** (CC 2.1.222, 2026-08-07): bei Namensgleichheit sticht die
+  **User-Ebene** die Projektkopie — Gegenteil der verbreiteten Doku-Annahme. `ClaudeCommandScanner`
+  liest beide Ebenen, überdeckte Projektkopien stehen in `shadowedProjectURL`.
+- **Keine Projektwerte in den Assets**: Platzhalter `<PREFIX>`/`<tasksPath>`/`<worktreePrefix>`/
+  `<stackDomain>` (nur die TLD; Hosts = `<ordnername>.<stackDomain>`) verweisen auf
+  `<repo>/.claude/project.json`, das `ClaudeProjectFile` beim Projektwechsel aus der Hermes-Config
+  generiert (schreibt nur bei inhaltlicher Änderung; `.claude/` ist überall gitignored).
+- **Editor**: Einstellungen → „Claude-Workflow" — CodeEditorView über den Bestand, Symlink-Status/
+  -Verwaltung je Asset, „Auf Auslieferungsstand zurücksetzen" (aus dem Bundle).
+- `repoDir` ist von `tasksPath` **entkoppelt** (`modules.jira.projects.<key>.repoDir`, optional;
+  absolut/`~`/relativ zum Basis-Pfad) — ohne Override gilt weiter das erste `tasksPath`-Segment.
+  Der Task-File-Umzug selbst (Schritt 5) steht noch aus; Plan im Task-File.
+
 ## Architecture
 
 ```
 Sources/
 ├── KanbanCore/            pure logic, no UI (testable)
-│   ├── Config/            HermesConfig — decode ~/.hermes/config.json
+│   ├── Claude/            ClaudeAssets (kanonischer Bestand + Seeding + Symlinks) +
+│   │                      ClaudeProjectFile (generiert <repo>/.claude/project.json)
+│   ├── Config/            HermesConfig — decode ~/.hermes/config.json (repoDir-Override je Projekt)
 │   ├── Domain/            Ticket, KanbanColumn, TaskSection, Worktree, MergeRequestRef, CardBadge,
 │   │                      EpicRef + EpicColors (Jira-Palette) + EpicResolution (Sub-Task erbt Epic)
 │   ├── Jira/              JiraClient (Agile REST) + models + SprintSelection (Reihenfolge/Restore)
@@ -177,7 +202,9 @@ Sources/
   Auth = `Authorization: Basic base64(email:apiToken)`.
 - `modules.gitlab.{baseUrl,apiToken}` + `modules.gitlab.projects.<key>.{path}`.
   **Same key** as the Jira project → mapping. Auth = `PRIVATE-TOKEN` header. API base `${baseUrl}/api/v4`.
-- Local repo dir for worktree scan = `basePath/<first segment of tasksPath>` (e.g. `even/docs/tasks` → `~/code/even`).
+- Local repo dir for worktree scan = `basePath/<first segment of tasksPath>` (e.g. `even/docs/tasks` → `~/code/even`)
+  — **ausser** `modules.jira.projects.<key>.repoDir` ist gesetzt (absolut, `~` oder relativ zum Basis-Pfad).
+  `tasksPath` darf ebenfalls absolut sein (für den Task-File-Umzug nach Application Support).
 
 ## Build / run
 

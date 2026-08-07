@@ -7,6 +7,9 @@ disable-model-invocation: true
 
 # QUALITÄTS-ANALYSE — Lösungsplan oder Feature-Branch
 
+> ⚙️ **Projektwerte** (`prefix`, `tasksPath`, `repoDir`, `worktreePrefix`, `stackDomain`, `gitlabProjectPath`):
+> stehen in `.claude/project.json` im Repo-Root. Platzhalter wie `<PREFIX>`/`<tasksPath>` stehen für diese Werte.
+
 Prüfe die Qualität eines Features gegen relevante Coding Principles, Architekturregeln,
 Qualitätsanforderungen und Design Patterns — **entweder** den *Lösungsplan* vor der Implementierung
 **oder** den *Feature-Branch* nach der Implementierung.
@@ -22,8 +25,8 @@ Ergebnis zu formulieren.
 
 $ARGUMENTS
 
-**Akzeptierte Formate:** Task-File `docs/tasks/BFEZVM-1234_*.md` · Plan-File `docs/plans/*.md` ·
-Ticket-Nummer `BFEZVM-1234` · Branch-Name `feature/BFEZVM-1234_*` · Suchbegriff · kein Argument
+**Akzeptierte Formate:** Task-File `<tasksPath>/<PREFIX>-1234_*.md` · Plan-File `docs/plans/*.md` ·
+Ticket-Nummer `<PREFIX>-1234` · Branch-Name `feature/<PREFIX>-1234_*` · Suchbegriff · kein Argument
 (= aktueller Branch + zugehöriges Task-File).
 
 ## Schritt A: Modus bestimmen (Lösungsplan vs. Feature-Branch)

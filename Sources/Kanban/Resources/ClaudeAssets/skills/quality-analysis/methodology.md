@@ -150,8 +150,8 @@ Ermittle daraus, soweit möglich:
 ### 1.2 Task-/Plan-Datei suchen
 
 ```bash
-# Beispiele
-find docs/tasks docs/plans -maxdepth 2 -type f 2>/dev/null \
+# Beispiele (<tasksPath> aus .claude/project.json)
+find <tasksPath> docs/plans -maxdepth 2 -type f 2>/dev/null \
   | grep -iE "<TICKET-NUMMER>|<FEATURE-SUCHBEGRIFF>"
 ```
 

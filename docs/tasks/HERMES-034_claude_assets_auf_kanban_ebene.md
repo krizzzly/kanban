@@ -143,6 +143,28 @@ Je Projekt generiert Kanban `<repo>/.claude/project.json` aus der Hermes-Config
 - 284 Task-Files migrieren; die Session-Marker darin bleiben gültig (Inhalt, keine Pfade)
 - Hermes' `generate-claude-task` zieht über denselben `tasksPath` mit
 
+## Migrationsplan Schritt 5 (abzustimmen — noch NICHT ausgeführt)
+
+Voraussetzungen sind gebaut: `repoDir`-Override + absoluter `tasksPath` funktionieren (Tests), die
+Assets sind zentral. Der Umzug selbst, **pro Projekt einzeln** (erst eines testweise):
+
+1. **Vorher**: alle offenen Claude-Consoles/Sessions des Projekts beenden (cwd/Kontext zeigen sonst
+   auf alte Pfade); Hermes-Daemon merken (braucht am Ende Neustart für den neuen `tasksPath`).
+2. `permissions.additionalDirectories` in `~/.claude/settings.json` um
+   `~/Library/Application Support/Kanban/tasks/` ergänzen (round-trip wie `ClaudeHookInstaller`) —
+   **vor** dem Umzug, sonst Permission-Prompts.
+3. Task-Files kopieren (erst `rsync`, löschen erst nach Verifikation):
+   `<repo>/docs/tasks/` → `~/Library/Application Support/Kanban/tasks/<key>/`
+   (inkl. `<TICKET>/`-Unterordner mit `comments.json` — relative Links bleiben gültig).
+4. Hermes-Config je Projekt: `tasksPath` absolut auf den neuen Ordner, **gleichzeitig**
+   `repoDir: "<key>"` setzen (sonst verliert die App das Repo — der alte Ableitungsweg greift nicht mehr).
+5. Kanban: Config neu laden, prüfen: Offen-Spalte (hängt an Task-File-Existenz), Task-Tabs,
+   ⏱-Zeiten (Session-Ids stehen im Inhalt, keine Pfade — bleiben gültig), Commit-Button.
+   Hermes: `generate-claude-task` erzeugt neue Files am neuen Ort (selber Config-Key).
+6. Erst wenn alles grün: alte `docs/tasks/` leeren/löschen. **Kein** Symlink zurücklassen —
+   zwei Wahrheiten wären schlimmer als ein sauberer Schnitt.
+7. **Rollback** = Dateien zurückkopieren + die zwei Config-Werte zurückdrehen.
+
 ## Risiken
 
 - **Schritt 5** kann laufende Abläufe brechen (Hermes-MCP, Worktrees, offene Sessions) — zuletzt und
@@ -152,7 +174,12 @@ Je Projekt generiert Kanban `<repo>/.claude/project.json` aus der Hermes-Config
 
 ## Nächste Schritte
 - [x] Präzedenz Projekt-/User-Command empirisch prüfen → **User sticht Projekt** (CC 2.1.222)
-- [ ] Schritt 1 bauen (Asset-Layer + Scanner-Union)
-- [ ] Platzhalter-Stil an einem Command abstimmen, dann die übrigen drei
-- [ ] Editor in den Einstellungen
-- [ ] Task-Umzug planen und einzeln durchführen
+- [x] Schritt 1 bauen (Asset-Layer + Scanner-Union) — `ClaudeAssetStore` + erweiterter
+  `ClaudeCommandScanner` (beide Ebenen, `shadowedProjectURL`)
+- [x] Platzhalter-Stil: ⚙️-Block + `<PREFIX>`/`<tasksPath>`/`<worktreePrefix>`/`<stackDomain>`-Verweise
+  auf `.claude/project.json`; alle 4 Commands + 5 Rules + 2 Skills konsolidiert (0 Projektwerte, grep-geprüft)
+- [x] `project.json`-Generierung beim Projektwechsel (`ClaudeProjectFile`, schreibt nur bei Änderung)
+- [x] Editor in den Einstellungen („Claude-Workflow": Bestand editieren, Symlinks verwalten,
+  Auslieferungsstand zurücksetzen)
+- [x] `repoDir` von `tasksPath` entkoppelt (optionaler Config-Override, abwärtskompatibel)
+- [ ] Task-Umzug (Schritt 5) — Plan oben, mit User abstimmen und **pro Projekt einzeln** ausführen

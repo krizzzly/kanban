@@ -206,6 +206,11 @@ public enum HermesConfigSchema {
                 ProjectFieldSpec("prefix", "Ticket-Präfix", required: true, placeholder: "EVEN"),
                 ProjectFieldSpec("tasksPath", "Tasks-Pfad", required: true,
                                  placeholder: "even/docs/tasks", help: "Relativ zum Basis-Pfad."),
+                ProjectFieldSpec("repoDir", "Repo-Ordner (Override)", required: false,
+                                 placeholder: "even",
+                                 help: "Lokales Git-Repo; absolut, ~ oder relativ zum Basis-Pfad. "
+                                     + "Leer = erstes Segment des Tasks-Pfads (bisheriges Verhalten). "
+                                     + "Nötig, sobald die Task-Files ausserhalb des Repos liegen."),
                 ProjectFieldSpec("baseUrl", "Base-URL (Override)", required: false,
                                  placeholder: "https://andere-instanz.atlassian.net"),
             ]))

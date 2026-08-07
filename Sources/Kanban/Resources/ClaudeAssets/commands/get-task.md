@@ -14,7 +14,9 @@ hochgefahren).
 
 Platzhalter in spitzen Klammern (`<PREFIX>`, `<tasksPath>`, `<worktreePrefix>`, `<stackDomain>`) stehen im
 Folgenden für die entsprechenden Werte aus `.claude/project.json` — im Task-File landen immer die
-**aufgelösten** Werte, keine Platzhalter.
+**aufgelösten** Werte, keine Platzhalter. `<stackDomain>` ist nur die TLD (z.B. `test`): der Haupt-Stack
+läuft auf `https://<repo-ordnername>.<stackDomain>`, ein Worktree-Stack auf
+`https://<worktree-ordnername>.<stackDomain>` (Ordnername = letzter Pfadbestandteil).
 
 ## Ticket-Nummer
 
@@ -129,7 +131,7 @@ Falls ja, lies für jeden verwandten Task das entsprechende Task-File ein (falls
    ```markdown
    > 🌳 **WORKTREE**: `<worktreePrefix>/<PREFIX>-NNNN`\
    > 🌿 **BRANCH**: `feature/<PREFIX>-NNNN_<english_title>`\
-   > 🐳 **STACK**: `https://<stackDomain>`\
+   > 🐳 **STACK**: `https://<worktree-ordnername>.<stackDomain>`\
    > 📅 **Angelegt**: <YYYY-MM-DD>
    >
    > 🧭 **Routing-Modell für Claude:** cwd bleibt Haupt-Repo. Code-Edits gehen mit absolutem Worktree-Pfad
@@ -171,13 +173,13 @@ Nach dem Laden des Tickets, gib folgende Informationen aus:
 
 👉 Zur Analyse & Planung: `/start-task <tasksPath>/<TICKET-NUMMER>_<english_title>.md`
 [falls Stack hochgezogen (--stack):]
-🌐 URL: https://<stackDomain>
+🌐 URL: https://<worktree-ordnername>.<stackDomain>
 [sonst:]
 🐳 Stack bei Bedarf starten: `iwf worktree start <NUMMER>`
 ```
 
 **Wichtig:** Nur wenn der Stack tatsächlich hochgezogen wurde (`--stack` → `iwf worktree create … --start`
-durchgelaufen), als **letzte Zeile** der Ausgabe die fertige URL `https://<stackDomain>` anzeigen. Falls
+durchgelaufen), als **letzte Zeile** der Ausgabe die fertige URL `https://<worktree-ordnername>.<stackDomain>` anzeigen. Falls
 Teile des Stack-Setups fehlschlugen (z.B. DB-Seed ohne VPN), das kurz vermerken, aber die URL trotzdem zeigen
 — der Stack ist auch ohne Dev-DB erreichbar. **Ohne `--stack`** stattdessen den `iwf worktree start`-Hinweis
 zeigen (keine URL, da kein Stack läuft).
