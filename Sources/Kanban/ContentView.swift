@@ -19,11 +19,14 @@ struct ContentView: View {
             }
         }
         .task { model.bootstrap() }
-        // Eigenes Fenster statt Sheet (wie der Commit-Dialog): frei zentrier- und vergrösserbar,
-        // nicht an die Grösse des Board-Fensters gebunden — der Claude-Workflow-Editor braucht Platz.
-        .onChange(of: model.settingsPresented) { _, presented in
-            if presented { SettingsWindow.shared.show(model: model) }
-            else { SettingsWindow.shared.close(model: model) }
+        .sheet(isPresented: $model.settingsPresented) {
+            SettingsSheet { model.reloadConfig() }
+        }
+        // Eigenes Fenster statt Sheet (wie der Commit-Dialog): der Markdown-Editor über
+        // Commands/Skills/Rules braucht Fläche, die ein Sheet am Board-Fenster nicht hergibt.
+        .onChange(of: model.claudeWorkflowPresented) { _, presented in
+            if presented { ClaudeWorkflowWindow.shared.show(model: model) }
+            else { ClaudeWorkflowWindow.shared.close(model: model) }
         }
         .sheet(isPresented: $model.bookingSheetPresented) {
             BookingSheet(model: model)

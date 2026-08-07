@@ -153,8 +153,9 @@ konsolidiert aus bfezvm/even/zba (die Drift dort waren verpasste Backports).
   `<stackDomain>` (nur die TLD; Hosts = `<ordnername>.<stackDomain>`) verweisen auf
   `<repo>/.claude/project.json`, das `ClaudeProjectFile` beim Projektwechsel aus der Hermes-Config
   generiert (schreibt nur bei inhaltlicher Änderung; `.claude/` ist überall gitignored).
-- **Editor**: Einstellungen → „Claude-Workflow" — CodeEditorView über den Bestand, Symlink-Status/
-  -Verwaltung je Asset, „Auf Auslieferungsstand zurücksetzen" (aus dem Bundle).
+- **Editor**: eigener ✨-Toolbar-Button → `ClaudeWorkflowWindow` (eigenständiges Fenster in
+  Commit-Dialog-Grösse; die Hermes-Einstellungen bleiben ein Sheet) — CodeEditorView über den
+  Bestand, Symlink-Status/-Verwaltung je Asset, „Auf Auslieferungsstand zurücksetzen" (aus dem Bundle).
 - `repoDir` ist von `tasksPath` **entkoppelt** (`modules.jira.projects.<key>.repoDir`, optional;
   absolut/`~`/relativ zum Basis-Pfad) — ohne Override gilt weiter das erste `tasksPath`-Segment.
   Der Task-File-Umzug selbst (Schritt 5) steht noch aus; Plan im Task-File.

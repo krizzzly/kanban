@@ -14,6 +14,7 @@ struct TopBarToolbar: ToolbarContent {
         ToolbarItem(placement: .navigation) { sprintTimeView }
         ToolbarItem(placement: .primaryAction) { bookButton }
         ToolbarItem(placement: .primaryAction) { refreshButton }
+        ToolbarItem(placement: .primaryAction) { claudeWorkflowButton }
         ToolbarItem(placement: .primaryAction) { settingsButton }
     }
 
@@ -118,6 +119,15 @@ struct TopBarToolbar: ToolbarContent {
         }
         .help("Aktualisieren")
         .disabled(model.selectedSprint == nil || model.isRefreshing)
+    }
+
+    private var claudeWorkflowButton: some View {
+        Button {
+            model.claudeWorkflowPresented = true
+        } label: {
+            Image(systemName: "wand.and.stars")
+        }
+        .help("Claude-Workflow: Commands, Skills und Rules bearbeiten + verlinken")
     }
 
     private var settingsButton: some View {

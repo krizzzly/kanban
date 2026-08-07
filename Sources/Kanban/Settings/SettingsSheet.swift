@@ -1,17 +1,16 @@
 import SwiftUI
 import KanbanCore
 
-/// Settings editor for `~/.hermes/config.json`, styled after the macOS System Settings:
+/// Modal settings editor for `~/.hermes/config.json`, styled after the macOS System Settings:
 /// section sidebar on the left, a grouped form on the right, save/restart footer at the bottom.
 /// Round-trip-safe — unknown keys in the config survive (see `ConfigStore`).
-/// Lebt in einem eigenen Fenster (`SettingsWindow`), gleiche Grösse wie der Commit-Dialog.
+/// Der Claude-Workflow-Editor lebt bewusst NICHT hier, sondern im eigenen `ClaudeWorkflowWindow`.
 struct SettingsSheet: View {
+    @Environment(\.dismiss) private var dismiss
     @State private var settings = SettingsModel()
     @State private var selection: String? = HermesConfigSchema.sections.first?.id
     /// Called after a successful save so the app reloads its config.
     let onSaved: () -> Void
-    /// Schliesst das umgebende Fenster.
-    let onClose: () -> Void
 
     var body: some View {
         VStack(spacing: 0) {
@@ -23,13 +22,12 @@ struct SettingsSheet: View {
             Divider()
             footer
         }
-        .frame(minWidth: 1100, minHeight: 700)
+        .frame(width: 860, height: 620)
         .onAppear { settings.load() }
     }
 
     private static let rawSectionID = "raw"
     private static let notificationsSectionID = "notifications"
-    private static let claudeWorkflowSectionID = "claude-workflow"
 
     private var sidebar: some View {
         List(selection: $selection) {
@@ -38,7 +36,6 @@ struct SettingsSheet: View {
             }
             Divider()
             Label("Benachrichtigungen", systemImage: "bell.badge").tag(Self.notificationsSectionID)
-            Label("Claude-Workflow", systemImage: "wand.and.stars").tag(Self.claudeWorkflowSectionID)
             Label("Roh-JSON", systemImage: "curlybraces").tag(Self.rawSectionID)
         }
         .listStyle(.sidebar)
@@ -60,8 +57,6 @@ struct SettingsSheet: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if selection == Self.notificationsSectionID {
             NotificationsSettingsView()
-        } else if selection == Self.claudeWorkflowSectionID {
-            ClaudeWorkflowSettingsView()
         } else if selection == Self.rawSectionID {
             RawJSONEditor(settings: settings)
         } else if let section = HermesConfigSchema.sections.first(where: { $0.id == selection }) {
@@ -105,7 +100,7 @@ struct SettingsSheet: View {
                         .font(.caption).foregroundStyle(.orange)
                 }
                 Spacer()
-                Button("Schließen") { onClose() }
+                Button("Schließen") { dismiss() }
                     .keyboardShortcut(.cancelAction)
                 Button("Speichern") {
                     if settings.save() { onSaved() }

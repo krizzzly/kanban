@@ -82,6 +82,8 @@ final class AppModel {
 
     // Settings sheet (gear button); writable — bound to the sheet presentation.
     var settingsPresented = false
+    /// Eigenes Fenster (kein Sheet) mit dem Editor über Commands/Skills/Rules.
+    var claudeWorkflowPresented = false
 
     // Attention: which tickets' Claude consoles are waiting for an answer (hook markers + pane
     // fallback). Which sections hold open questions is derived on demand (see questionSectionIDs).
@@ -237,7 +239,7 @@ final class AppModel {
                                                    only: Self.ticketCommandNames)
         // Projektwerte für die kanonischen (projektunabhängigen) Commands/Skills bereitstellen.
         // Still: ein fehlendes Repo darf den Projektwechsel nicht stören.
-        try? ClaudeProjectFile.write(for: project)
+        _ = try? ClaudeProjectFile.write(for: project)
         clearDetail()
         Task { await loadSprints() }
     }

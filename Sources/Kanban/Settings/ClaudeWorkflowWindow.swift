@@ -1,12 +1,12 @@
 import AppKit
 import SwiftUI
 
-/// Präsentiert die Einstellungen als eigenständiges, zentriertes Fenster — aus demselben Grund wie
-/// `CommitWindow`: ein Sheet hängt am Board-Fenster, kann nicht grösser werden als dieses und
-/// erscheint dort, wo das Board gerade steht. Der Claude-Workflow-Editor braucht die volle Fläche.
+/// Präsentiert den Claude-Workflow-Editor (Commands/Skills/Rules) als eigenständiges, zentriertes
+/// Fenster in Commit-Dialog-Grösse — der Markdown-Editor braucht Fläche, die ein Sheet am
+/// Board-Fenster nicht hergibt. Die übrigen Einstellungen bleiben bewusst ein Sheet.
 @MainActor
-final class SettingsWindow {
-    static let shared = SettingsWindow()
+final class ClaudeWorkflowWindow {
+    static let shared = ClaudeWorkflowWindow()
 
     private var window: NSWindow?
 
@@ -18,13 +18,13 @@ final class SettingsWindow {
             NSApp.activate(ignoringOtherApps: true)
             return
         }
-        let content = SettingsSheet(onSaved: { model.reloadConfig() },
-                                    onClose: { [weak self] in self?.close(model: model) })
+        let content = ClaudeWorkflowSettingsView()
+            .frame(minWidth: 1100, minHeight: 700)
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1920, height: 1060),
             styleMask: [.titled, .closable, .resizable, .fullSizeContentView],
             backing: .buffered, defer: false)
-        window.title = "Einstellungen"
+        window.title = "Claude-Workflow"
         window.titlebarAppearsTransparent = true
         window.isReleasedWhenClosed = false
         window.contentView = NSHostingView(rootView: content)
@@ -38,7 +38,7 @@ final class SettingsWindow {
                                                object: window, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated {
                 self?.window = nil
-                model.settingsPresented = false
+                model.claudeWorkflowPresented = false
             }
         }
         self.window = window
@@ -47,6 +47,6 @@ final class SettingsWindow {
     func close(model: AppModel) {
         window?.close()
         window = nil
-        model.settingsPresented = false
+        model.claudeWorkflowPresented = false
     }
 }
