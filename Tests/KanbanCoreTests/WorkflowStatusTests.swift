@@ -2,10 +2,11 @@ import XCTest
 @testable import KanbanCore
 
 final class WorkflowStatusTests: XCTestCase {
-    private func mr(_ iid: Int, _ state: String, branch: String, title: String = "") -> MergeRequestRef {
+    private func mr(_ iid: Int, _ state: String, branch: String, title: String = "",
+                    draft: Bool = false) -> MergeRequestRef {
         MergeRequestRef(iid: iid, title: title, state: state, sourceBranch: branch,
                         targetBranch: "main", mergedAt: state == "merged" ? "2026-06-01" : nil,
-                        webUrl: "https://git/\(iid)")
+                        webUrl: "https://git/\(iid)", draft: draft)
     }
     private let worktree = Worktree(path: "/code/even", branch: "feature/EVEN-1_thing")
 
@@ -14,7 +15,7 @@ final class WorkflowStatusTests: XCTestCase {
             ticketKey: "EVEN-1", hasTaskFile: true, statusMarker: .inArbeit,
             worktree: worktree, mergeRequests: [mr(42, "merged", branch: "feature/EVEN-1_thing")])
         XCTAssertEqual(r.column, .done)
-        XCTAssertTrue(r.badges.contains(.mergeRequest(42)))
+        XCTAssertTrue(r.badges.contains(.mergeRequest(iid: 42, draft: false)))
         XCTAssertTrue(r.badges.contains(.file))
         XCTAssertTrue(r.badges.contains(.worktree))
     }
@@ -24,6 +25,43 @@ final class WorkflowStatusTests: XCTestCase {
             ticketKey: "EVEN-1", hasTaskFile: true, statusMarker: .inArbeit,
             worktree: nil, mergeRequests: [mr(7, "opened", branch: "feature/EVEN-1_x")])
         XCTAssertEqual(r.column, .review)
+    }
+
+    // MARK: - Draft MRs
+
+    func testDraftMRDoesNotMoveCardToReview() {
+        // A draft opened MR must not count as Review; the ticket stays where its work stage puts it.
+        let r = WorkflowStatus.resolve(
+            ticketKey: "EVEN-1", hasTaskFile: true, statusMarker: .inArbeit,
+            worktree: nil, mergeRequests: [mr(7, "opened", branch: "feature/EVEN-1_x", draft: true)])
+        XCTAssertEqual(r.column, .inBearbeitung)
+        // The MR is still shown, but as a draft badge (🚧) explaining why it's not in Review.
+        XCTAssertTrue(r.badges.contains(.mergeRequest(iid: 7, draft: true)))
+    }
+
+    func testDraftMRWithoutMarkerFallsToOffenNotReview() {
+        let r = WorkflowStatus.resolve(
+            ticketKey: "EVEN-1", hasTaskFile: true, statusMarker: nil,
+            worktree: nil, mergeRequests: [mr(7, "opened", branch: "feature/EVEN-1_x", draft: true)])
+        XCTAssertEqual(r.column, .offen)
+    }
+
+    func testANonDraftOpenedMRAlongsideADraftStillReviews() {
+        let r = WorkflowStatus.resolve(
+            ticketKey: "EVEN-1", hasTaskFile: true, statusMarker: nil, worktree: nil,
+            mergeRequests: [mr(7, "opened", branch: "feature/EVEN-1_x", draft: true),
+                            mr(8, "opened", branch: "feature/EVEN-1_x")])
+        XCTAssertEqual(r.column, .review)
+    }
+
+    func testDraftDoesNotAutoSetReviewMarker() {
+        XCTAssertFalse(WorkflowStatus.shouldAutoSetReview(
+            ticketKey: "EVEN-1", hasTaskFile: true, currentMarker: .inArbeit,
+            mergeRequests: [mr(7, "opened", branch: "feature/EVEN-1_x", draft: true)]))
+        // A non-draft opened MR still does.
+        XCTAssertTrue(WorkflowStatus.shouldAutoSetReview(
+            ticketKey: "EVEN-1", hasTaskFile: true, currentMarker: .inArbeit,
+            mergeRequests: [mr(8, "opened", branch: "feature/EVEN-1_x")]))
     }
 
     // MARK: - Auto-set Review marker
@@ -131,7 +169,7 @@ final class WorkflowStatusTests: XCTestCase {
             mergeRequests: [mr(7, "opened", branch: "feature/EVEN-1_x"),
                             mr(9, "merged", branch: "feature/EVEN-1_y")])
         XCTAssertEqual(r.column, .done)
-        XCTAssertTrue(r.badges.contains(.mergeRequest(9)))  // merged preferred for badge
+        XCTAssertTrue(r.badges.contains(.mergeRequest(iid: 9, draft: false)))  // merged preferred for badge
     }
 
     func testWorktreeIsInBearbeitung() {
@@ -239,7 +277,7 @@ final class WorkflowStatusTests: XCTestCase {
             mergeRequests: [mr(11, "merged", branch: "feature/EVEN-10_other"),
                             mr(13, "opened", branch: "feature/EVEN-1_real")])
         XCTAssertEqual(r.column, .review)
-        XCTAssertTrue(r.badges.contains(.mergeRequest(13)))
+        XCTAssertTrue(r.badges.contains(.mergeRequest(iid: 13, draft: false)))
     }
 
     func testTitleMatchAlsoCounts() {

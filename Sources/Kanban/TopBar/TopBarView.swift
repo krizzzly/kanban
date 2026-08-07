@@ -11,6 +11,8 @@ struct TopBarToolbar: ToolbarContent {
         ToolbarItem(placement: .navigation) { projectMenu }
         ToolbarItem(placement: .navigation) { sprintMenu }
         ToolbarItem(placement: .navigation) { statusView }
+        ToolbarItem(placement: .navigation) { sprintTimeView }
+        ToolbarItem(placement: .primaryAction) { bookButton }
         ToolbarItem(placement: .primaryAction) { refreshButton }
         ToolbarItem(placement: .primaryAction) { settingsButton }
     }
@@ -76,6 +78,35 @@ struct TopBarToolbar: ToolbarContent {
             Label("kein GitLab", systemImage: "info.circle")
                 .font(.caption).foregroundStyle(.secondary)
                 .help("Ohne GitLab-Config bleiben Review/Done leer.")
+        }
+    }
+
+    /// Cumulated Claude time over every card of the sprint (⏱ per prompt+answer, summed).
+    @ViewBuilder
+    private var sprintTimeView: some View {
+        let seconds = model.sprintClaudeSeconds
+        if seconds > 0 {
+            // .titleAndIcon: a toolbar Label renders icon-only by default, which would hide the total.
+            Label(TimeFormatting.compact(seconds), systemImage: "clock")
+                .labelStyle(.titleAndIcon)
+                .font(.caption).foregroundStyle(.secondary).monospacedDigit()
+                .help("Kumulierte Claude-Zeit aller Tickets in diesem Sprint")
+        }
+    }
+
+    /// Opens the end-of-day batch-booking sheet. Shows the open (unbooked) total as its label so
+    /// there's a visible reason to click; hidden entirely when nothing is open.
+    @ViewBuilder
+    private var bookButton: some View {
+        let open = model.totalOpenToBookSeconds
+        if open > 0 {
+            Button {
+                model.bookingSheetPresented = true
+            } label: {
+                Label("\(TimeFormatting.compact(open)) buchen", systemImage: "clock.badge.checkmark")
+                    .labelStyle(.titleAndIcon)
+            }
+            .help("Offene Claude-Zeit als Jira-Worklog buchen (auf 15 min aufgerundet)")
         }
     }
 

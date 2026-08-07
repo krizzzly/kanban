@@ -22,6 +22,15 @@ struct ContentView: View {
         .sheet(isPresented: $model.settingsPresented) {
             SettingsSheet { model.reloadConfig() }
         }
+        .sheet(isPresented: $model.bookingSheetPresented) {
+            BookingSheet(model: model)
+        }
+        // Eigenes Fenster statt Sheet: ein Sheet hängt am Board-Fenster und erscheint dort, wo das
+        // gerade steht — der Commit-Dialog soll mittig auf dem Bildschirm aufgehen.
+        .onChange(of: model.commitSheetPresented) { _, presented in
+            if presented { CommitWindow.shared.show(model: model) }
+            else { CommitWindow.shared.close(model: model) }
+        }
     }
 }
 

@@ -26,10 +26,19 @@ public struct Ticket: Identifiable, Sendable, Hashable {
     public var type: String?
     public var priority: String?
     public var storyPoints: Double?
+    /// The epic this ticket belongs to. Filled by Jira for issues under an epic and, for sub-tasks,
+    /// inherited from their story (see `EpicResolution`).
+    public var epic: EpicRef?
+    /// Parent issue key — a sub-task's story, or an issue's epic. Used to inherit the epic.
+    public var parentKey: String?
+    /// True for a Jira sub-task (`issuetype.subtask`). Sub-tasks are not shown as standalone cards on
+    /// the board — the story carries the work. Language-independent, unlike matching the type name.
+    public var isSubtask: Bool
 
     public init(key: String, summary: String, status: String? = nil, statusCategory: String? = nil,
                 assignee: String? = nil, assigneeAvatarUrl: String? = nil,
-                type: String? = nil, priority: String? = nil, storyPoints: Double? = nil) {
+                type: String? = nil, priority: String? = nil, storyPoints: Double? = nil,
+                epic: EpicRef? = nil, parentKey: String? = nil, isSubtask: Bool = false) {
         self.key = key
         self.summary = summary
         self.status = status
@@ -39,6 +48,9 @@ public struct Ticket: Identifiable, Sendable, Hashable {
         self.type = type
         self.priority = priority
         self.storyPoints = storyPoints
+        self.epic = epic
+        self.parentKey = parentKey
+        self.isSubtask = isSubtask
     }
 
     /// True when Jira considers the issue done (category "done" covers "Erledigt" + "Geschlossen").
@@ -56,9 +68,12 @@ public struct MergeRequestRef: Sendable, Hashable {
     public let targetBranch: String
     public let mergedAt: String?
     public let webUrl: String
+    /// True for a draft / work-in-progress MR. A draft is still `state == "opened"` in GitLab, but
+    /// it is *not* ready for review, so it must not move a ticket into the Review column.
+    public let draft: Bool
 
     public init(iid: Int, title: String, state: String, sourceBranch: String,
-                targetBranch: String, mergedAt: String?, webUrl: String) {
+                targetBranch: String, mergedAt: String?, webUrl: String, draft: Bool = false) {
         self.iid = iid
         self.title = title
         self.state = state
@@ -66,6 +81,7 @@ public struct MergeRequestRef: Sendable, Hashable {
         self.targetBranch = targetBranch
         self.mergedAt = mergedAt
         self.webUrl = webUrl
+        self.draft = draft
     }
 }
 
@@ -142,13 +158,13 @@ public struct TaskSection: Identifiable, Sendable, Hashable {
 public enum CardBadge: Sendable, Hashable {
     case file
     case worktree
-    case mergeRequest(Int)           // MR iid
+    case mergeRequest(iid: Int, draft: Bool)   // 🔀 opened/merged · 🚧 draft (why it's not in Review)
 
     public var symbol: String {
         switch self {
         case .file: return "📄"
         case .worktree: return "🌳"
-        case .mergeRequest(let iid): return "🔀#\(iid)"
+        case .mergeRequest(let iid, let draft): return "\(draft ? "🚧" : "🔀")#\(iid)"
         }
     }
 }

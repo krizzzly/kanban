@@ -39,14 +39,17 @@ public enum WorkflowStatus {
         }
         let merged = matching.filter { $0.state == "merged" }
         let opened = matching.filter { $0.state == "opened" }
+        // A draft MR is opened but not ready for review, so it must not drive the Review column.
+        let review = opened.filter { !$0.draft }
 
         // Badges are independent of the column — they explain *why* the card sits where it does.
         var badges: [CardBadge] = []
         if hasTaskFile { badges.append(.file) }
         if worktree != nil { badges.append(.worktree) }
-        // Prefer a merged MR for the badge, else the newest opened one (highest iid as proxy).
+        // Prefer a merged MR for the badge, else the newest opened one (highest iid as proxy). A draft
+        // badge (🚧) makes it visible why a card with an MR is still In Bearbeitung, not in Review.
         if let mr = merged.max(by: { $0.iid < $1.iid }) ?? opened.max(by: { $0.iid < $1.iid }) {
-            badges.append(.mergeRequest(mr.iid))
+            badges.append(.mergeRequest(iid: mr.iid, draft: mr.state == "opened" && mr.draft))
         }
 
         let column: KanbanColumn
@@ -54,8 +57,8 @@ public enum WorkflowStatus {
             column = .done                   // merged MR, or Jira status = Erledigt/Geschlossen
         } else if statusMarker == .done {
             column = .done                   // ✅ user-set final Done wins over an open MR
-        } else if !opened.isEmpty {
-            column = .review
+        } else if !review.isEmpty {
+            column = .review                 // a non-draft opened MR
         } else if let marker = statusMarker {
             column = marker.column           // 🔴 Offen · 🟡/🟢 In Bearbeitung · 🔵 Review
         } else if worktree != nil {
@@ -108,6 +111,7 @@ public enum WorkflowStatus {
                 || TicketMatching.references($0.title, ticketKey: ticketKey)
         }
         guard !matching.contains(where: { $0.state == "merged" }) else { return false }
-        return matching.contains { $0.state == "opened" }
+        // A draft MR is not review-ready, so it must not auto-advance the marker to 🔵 Review.
+        return matching.contains { $0.state == "opened" && !$0.draft }
     }
 }

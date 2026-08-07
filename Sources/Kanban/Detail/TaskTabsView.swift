@@ -35,7 +35,15 @@ struct TaskTabsView: View {
                 Text(file.url.lastPathComponent)
                     .font(.system(size: 13)).foregroundStyle(.secondary).lineLimit(1)
             }
+            // The epic written out, right after the task file / feature branch.
+            if let epic = model.selectedEpic { EpicPill(epic: epic) }
             Spacer()
+            // Überall wo es etwas zu committen gibt (Task-File oder Worktree) — links neben der Zeit.
+            if model.canCommit { commitButton }
+            if let timing = model.selectedTiming, let key = model.selectedTicketKey {
+                ClaudeTimeChip(model: model, ticketKey: key, timing: timing,
+                               runningSince: model.runningTurnStart(ticketKey: key))
+            }
             if model.canEditStatus { statusMenu }
         }
         .padding(.horizontal, 14).padding(.vertical, 8)
@@ -62,6 +70,19 @@ struct TaskTabsView: View {
         .fixedSize()
         .disabled(model.activeTerminalSession == nil)
         .help("Slash-Command mit dem aktuellen Ticket in die Claude-Console eintragen")
+    }
+
+    /// Opens the commit dialog with the message `solve-task` proposed under `## Lösung`.
+    private var commitButton: some View {
+        Button {
+            model.commitSheetPresented = true
+        } label: {
+            Label("Commit", systemImage: "checkmark.seal")
+                .font(.system(size: 13))
+        }
+        .buttonStyle(.bordered)
+        .fixedSize()
+        .help("Änderungen committen — Message aus dem Task-File, Amend + Force-Push möglich")
     }
 
     /// Sets Claude's task-file `### Status` marker (shown as the coloured dot on the card).

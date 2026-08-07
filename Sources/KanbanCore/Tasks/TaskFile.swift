@@ -101,17 +101,26 @@ public enum TaskFileLoader {
         return ClaudeSession.parseSessionId(content)
     }
 
-    /// Returns the ticket's persisted Claude session id, generating and writing one if absent.
-    /// The id lives in an invisible HTML comment (see `ClaudeSession`); writing it back is a
-    /// one-time event per task file. Returns nil only if the file can't be read.
-    @discardableResult
-    public static func ensureSessionId(url: URL) -> String? {
+    /// The session id stored in this task file, without creating one.
+    public static func sessionId(in url: URL) -> String? {
         guard let content = try? String(contentsOf: url, encoding: .utf8) else { return nil }
-        if let existing = ClaudeSession.parseSessionId(content) { return existing }
-        let id = UUID().uuidString.lowercased()
-        let updated = ClaudeSession.contentInserting(sessionId: id, into: content)
-        try? updated.write(to: url, atomically: true, encoding: .utf8)
-        return id
+        return ClaudeSession.parseSessionId(content)
+    }
+
+    /// Writes `sessionId` into the task file's marker, replacing any previous one. Used to pin the
+    /// ticket's real conversation into the file — see `ClaudeSessionResolution` for why a task file
+    /// may hold an id that no conversation was ever started under.
+    @discardableResult
+    public static func writeSessionId(_ sessionId: String, url: URL) -> Bool {
+        guard let content = try? String(contentsOf: url, encoding: .utf8) else { return false }
+        guard ClaudeSession.parseSessionId(content) != sessionId else { return true }
+        let updated = ClaudeSession.contentInserting(sessionId: sessionId, into: content)
+        do {
+            try updated.write(to: url, atomically: true, encoding: .utf8)
+            return true
+        } catch {
+            return false
+        }
     }
 
     /// Writes the `### Status` marker into the task file, moving the card in the board. Returns false

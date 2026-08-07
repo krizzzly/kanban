@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 import KanbanCore
 
@@ -7,24 +8,43 @@ import KanbanCore
 struct WorktreeStackView: View {
     @Bindable var model: AppModel
     @State private var confirmDestroy = false
+    @State private var showBranchStack = false
+    /// Gewählte Quelle + ob direkt importiert wird, solange die Bestätigung offen ist.
+    @State private var pending: (source: StackSeeder.Source, importNow: Bool)?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
             Divider()
             if model.currentWorktree != nil {
-                commandBar
-                Divider()
-                panes
+                // Ausgabe nach rechts: links bleibt so Platz für Status und Aktionen, ohne dass
+                // beides um dieselbe Höhe konkurriert.
+                HSplitView {
+                    leftColumn.frame(minWidth: 320, idealWidth: 420)
+                    outputBox(title: "COMMAND-AUSGABE", text: model.worktreeCommandOutput,
+                              minHeight: 0, maxHeight: .infinity)
+                        .frame(minWidth: 300)
+                }
             } else {
                 noWorktree
             }
         }
         .background(Color(nsColor: .textBackgroundColor))
-        .task(id: model.selectedTicketKey) {
-            if model.currentWorktree != nil, model.worktreeStatusText.isEmpty {
-                model.refreshWorktreeStatus()
+        // Am Wurzel-View, nicht am Menü: das Menü liegt inzwischen in der Status-Zeile, und ein
+        // Dialog an einer nicht gerenderten View erscheint nie.
+        .confirmationDialog(confirmTitle, isPresented: seedConfirmation, titleVisibility: .visible) {
+            Button(pending?.importNow == true ? "Importieren" : "Bereitstellen", role: .destructive) {
+                if let pending { model.seedDatabase(from: pending.source, importNow: pending.importNow) }
+                pending = nil
             }
+            Button("Abbrechen", role: .cancel) { pending = nil }
+        } message: {
+            Text(confirmMessage)
+        }
+        .task(id: model.selectedTicketKey) {
+            guard model.currentWorktree != nil else { return }
+            await model.refreshStackStatus()          // read-only, deshalb bei jedem Ticketwechsel
+            if model.worktreeStatusText.isEmpty { model.refreshWorktreeStatus() }
         }
     }
 
@@ -50,26 +70,65 @@ struct WorktreeStackView: View {
                     .disabled(model.worktreeBusy || model.currentWorktree == nil)
                     .help("Status aktualisieren (iwf stack ps)")
             }
-            dbDumpLine
+            linkBar
         }
         .padding(.horizontal, 12).padding(.vertical, 7)
     }
 
-    /// The staged DB seed as a freshness hint (file · size · age). The source (dev/qa/main-repo)
-    /// is not recoverable from the file, so only these are shown.
-    @ViewBuilder
-    private var dbDumpLine: some View {
-        HStack(spacing: 6) {
-            Image(systemName: "cylinder.split.1x2").font(.system(size: 10)).foregroundStyle(.secondary)
-            if let d = model.worktreeDbDump {
-                Text("DB-Dump: \(d.fileName) · \(byteText(d.sizeBytes)) · gestaged \(ageText(d.modified))")
-                    .font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
-            } else {
-                Text("kein DB-Dump gestaged")
-                    .font(.system(size: 11)).foregroundStyle(.tertiary)
+    /// Die drei Sprungmarken des Worktrees: Branch → GitLab, Ordner → PhpStorm, URL → Browser.
+    /// Bewusst kräftig statt hellgrau — das sind die Dinge, die man von hier aus ständig öffnet.
+    private var linkBar: some View {
+        HStack(spacing: 8) {
+            if let branch = model.currentWorktree?.branch {
+                linkChip(branch, icon: "arrow.triangle.branch", tint: .purple,
+                         help: "Branch auf GitLab öffnen") {
+                    if let url = model.worktreeBranchURL { StatusLinkOpener.open(url) }
+                }
+                .disabled(model.worktreeBranchURL == nil)
             }
+            if let parent = model.worktreeParentBranch {
+                linkChip("← \(parent.name)", icon: "arrow.triangle.pull", tint: .orange,
+                         help: "Abzweig-Basis (abgeleitet): \(parent.ref) · "
+                               + "\(parent.ahead) Commits voraus, Basis +\(parent.behind) seither · "
+                               + "Klick: Hierarchie aller Feature-Branches") {
+                    showBranchStack = true
+                }
+                .popover(isPresented: $showBranchStack, arrowEdge: .bottom) {
+                    BranchStackPopover(model: model)
+                }
+            }
+            if let path = model.currentWorktree?.path {
+                linkChip((path as NSString).lastPathComponent, icon: "folder", tint: .blue,
+                         help: "In PhpStorm öffnen: \(path)") {
+                    StatusLinkOpener.open(URL(string: StatusLinks.ideURL(forPath: path))!)
+                }
+            }
+            if let url = model.worktreeStackURL {
+                linkChip(url.host ?? url.absoluteString, icon: "safari", tint: .green,
+                         help: "Im Browser öffnen: \(url.absoluteString)") {
+                    StatusLinkOpener.open(url)
+                }
+            }
+            Spacer(minLength: 0)
         }
-        .help("Der gestagete DB-Seed. Die Quelle (dev/qa/Haupt-Repo) lässt sich aus der Datei nicht ablesen — nur Alter/Größe.")
+    }
+
+    private func linkChip(_ title: String, icon: String, tint: Color, help: String,
+                          _ action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 5) {
+                Image(systemName: icon).font(.system(size: 11, weight: .semibold))
+                Text(title)
+                    .font(.system(size: 12, weight: .medium, design: .monospaced))
+                    .lineLimit(1)
+            }
+            .padding(.horizontal, 8).padding(.vertical, 3)
+            .background(tint.opacity(0.15), in: Capsule())
+            .overlay(Capsule().strokeBorder(tint.opacity(0.45), lineWidth: 1))
+            .foregroundStyle(tint)
+        }
+        .buttonStyle(.plain)
+        .help(help)
     }
 
     private func byteText(_ bytes: Int64) -> String {
@@ -83,22 +142,23 @@ struct WorktreeStackView: View {
         return f.localizedString(for: date, relativeTo: Date())
     }
 
+    /// Verdict from the derived status — no longer counted out of the `stack ps` text, which cannot
+    /// distinguish "läuft" from "läuft, aber keycloak ist mit Exit 134 weg".
+    @ViewBuilder
     private var statusBadge: some View {
-        let (label, color) = derivedStatus
-        return Text(label)
-            .font(.system(size: 11, weight: .medium))
-            .foregroundStyle(color)
-            .padding(.horizontal, 7).padding(.vertical, 2)
-            .background(color.opacity(0.15), in: Capsule())
-    }
-
-    /// Derives a coarse up/down state from the `iwf stack ps` output (container rows show "Up …").
-    private var derivedStatus: (String, Color) {
-        let ps = model.worktreeStatusText
-        if ps.isEmpty || ps.hasPrefix("Lade") { return ("—", .secondary) }
-        let up = ps.split(separator: "\n").filter { $0.contains("Up ") }.count
-        if up > 0 { return ("● läuft · \(up)", .green) }
-        return ("○ gestoppt", .secondary)
+        if let status = model.stackStatus {
+            let verdict = status.verdict
+            Text("\(verdict.label) · \(status.running.count)/\(status.services.count)")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(verdict.color)
+                .padding(.horizontal, 7).padding(.vertical, 2)
+                .background(verdict.color.opacity(0.15), in: Capsule())
+        } else {
+            Text("—")
+                .font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary)
+                .padding(.horizontal, 7).padding(.vertical, 2)
+                .background(Color.secondary.opacity(0.15), in: Capsule())
+        }
     }
 
     // MARK: Command bar
@@ -122,6 +182,37 @@ struct WorktreeStackView: View {
         }
     }
 
+    private var seedConfirmation: Binding<Bool> {
+        Binding(get: { pending != nil }, set: { if !$0 { pending = nil } })
+    }
+
+    private var confirmTitle: String {
+        guard let pending else { return "" }
+        return pending.importNow
+            ? "„\(pending.source.label)“ jetzt in die laufende DB importieren?"
+            : "Datenbank mit „\(pending.source.label)“ neu seeden?"
+    }
+
+    private var confirmMessage: String {
+        guard let pending else { return "" }
+        return pending.importNow
+            ? "Der aktuelle Datenbestand wird ersetzt. iwf legt vorher automatisch einen Snapshot an "
+              + "(Wiederherstellung mit `iwf db snapshot restore`). Der Stack muss laufen."
+            : "Der bisherige Dump und das DB-Volume \(worktreeName)_dbdata werden entfernt; beim "
+              + "nächsten Start importiert MySQL den neuen Dump. Der Stack muss gestoppt sein."
+    }
+
+    /// Dateiauswahl für einen lokalen Dump (.sql / .sql.gz).
+    private func chooseSeedFile(importNow: Bool) {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.title = "DB-Dump wählen"
+        panel.message = "Wähle einen .sql- oder .sql.gz-Dump."
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        pending = (.file(url.path), importNow)
+    }
+
     private func cmd(_ title: String, _ icon: String, role: ButtonRole? = nil,
                      _ action: @escaping () -> Void) -> some View {
         Button(role: role, action: action) {
@@ -133,31 +224,53 @@ struct WorktreeStackView: View {
 
     // MARK: Output panes
 
-    private var panes: some View {
-        VStack(spacing: 0) {
-            outputBox(title: "STACK-STATUS", text: model.worktreeStatusText, minHeight: 84, maxHeight: 190)
+    /// Links: Aktionen oben, Status darunter — beides scrollt gemeinsam.
+    private var leftColumn: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            commandBar
             Divider()
-            outputBox(title: "COMMAND-AUSGABE", text: model.worktreeCommandOutput, minHeight: 120, maxHeight: .infinity)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    if let status = model.stackStatus {
+                        StackStatusView(status: status,
+                                        isLoading: model.stackStatusLoading,
+                                        onRepair: model.worktreeBusy ? nil : { model.repairStack($0) },
+                                        onSeed: model.worktreeBusy ? nil : { source, importNow in
+                                            if let source { pending = (source, importNow) }
+                                            else { chooseSeedFile(importNow: importNow) }
+                                        })
+                    }
+                }
+                .padding(.horizontal, 12).padding(.vertical, 10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            }
         }
     }
 
     private func outputBox(title: String, text: String, minHeight: CGFloat, maxHeight: CGFloat) -> some View {
         VStack(alignment: .leading, spacing: 0) {
+            // Titelleiste bleibt im App-Look — nur die Ausgabefläche darunter ist Terminal.
             Text(title)
                 .font(.system(size: 10, weight: .semibold))
                 .foregroundStyle(.secondary)
-                .padding(.horizontal, 12).padding(.top, 6).padding(.bottom, 2)
+                .padding(.horizontal, 12).padding(.top, 6).padding(.bottom, 4)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color(nsColor: .windowBackgroundColor))
+            Divider()
             ScrollViewReader { proxy in
                 ScrollView {
-                    Text(text.isEmpty ? "—" : text)
-                        .font(.system(size: 12, design: .monospaced))
-                        .foregroundStyle(text.isEmpty ? .secondary : .primary)
+                    Text(text.isEmpty ? AttributedString("—") : CodeTheme.ansiText(text))
+                        .font(CodeTheme.font)
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 12).padding(.bottom, 8)
+                        .padding(.horizontal, 12).padding(.vertical, 8)
                     Color.clear.frame(height: 1).id("bottom")
                 }
                 .onChange(of: text) { proxy.scrollTo("bottom", anchor: .bottom) }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(CodeTheme.background)
+                .environment(\.colorScheme, .dark)   // gleiche Anmutung wie die eingebettete Console
             }
         }
         .frame(minHeight: minHeight, maxHeight: maxHeight)

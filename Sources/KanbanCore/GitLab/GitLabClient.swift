@@ -32,7 +32,8 @@ public struct GitLabClient: Sendable {
                 sourceBranch: $0.source_branch,
                 targetBranch: $0.target_branch,
                 mergedAt: $0.merged_at,
-                webUrl: $0.web_url
+                webUrl: $0.web_url,
+                draft: $0.isDraft
             )
         }
     }
@@ -54,5 +55,15 @@ public struct GitLabClient: Sendable {
         let target_branch: String
         let merged_at: String?
         let web_url: String
+        let draft: Bool?
+        let work_in_progress: Bool?   // legacy alias for older GitLab versions
+
+        /// A draft MR by any of GitLab's signals: the `draft` flag, the deprecated
+        /// `work_in_progress`, or the `Draft:`/`WIP:` title prefix (older servers only set the title).
+        var isDraft: Bool {
+            if draft == true || work_in_progress == true { return true }
+            let lower = title.lowercased()
+            return lower.hasPrefix("draft:") || lower.hasPrefix("wip:") || lower.hasPrefix("[wip]")
+        }
     }
 }

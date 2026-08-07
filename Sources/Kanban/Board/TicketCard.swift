@@ -11,6 +11,7 @@ struct TicketCard: View {
 
     var body: some View {
         HStack(alignment: .center, spacing: 8) {
+            if let epic = ticket.epic { EpicColorStripe(epic: epic) }
             VStack(alignment: .leading, spacing: 3) {
                 // Row 1: title + (key over Claude's status dot)
                 HStack(alignment: .top, spacing: 8) {
@@ -45,6 +46,12 @@ struct TicketCard: View {
                     if card.needsAttention { AttentionBadge() }
                     ForEach(Array(card.badges.enumerated()), id: \.offset) { _, badge in
                         BadgeView(badge: badge)
+                    }
+                    if card.claudeSeconds > 0 || card.claudeRunningSince != nil {
+                        ClaudeTimeBadge(seconds: card.claudeSeconds,
+                                        baseSeconds: card.claudeBaseSeconds,
+                                        runningSince: card.claudeRunningSince,
+                                        fullyBooked: card.fullyBooked)
                     }
                     Spacer(minLength: 0)
                     if let points = ticket.storyPoints {
@@ -150,12 +157,12 @@ struct BadgeView: View {
         switch badge {
         case .file: return "doc.text"
         case .worktree: return "arrow.triangle.branch"
-        case .mergeRequest: return "arrow.triangle.pull"
+        case .mergeRequest(_, let draft): return draft ? "hammer" : "arrow.triangle.pull"
         }
     }
 
     private var label: String? {
-        if case .mergeRequest(let iid) = badge { return "#\(iid)" }
+        if case .mergeRequest(let iid, let draft) = badge { return draft ? "#\(iid) Draft" : "#\(iid)" }
         return nil
     }
 
@@ -163,7 +170,7 @@ struct BadgeView: View {
         switch badge {
         case .file: return .blue
         case .worktree: return .green
-        case .mergeRequest: return .purple
+        case .mergeRequest(_, let draft): return draft ? .orange : .purple
         }
     }
 }

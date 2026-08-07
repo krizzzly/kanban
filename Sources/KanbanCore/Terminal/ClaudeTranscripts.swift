@@ -31,4 +31,27 @@ public enum ClaudeTranscripts {
             "projects/\(projectDirName(forCwd: cwd))/\(sessionId).jsonl")
         return FileManager.default.fileExists(atPath: file)
     }
+
+    /// The conversation file for `sessionId`, or nil if Claude never wrote one. Looks in the project
+    /// directory for `cwd` first, then across all project directories — the same conversation can
+    /// live under a worktree's slug when its console was started there.
+    public static func transcriptURL(
+        sessionId: String, cwd: String,
+        claudeDir: String = ("~/.claude" as NSString).expandingTildeInPath
+    ) -> URL? {
+        let projects = URL(fileURLWithPath: claudeDir).appendingPathComponent("projects", isDirectory: true)
+        let file = "\(sessionId).jsonl"
+        let expected = projects
+            .appendingPathComponent(projectDirName(forCwd: cwd), isDirectory: true)
+            .appendingPathComponent(file)
+        if FileManager.default.fileExists(atPath: expected.path) { return expected }
+
+        guard let dirs = try? FileManager.default.contentsOfDirectory(
+            at: projects, includingPropertiesForKeys: nil) else { return nil }
+        for dir in dirs {
+            let candidate = dir.appendingPathComponent(file)
+            if FileManager.default.fileExists(atPath: candidate.path) { return candidate }
+        }
+        return nil
+    }
 }

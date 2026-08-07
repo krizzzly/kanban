@@ -12,14 +12,19 @@ enum SessionIdStore {
         return base.appendingPathComponent("sessions.json")
     }
 
-    /// Returns the ticket's stored session id, generating and persisting one if absent.
-    static func ensure(forTicket key: String) -> String {
+    /// The ticket's stored session id, or nil — unlike `ensure` this never creates one, so it is safe
+    /// to ask for every card on the board.
+    static func peek(forTicket key: String) -> String? {
+        load()[key]
+    }
+
+    /// Records the ticket's session id. Written together with the task-file marker so the two stores
+    /// cannot drift apart again (see `ClaudeSessionResolution`).
+    static func set(_ sessionId: String, forTicket key: String) {
         var map = load()
-        if let existing = map[key] { return existing }
-        let id = UUID().uuidString.lowercased()
-        map[key] = id
+        guard map[key] != sessionId else { return }
+        map[key] = sessionId
         save(map)
-        return id
     }
 
     private static func load() -> [String: String] {

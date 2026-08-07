@@ -22,22 +22,22 @@ final class ClaudeSessionTests: XCTestCase {
         XCTAssertFalse(out.contains("OLD"))
     }
 
-    func testEnsureSessionIdGeneratesPersistsAndIsIdempotent() throws {
+    func testWriteSessionIdPersistsReplacesAndStaysSingle() throws {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("EVEN-1-\(UUID().uuidString).md")
         defer { try? FileManager.default.removeItem(at: url) }
         try "# EVEN-1 | Title\n\n## Beschreibung\nHi".write(to: url, atomically: true, encoding: .utf8)
 
-        let id1 = TaskFileLoader.ensureSessionId(url: url)
-        XCTAssertNotNil(id1)
-        let onDisk = try String(contentsOf: url, encoding: .utf8)
-        XCTAssertTrue(onDisk.contains("kanban-claude-session: \(id1!)"))
+        XCTAssertNil(TaskFileLoader.sessionId(in: url))
+        XCTAssertTrue(TaskFileLoader.writeSessionId("aaa-111", url: url))
+        XCTAssertEqual(TaskFileLoader.sessionId(in: url), "aaa-111")
 
-        // Second call returns the same id and does not add a second marker.
-        let id2 = TaskFileLoader.ensureSessionId(url: url)
-        XCTAssertEqual(id1, id2)
-        let onDisk2 = try String(contentsOf: url, encoding: .utf8)
-        XCTAssertEqual(onDisk2.components(separatedBy: "kanban-claude-session:").count - 1, 1)
+        // Rewriting with the live id replaces the stale one instead of adding a second marker.
+        XCTAssertTrue(TaskFileLoader.writeSessionId("bbb-222", url: url))
+        XCTAssertEqual(TaskFileLoader.sessionId(in: url), "bbb-222")
+        let onDisk = try String(contentsOf: url, encoding: .utf8)
+        XCTAssertEqual(onDisk.components(separatedBy: "kanban-claude-session:").count - 1, 1)
+        XCTAssertTrue(onDisk.contains("## Beschreibung"))
     }
 
     /// The marker sits in the preamble (before the first H2), so it never becomes a tab and never

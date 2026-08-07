@@ -27,12 +27,14 @@ public final class HostGuardDelegate: NSObject, URLSessionTaskDelegate, @uncheck
 public enum APIError: Error, LocalizedError {
     case badURL(String)
     case http(Int)
+    case jira(status: Int, message: String?)
     case decode(String)
 
     public var errorDescription: String? {
         switch self {
         case .badURL(let u): return "Ungültige URL: \(u)"
         case .http(let code): return "HTTP \(code)"
+        case .jira(let status, let message): return message ?? "Jira antwortete HTTP \(status)"
         case .decode(let m): return "Antwort konnte nicht gelesen werden: \(m)"
         }
     }
@@ -59,5 +61,40 @@ enum HTTPHelper {
         guard let http = resp as? HTTPURLResponse else { throw APIError.http(-1) }
         guard (200..<300).contains(http.statusCode) else { throw APIError.http(http.statusCode) }
         return data
+    }
+
+    /// Performs a host-guarded POST with a JSON body and returns the response data. Non-2xx throws
+    /// `APIError.http` — the body of a failed Jira write (which carries `errorMessages`) is surfaced
+    /// so a rejected worklog says why.
+    @discardableResult
+    static func postJSON(_ urlString: String, headers: [String: String],
+                         body: [String: Any]) async throws -> Data {
+        guard let url = URL(string: urlString), let host = url.host else {
+            throw APIError.badURL(urlString)
+        }
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        for (k, v) in headers { req.setValue(v, forHTTPHeaderField: k) }
+        req.httpBody = try JSONSerialization.data(withJSONObject: body)
+        let delegate = HostGuardDelegate(allowedHost: host)
+        let (data, resp) = try await URLSession.shared.data(for: req, delegate: delegate)
+        guard let http = resp as? HTTPURLResponse else { throw APIError.http(-1) }
+        guard (200..<300).contains(http.statusCode) else {
+            throw APIError.jira(status: http.statusCode, message: JiraError.message(in: data))
+        }
+        return data
+    }
+}
+
+/// Pulls the human-readable reason out of a Jira error body (`{"errorMessages":[...],"errors":{...}}`).
+enum JiraError {
+    static func message(in data: Data) -> String? {
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+        if let messages = json["errorMessages"] as? [String], let first = messages.first { return first }
+        if let errors = json["errors"] as? [String: Any], let first = errors.values.first as? String {
+            return first
+        }
+        return nil
     }
 }
