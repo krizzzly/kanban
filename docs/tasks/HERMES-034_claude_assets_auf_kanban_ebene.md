@@ -182,4 +182,9 @@ Assets sind zentral. Der Umzug selbst, **pro Projekt einzeln** (erst eines testw
 - [x] Editor in den Einstellungen („Claude-Workflow": Bestand editieren, Symlinks verwalten,
   Auslieferungsstand zurücksetzen)
 - [x] `repoDir` von `tasksPath` entkoppelt (optionaler Config-Override, abwärtskompatibel)
+- [x] `create-task` als fünfter kanonischer Command nachgezogen
+- [x] Symlinks installiert + **Projektkopien entfernt** (2026-08-07, Entscheidung 2): 5 Commands ×3 Repos,
+  5 Rules (bfezvm/even; zba nur serena-first), 2 Skills (bfezvm/even) → Backup unter
+  `~/Library/Application Support/Kanban/claude/projektkopien-backup-2026-08-07/`. Projektlokal
+  geblieben: worktree.md, testing.md, mail-testing.md + nicht-konsolidierte Commands
 - [ ] Task-Umzug (Schritt 5) — Plan oben, mit User abstimmen und **pro Projekt einzeln** ausführen
