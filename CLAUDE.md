@@ -138,7 +138,7 @@ der Picker markiert ihn „✓"; kennt das Board die Id nicht mehr, gewinnt der 
 
 ## Claude-Assets auf Kanban-Ebene (HERMES-034)
 
-Kanban **besitzt** die 4 Workflow-Commands (get/start/solve/review-task), 2 Skills (impact-/
+Kanban **besitzt** die 5 Workflow-Commands (create/get/start/solve/review-task), 2 Skills (impact-/
 quality-analysis) und 5 Rules (db-access, git-commits, serena-first, task, translations) kanonisch —
 konsolidiert aus bfezvm/even/zba (die Drift dort waren verpasste Backports).
 

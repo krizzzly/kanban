@@ -102,7 +102,7 @@ zba/reactbp bereits `.claude/tasks`.
 
 ```
 ~/Library/Application Support/Kanban/
-├── claude/commands/   get-task · start-task · solve-task · review-task   (0 Projektwerte)
+├── claude/commands/   create-task · get-task · start-task · solve-task · review-task   (0 Projektwerte)
 ├── claude/skills/     impact-analysis · quality-analysis
 ├── claude/rules/      db-access · git-commits · serena-first · task · translations
 └── tasks/<projekt>/   die Task-Files (284 Stück ziehen um)
