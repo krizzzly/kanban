@@ -27,6 +27,12 @@ Precedence (top-down, first match wins):
 | 5 | Sprint | otherwise | Jira (default) |
 
 Cards carry badges (📄 file · 🌳 worktree · 🔀#iid MR) so it's visible *why* a card is where it is.
+Hat der offene MR **unresolved Diskussionen**, trägt die Karte zusätzlich deren Anzahl als rotes
+Zähl-Badge (Optik des ❓-Attention-Badges, ohne Pulsieren; nur für opened MRs gefetcht — 1 Request je
+offenem MR über denselben Transport wie die MR-Liste, Fehlschlag zählt 0). Rechtsklick auf eine Karte
+öffnet ein Kontextmenü mit den Ticket-Workflow-Commands (tippt `/command <TICKET>` in die Claude-
+Console des Tickets, bei Bedarf wird es vorher ausgewählt und das Terminal aufgebaut); Review-Karten
+bieten zusätzlich `/review-merge !<iid>` mit der MR-Nummer an.
 
 **Draft-MRs** sind in GitLab `state == "opened"`, aber nicht review-reif — sie schieben die Karte
 **nicht** nach Review (weder direkt noch über `shouldAutoSetReview`). `GitLabClient` erkennt den Draft
@@ -138,8 +144,8 @@ der Picker markiert ihn „✓"; kennt das Board die Id nicht mehr, gewinnt der 
 
 ## Claude-Assets auf Kanban-Ebene (HERMES-034)
 
-Kanban **besitzt** die 9 Workflow-Commands (create/get/start/solve/review/update-task,
-create/destroy-worktree, review-merge), 2 Skills (impact-/quality-analysis) und 6 Rules (db-access,
+Kanban **besitzt** die 10 Workflow-Commands (create/get/start/solve/review/update-task,
+create/destroy-worktree, review-merge, fix-security), 2 Skills (impact-/quality-analysis) und 6 Rules (db-access,
 git-commits, serena-first, task, translations, worktree) kanonisch — konsolidiert aus bfezvm/even/zba
 (die Drift dort waren verpasste Backports; worktree.md stellte sich entgegen der ersten Analyse als
 ~95 % generische iwf-Referenz heraus). Das Set ist **referenz-geschlossen**: jeder Command/Skill,

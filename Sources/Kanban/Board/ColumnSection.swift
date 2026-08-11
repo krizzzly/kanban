@@ -11,6 +11,11 @@ struct ColumnSection: View {
     let selectedKey: String?
     let onToggle: () -> Void
     let onSelect: (String) -> Void
+    // Right-click menu: the ticket workflow commands; Review cards additionally offer
+    // `/review-merge !<iid>` (the card's opened MR).
+    let commands: [ClaudeCommand]
+    let onCommand: (CardVM, ClaudeCommand) -> Void
+    let onReviewMerge: (CardVM, Int) -> Void
 
     var body: some View {
         VStack(spacing: 0) {
@@ -28,11 +33,35 @@ struct ColumnSection: View {
                         ForEach(cards) { card in
                             TicketCard(card: card, isSelected: selectedKey == card.ticket.key)
                                 .onTapGesture { onSelect(card.ticket.key) }
+                                .contextMenu { contextMenu(for: card) }
                         }
                     }
                     .padding(.horizontal, 8)
                     .padding(.bottom, 4)
                 }
+            }
+        }
+    }
+
+    /// Same entries as the detail header's Commands menu — selecting one types
+    /// `/command <TICKET>` into the card's Claude console (Enter is left to the user).
+    @ViewBuilder
+    private func contextMenu(for card: CardVM) -> some View {
+        ForEach(commands) { command in
+            Button {
+                onCommand(card, command)
+            } label: {
+                Text("/\(command.name)")
+                if let description = command.description { Text(description) }
+            }
+        }
+        if let iid = card.openMergeRequestIid {
+            if !commands.isEmpty { Divider() }
+            Button {
+                onReviewMerge(card, iid)
+            } label: {
+                Text("/review-merge !\(iid)")
+                Text("Code-Review des Merge-Requests — Nummer wird eingetragen")
             }
         }
     }

@@ -38,13 +38,62 @@ public struct GitLabClient: Sendable {
         }
     }
 
-    /// Convenience: opened + merged MRs in one call.
+    /// Convenience: opened + merged MRs in one call. Opened MRs additionally carry their number of
+    /// unresolved review discussions (fetched per MR, concurrently); merged MRs stay at 0 — their
+    /// comments require no action anymore.
     public func openedAndMergedMRs(projectPath: String) async throws -> [MergeRequestRef] {
         async let opened = listMergeRequests(projectPath: projectPath, state: "opened")
         async let merged = listMergeRequests(projectPath: projectPath, state: "merged")
-        let openedMRs = try await opened
+        let openedMRs = await withUnresolvedCounts(try await opened, projectPath: projectPath)
         let mergedMRs = try await merged
         return openedMRs + mergedMRs
+    }
+
+    // MARK: - Unresolved discussions (open comments)
+
+    /// Number of unresolved discussions of one MR. A failed fetch counts as 0 — the badge is a
+    /// hint, it must never break the board refresh.
+    public func unresolvedDiscussionCount(projectPath: String, iid: Int) async -> Int {
+        let encoded = projectPath.replacingOccurrences(of: "/", with: "%2F")
+        let url = "\(apiBaseUrl)/projects/\(encoded)/merge_requests/\(iid)/discussions?per_page=100"
+        guard let raw: [RawDiscussion] = useDirectAPI
+            ? try? await HTTPHelper.getJSON(url, headers: headers)
+            : try? await HermesDaemon.fetchJSON(url, as: [RawDiscussion].self) else { return 0 }
+        return Self.unresolvedCount(raw)
+    }
+
+    private func withUnresolvedCounts(_ mrs: [MergeRequestRef],
+                                      projectPath: String) async -> [MergeRequestRef] {
+        await withTaskGroup(of: (Int, Int).self) { group in
+            for mr in mrs {
+                group.addTask { (mr.iid, await unresolvedDiscussionCount(projectPath: projectPath, iid: mr.iid)) }
+            }
+            var byIid: [Int: Int] = [:]
+            for await (iid, count) in group { byIid[iid] = count }
+            return mrs.map { mr in
+                MergeRequestRef(iid: mr.iid, title: mr.title, state: mr.state,
+                                sourceBranch: mr.sourceBranch, targetBranch: mr.targetBranch,
+                                mergedAt: mr.mergedAt, webUrl: mr.webUrl, draft: mr.draft,
+                                unresolvedDiscussions: byIid[mr.iid] ?? 0)
+            }
+        }
+    }
+
+    /// A discussion is "open" when it has at least one resolvable, not-yet-resolved note. System
+    /// notes (`resolvable == false`) never count.
+    static func unresolvedCount(_ discussions: [RawDiscussion]) -> Int {
+        discussions.filter { discussion in
+            discussion.notes?.contains { $0.resolvable == true && $0.resolved != true } ?? false
+        }.count
+    }
+
+    struct RawDiscussion: Decodable {
+        let notes: [RawNote]?
+    }
+
+    struct RawNote: Decodable {
+        let resolvable: Bool?
+        let resolved: Bool?
     }
 
     private struct RawMR: Decodable {

@@ -71,9 +71,13 @@ public struct MergeRequestRef: Sendable, Hashable {
     /// True for a draft / work-in-progress MR. A draft is still `state == "opened"` in GitLab, but
     /// it is *not* ready for review, so it must not move a ticket into the Review column.
     public let draft: Bool
+    /// Unresolved review discussions (open comments). Only fetched for opened MRs — merged ones
+    /// keep 0, their comments require no action anymore.
+    public let unresolvedDiscussions: Int
 
     public init(iid: Int, title: String, state: String, sourceBranch: String,
-                targetBranch: String, mergedAt: String?, webUrl: String, draft: Bool = false) {
+                targetBranch: String, mergedAt: String?, webUrl: String, draft: Bool = false,
+                unresolvedDiscussions: Int = 0) {
         self.iid = iid
         self.title = title
         self.state = state
@@ -82,6 +86,7 @@ public struct MergeRequestRef: Sendable, Hashable {
         self.mergedAt = mergedAt
         self.webUrl = webUrl
         self.draft = draft
+        self.unresolvedDiscussions = unresolvedDiscussions
     }
 }
 

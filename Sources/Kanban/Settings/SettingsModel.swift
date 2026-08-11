@@ -143,6 +143,35 @@ final class SettingsModel {
         mutate { $0.set(nil, at: mapPath + [key]) }
     }
 
+    // MARK: - Projekte (HERMES-043: zentral anlegen, in den Modulen pflegen)
+
+    /// Übersicht über alle Projekte — **live aus der Config gelesen**, nicht gespeichert. Damit
+    /// gibt es keine zweite Wahrheit neben den Modul-Sections, die weiterhin editierbar bleiben.
+    var projectOverview: ProjectRegistry {
+        ProjectProjection.importing(from: document?.root ?? .object([:]))
+    }
+
+    func projectSuggestion(for key: String) -> ProjectRecord {
+        ProjectSuggestion.record(for: key, from: document?.root ?? .object([:]))
+    }
+
+    func isProjectKeyTaken(_ key: String) -> Bool {
+        ProjectSuggestion.isTaken(key, in: document?.root ?? .object([:]))
+    }
+
+    /// Legt ein Projekt in allen betroffenen Modul-Sections an (nur im Dokument — geschrieben wird
+    /// wie bei jeder anderen Änderung erst beim Speichern).
+    func createProject(key: String, record: ProjectRecord) {
+        let trimmed = key.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty, !record.isEmpty else { return }
+        mutate { $0 = ProjectProjection.apply(record, key: trimmed, to: $0) }
+    }
+
+    /// Entfernt ein Projekt aus allen Sections auf einmal.
+    func removeProjectEverywhere(key: String) {
+        mutate { $0 = ProjectProjection.remove(key, from: $0) }
+    }
+
     // MARK: - Arrays of objects (presence blocks, contact people)
 
     func arrayCount(_ path: [String]) -> Int {

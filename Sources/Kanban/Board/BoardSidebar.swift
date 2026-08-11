@@ -31,7 +31,14 @@ struct BoardSidebar: View {
                             isCollapsed: collapsed.contains(entry.column.rawValue),
                             selectedKey: model.selectedTicketKey,
                             onToggle: { withAnimation(.easeInOut(duration: 0.2)) { toggle(entry.column) } },
-                            onSelect: { model.selectTicket($0) }
+                            onSelect: { model.selectTicket($0) },
+                            commands: model.claudeCommands,
+                            onCommand: { card, command in
+                                model.sendClaudeCommand(command, ticketKey: card.ticket.key)
+                            },
+                            onReviewMerge: { card, iid in
+                                model.sendReviewMerge(ticketKey: card.ticket.key, mrIid: iid)
+                            }
                         )
                     }
                 }

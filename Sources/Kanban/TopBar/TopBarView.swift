@@ -15,6 +15,7 @@ struct TopBarToolbar: ToolbarContent {
         ToolbarItem(placement: .primaryAction) { bookButton }
         ToolbarItem(placement: .primaryAction) { refreshButton }
         ToolbarItem(placement: .primaryAction) { claudeWorkflowButton }
+        ToolbarItem(placement: .primaryAction) { dataFolderButton }
         ToolbarItem(placement: .primaryAction) { settingsButton }
     }
 
@@ -128,6 +129,19 @@ struct TopBarToolbar: ToolbarContent {
             Image(systemName: "wand.and.stars")
         }
         .help("Claude-Workflow: Commands, Skills und Rules bearbeiten + verlinken")
+    }
+
+    /// Öffnet Kanbans Datenordner (tasks/, claude/, config.json) in PhpStorm.
+    private var dataFolderButton: some View {
+        Button {
+            let dir = FileManager.default
+                .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+                .appendingPathComponent("Kanban", isDirectory: true)
+            StatusLinkOpener.open(URL(string: StatusLinks.ideURL(forPath: dir.path))!)
+        } label: {
+            Image(systemName: "folder")
+        }
+        .help("Kanban-Datenordner in PhpStorm öffnen (~/Library/Application Support/Kanban)")
     }
 
     private var settingsButton: some View {

@@ -8,6 +8,9 @@ struct CardVM: Identifiable, Hashable {
     let column: KanbanColumn
     let badges: [CardBadge]
     let statusMarker: TaskStatusMarker?   // Claude's task-file status (shown as a dot, separate from column)
+    var unresolvedMRComments: Int = 0     // open (unresolved) review discussions of the opened MR
+    var mergeRequestURL: String?          // web URL of the MR in the 🔀/🚧 badge — the badge opens it
+    var commentsURL: String?              // web URL of the MR the open-comment count belongs to
     var needsAttention: Bool = false      // the ticket's Claude console is waiting for an answer
     var claudeSeconds: TimeInterval = 0       // cumulated prompt→answer time of this ticket's session
     var claudeBaseSeconds: TimeInterval = 0   // the same total without the running turn (live badge ticks on top)
@@ -19,6 +22,21 @@ struct CardVM: Identifiable, Hashable {
     /// True once every measured second is booked (used for the card's ✓). False while nothing was
     /// measured, so a Jira-only ticket shows no booking state at all.
     var fullyBooked: Bool { claudeSeconds > 0 && openToBookSeconds == 0 }
+
+    /// The iid printed on the 🔀/🚧 badge. Not always `primaryMR`: the badge prefers a *merged* MR,
+    /// `WorkflowStatus.primaryMR` the newest *opened* one — so the badge links via this iid.
+    var badgeMergeRequestIid: Int? {
+        for badge in badges { if case .mergeRequest(let iid, _) = badge { return iid } }
+        return nil
+    }
+
+    /// The iid of the opened, review-ready MR (the 🔀 badge) — nil for drafts and merged MRs.
+    /// Feeds the context menu's `/review-merge !<iid>` entry on Review cards.
+    var openMergeRequestIid: Int? {
+        guard column == .review else { return nil }
+        for badge in badges { if case .mergeRequest(let iid, false) = badge { return iid } }
+        return nil
+    }
 }
 
 @MainActor
@@ -50,6 +68,12 @@ final class AppModel {
     // Terminal
     private(set) var activeTerminalSession: String?           // left: Claude, main-tree cwd
     private(set) var activeWorktreeTerminalSession: String?   // right: plain shell, worktree cwd
+    /// Which ticket `activeTerminalSession` belongs to — guards typing against the *previous*
+    /// ticket's session while a newly selected ticket's terminal is still being set up.
+    private var terminalSessionTicket: String?
+    /// Console text waiting for the ticket's terminal to come up (the board context menu selects
+    /// the ticket first; typing happens once `setupTerminal` publishes the session).
+    private var pendingConsoleText: (ticketKey: String, text: String)?
     // Ticket slash commands from the project's .claude/commands (header menu next to the ticket key).
     private(set) var claudeCommands: [ClaudeCommand] = []
     // Bumped when a command is typed into the Claude console, so the terminal pane shows that tab.
@@ -259,6 +283,7 @@ final class AppModel {
     }
 
     func selectTicket(_ key: String) {
+        if pendingConsoleText?.ticketKey != key { pendingConsoleText = nil }
         selectedTicketKey = key
         loadDetail(for: key)
         setupTerminal(for: key)
@@ -368,7 +393,13 @@ final class AppModel {
                     mergeRequests: mrs,
                     jiraDone: ticket.isDoneInJira
                 )
-                return CardVM(ticket: ticket, column: res.column, badges: res.badges, statusMarker: info.marker)
+                var card = CardVM(ticket: ticket, column: res.column, badges: res.badges, statusMarker: info.marker)
+                // Open review comments on the ticket's opened MR (merged MRs always carry 0).
+                card.unresolvedMRComments = mr?.unresolvedDiscussions ?? 0
+                card.commentsURL = mr?.webUrl
+                card.mergeRequestURL = card.badgeMergeRequestIid
+                    .flatMap { iid in mrs.first { $0.iid == iid }?.webUrl }
+                return card
             }
             sessionIdByTicket = sessionMap
             bookedByTicket = WorklogLedger.bookedSeconds()
@@ -510,7 +541,14 @@ final class AppModel {
         let res = WorkflowStatus.resolve(
             ticketKey: key, hasTaskFile: info.exists, statusMarker: info.marker,
             worktree: wt, mergeRequests: lastMergeRequests, jiraDone: cards[idx].ticket.isDoneInJira)
-        cards[idx] = CardVM(ticket: cards[idx].ticket, column: res.column, badges: res.badges, statusMarker: info.marker)
+        var card = CardVM(ticket: cards[idx].ticket, column: res.column, badges: res.badges, statusMarker: info.marker)
+        // Rebuilt from the cached MRs, so the 💬-count and the badge links survive a local status change.
+        let mr = WorkflowStatus.primaryMR(ticketKey: key, mergeRequests: lastMergeRequests)
+        card.unresolvedMRComments = mr?.unresolvedDiscussions ?? 0
+        card.commentsURL = mr?.webUrl
+        card.mergeRequestURL = card.badgeMergeRequestIid
+            .flatMap { iid in lastMergeRequests.first { $0.iid == iid }?.webUrl }
+        cards[idx] = card
         regroupColumns()
     }
 
@@ -530,6 +568,8 @@ final class AppModel {
         selectedTicketKey = nil
         activeTerminalSession = nil
         activeWorktreeTerminalSession = nil
+        terminalSessionTicket = nil
+        pendingConsoleText = nil
     }
 
     // MARK: - Terminal
@@ -552,6 +592,8 @@ final class AppModel {
                     guard let self, self.selectedTicketKey == key else { return }
                     self.activeTerminalSession = nil
                     self.activeWorktreeTerminalSession = nil
+                    self.terminalSessionTicket = nil
+                    self.pendingConsoleText = nil
                 }
                 return
             }
@@ -595,10 +637,18 @@ final class AppModel {
             await MainActor.run {
                 guard let self, self.selectedTicketKey == key else { return }
                 self.activeTerminalSession = plan.name
+                self.terminalSessionTicket = key
                 self.activeWorktreeTerminalSession = worktreeSession
                 // The id may have been created just now — arm the ⏱ transcript watch on it.
                 self.sessionIdByTicket[key] = sessionId
                 self.startTimingWatch(for: key)
+                // Flush a command parked by the board context menu. A freshly created session is
+                // still booting Claude — give it a moment before typing.
+                if let pending = self.pendingConsoleText, pending.ticketKey == key {
+                    self.pendingConsoleText = nil
+                    Self.typeText(pending.text, session: plan.name,
+                                  delaySeconds: plan.needsCreate ? 2.0 : 0)
+                }
             }
         }
     }
@@ -606,13 +656,45 @@ final class AppModel {
     /// Types `/command <TICKET>` into the ticket's Claude console (without Enter, so the user can
     /// still edit/confirm) and switches the terminal pane to the Claude tab.
     func sendClaudeCommand(_ command: ClaudeCommand) {
-        guard let key = selectedTicketKey, let session = activeTerminalSession else { return }
+        guard let key = selectedTicketKey else { return }
+        typeIntoConsole("/\(command.name) \(key) ", ticketKey: key)
+    }
+
+    /// Board context menu: run a command for *any* card — selects the ticket first (which opens
+    /// its console), then types `/command <TICKET>`.
+    func sendClaudeCommand(_ command: ClaudeCommand, ticketKey: String) {
+        typeIntoConsole("/\(command.name) \(ticketKey) ", ticketKey: ticketKey)
+    }
+
+    /// Board context menu on Review cards: `/review-merge !<iid>` — the command wants the MR
+    /// number, not the ticket key.
+    func sendReviewMerge(ticketKey: String, mrIid: Int) {
+        typeIntoConsole("/review-merge !\(mrIid) ", ticketKey: ticketKey)
+    }
+
+    /// Types text into the ticket's Claude console, selecting the ticket first if needed. While
+    /// the terminal is not up yet, the text is parked and flushed by `setupTerminal`.
+    private func typeIntoConsole(_ text: String, ticketKey: String) {
         claudeTerminalFocusRequest += 1
+        if selectedTicketKey != ticketKey {
+            pendingConsoleText = (ticketKey, text)   // before selectTicket — it drops foreign pendings
+            selectTicket(ticketKey)
+        } else if terminalSessionTicket == ticketKey, let session = activeTerminalSession {
+            Self.typeText(text, session: session)
+        } else {
+            pendingConsoleText = (ticketKey, text)
+        }
+    }
+
+    /// Off-main typing worker: exits copy-mode first (a scrolled-back pane would swallow the
+    /// keystrokes), then types the text — no Enter, the user confirms manually.
+    private static func typeText(_ text: String, session: String, delaySeconds: Double = 0) {
         Task.detached {
+            if delaySeconds > 0 { try? await Task.sleep(for: .seconds(delaySeconds)) }
             let tmux = TmuxController()
             guard tmux.isAvailable else { return }
-            tmux.cancelCopyMode(session)   // a scrolled-back pane would swallow the keystrokes
-            tmux.sendText(session, "/\(command.name) \(key) ")
+            tmux.cancelCopyMode(session)
+            tmux.sendText(session, text)
         }
     }
 

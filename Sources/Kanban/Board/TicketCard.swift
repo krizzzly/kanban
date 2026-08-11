@@ -45,7 +45,12 @@ struct TicketCard: View {
                     }
                     if card.needsAttention { AttentionBadge() }
                     ForEach(Array(card.badges.enumerated()), id: \.offset) { _, badge in
-                        BadgeView(badge: badge)
+                        BadgeView(badge: badge, mergeRequestURL: card.mergeRequestURL)
+                    }
+                    // Right after the MR badge (last in `badges`), so the count reads as its detail.
+                    if card.unresolvedMRComments > 0 {
+                        OpenCommentsBadge(count: card.unresolvedMRComments,
+                                          mergeRequestURL: card.commentsURL ?? card.mergeRequestURL)
                     }
                     if card.claudeSeconds > 0 || card.claudeRunningSince != nil {
                         ClaudeTimeBadge(seconds: card.claudeSeconds,
@@ -141,9 +146,70 @@ struct AttentionBadge: View {
     }
 }
 
+/// Open (unresolved) review comments on the card's MR — the `AttentionBadge`'s visual language
+/// (white on red, same size), but with the count and without the pulse: it asks for review work,
+/// not for an immediate answer.
+struct OpenCommentsBadge: View {
+    let count: Int
+    /// Click target: the MR whose discussions these are (nil → the badge stays inert).
+    var mergeRequestURL: String?
+
+    private var hint: String {
+        let subject = count == 1
+            ? "1 offener Kommentar im Merge Request"
+            : "\(count) offene Kommentare im Merge Request"
+        return mergeRequestURL == nil ? subject : "\(subject) — klicken zum Öffnen im Browser"
+    }
+
+    var body: some View {
+        Text("\(count)")
+            .font(.system(size: 10, weight: .bold))
+            .foregroundStyle(.white)
+            .padding(.horizontal, 4)
+            .frame(minWidth: 15, minHeight: 15)
+            .background(Capsule().fill(.red))
+            .accessibilityLabel("\(count) offene MR-Kommentare")
+            .modifier(BrowserLink(urlString: mergeRequestURL, hint: hint))
+    }
+}
+
+/// Makes a badge open a URL in the browser. The tap gesture sits *inside* the card, so it wins over
+/// the card's own `onTapGesture` (SwiftUI resolves to the innermost gesture) — clicking the badge
+/// opens the page without also switching the selected ticket. Without a URL the badge stays inert.
+private struct BrowserLink: ViewModifier {
+    let urlString: String?
+    /// Tooltip — shown with or without a link; nil for badges that explain themselves.
+    let hint: String?
+
+    @State private var hovering = false
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if let urlString, let url = URL(string: urlString) {
+            content
+                .opacity(hovering ? 0.6 : 1)
+                .contentShape(Rectangle())
+                .onTapGesture { StatusLinkOpener.open(url) }
+                .onHover { inside in
+                    hovering = inside
+                    // `set` rather than push/pop: scrolling a hovered card away would otherwise
+                    // leave an unbalanced push and the pointing hand stuck.
+                    (inside ? NSCursor.pointingHand : NSCursor.arrow).set()
+                }
+                .help(hint ?? "")
+        } else if let hint {
+            content.help(hint)
+        } else {
+            content
+        }
+    }
+}
+
 /// Badge in kanban-code's icon+text style (cf. `CardBadgesRow`): 📄 file · 🌳 worktree · 🔀 MR.
 struct BadgeView: View {
     let badge: CardBadge
+    /// Click target for the MR badge — the other badges ignore it.
+    var mergeRequestURL: String?
 
     var body: some View {
         HStack(spacing: 2) {
@@ -151,6 +217,14 @@ struct BadgeView: View {
             if let label { Text(label).font(.app(.caption2)) }
         }
         .foregroundStyle(color)
+        .modifier(BrowserLink(urlString: linkURL,
+                              hint: linkURL == nil ? nil : "Merge Request im Browser öffnen"))
+    }
+
+    /// Only the MR badge links out; 📄 file and 🌳 worktree have no web page.
+    private var linkURL: String? {
+        if case .mergeRequest = badge { return mergeRequestURL }
+        return nil
     }
 
     private var icon: String {

@@ -28,9 +28,14 @@ struct SettingsSheet: View {
 
     private static let rawSectionID = "raw"
     private static let notificationsSectionID = "notifications"
+    private static let projectsSectionID = "projects"
 
     private var sidebar: some View {
         List(selection: $selection) {
+            // Steht bewusst oben und abgesetzt: quer zu allen Modulen, und der Ort, an dem ein
+            // neues Projekt entsteht (HERMES-043).
+            Label("Projekte", systemImage: "square.stack.3d.up").tag(Self.projectsSectionID)
+            Divider()
             ForEach(HermesConfigSchema.sections) { section in
                 Label(section.title, systemImage: section.icon).tag(section.id)
             }
@@ -55,6 +60,8 @@ struct SettingsSheet: View {
             }
             .padding(30)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if selection == Self.projectsSectionID {
+            ProjectsEditor(settings: settings)
         } else if selection == Self.notificationsSectionID {
             NotificationsSettingsView()
         } else if selection == Self.rawSectionID {
