@@ -97,8 +97,12 @@ final class MarkdownHTMLTests: XCTestCase {
     /// must survive rendering (proves the passthrough on real content). Spans inside fenced code
     /// are correctly escaped and don't count — which is the intended behaviour.
     func testRealTaskFilesRenderStyledHTML() throws {
-        let dir = "/Users/christianhiller/code/bfezvm/docs/tasks"
-        guard let entries = try? FileManager.default.contentsOfDirectory(atPath: dir) else {
+        // Der Ordner kommt aus der Config, nicht aus einer festen Zeichenkette: die Task-Files sind
+        // aus dem Repo in den Kanban-Ordner gezogen, und ein hartkodierter Pfad hätte den Test
+        // lautlos in einen Skip gedreht (leerer Alt-Ordner = kein Fund = „nichts gefunden").
+        guard let config = try? KanbanConfig.load(),
+              let dir = config.projects.first(where: { $0.key == "bfezvm" })?.tasksPathAbsolute,
+              let entries = try? FileManager.default.contentsOfDirectory(atPath: dir) else {
             throw XCTSkip("bfezvm tasks dir not present")
         }
         for name in entries where name.hasSuffix(".md") {

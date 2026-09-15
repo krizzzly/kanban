@@ -1,14 +1,14 @@
 import SwiftUI
 import KanbanCore
 
-/// Modal settings editor for `~/.hermes/config.json`, styled after the macOS System Settings:
-/// section sidebar on the left, a grouped form on the right, save/restart footer at the bottom.
+/// Modal settings editor for Kanban's own config, styled after the macOS System Settings:
+/// section sidebar on the left, a grouped form on the right, save footer at the bottom.
 /// Round-trip-safe — unknown keys in the config survive (see `ConfigStore`).
 /// Der Claude-Workflow-Editor lebt bewusst NICHT hier, sondern im eigenen `ClaudeWorkflowWindow`.
 struct SettingsSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var settings = SettingsModel()
-    @State private var selection: String? = HermesConfigSchema.sections.first?.id
+    @State private var selection: String? = KanbanConfigSchema.sections.first?.id
     /// Called after a successful save so the app reloads its config.
     let onSaved: () -> Void
 
@@ -30,13 +30,20 @@ struct SettingsSheet: View {
     private static let notificationsSectionID = "notifications"
     private static let projectsSectionID = "projects"
 
+    /// Die Hermes-Sektion nur, wenn es eine Hermes-Config gibt — sonst wäre sie ein Schalter ohne Ziel.
+    private var visibleSections: [ConfigSectionSpec] {
+        KanbanConfigSchema.sections.filter {
+            $0.id != KanbanConfigSchema.hermesSectionID || settings.hermesAvailable
+        }
+    }
+
     private var sidebar: some View {
         List(selection: $selection) {
             // Steht bewusst oben und abgesetzt: quer zu allen Modulen, und der Ort, an dem ein
             // neues Projekt entsteht (HERMES-043).
             Label("Projekte", systemImage: "square.stack.3d.up").tag(Self.projectsSectionID)
             Divider()
-            ForEach(HermesConfigSchema.sections) { section in
+            ForEach(visibleSections) { section in
                 Label(section.title, systemImage: section.icon).tag(section.id)
             }
             Divider()
@@ -66,7 +73,7 @@ struct SettingsSheet: View {
             NotificationsSettingsView()
         } else if selection == Self.rawSectionID {
             RawJSONEditor(settings: settings)
-        } else if let section = HermesConfigSchema.sections.first(where: { $0.id == selection }) {
+        } else if let section = KanbanConfigSchema.sections.first(where: { $0.id == selection }) {
             Form {
                 if let intro = section.intro {
                     Text(intro).font(.callout).foregroundStyle(.secondary)
@@ -78,12 +85,6 @@ struct SettingsSheet: View {
                 }
                 if let map = section.projectMap {
                     ProjectMapEditor(spec: map, settings: settings)
-                }
-                if let presence = section.presenceList {
-                    PresenceListEditor(spec: presence, settings: settings)
-                }
-                if let people = section.personList {
-                    PersonListEditor(spec: people, settings: settings)
                 }
             }
             .formStyle(.grouped)
@@ -97,7 +98,10 @@ struct SettingsSheet: View {
     private var footer: some View {
         VStack(alignment: .leading, spacing: 8) {
             if let saveError = settings.saveError { errorRow(saveError) }
-            if settings.savedPendingRestart { restartBanner }
+            if let message = settings.syncMessage {
+                Label(message, systemImage: "checkmark.circle.fill")
+                    .font(.callout).foregroundStyle(.green)
+            }
 
             HStack(spacing: 10) {
                 Text(abbreviateHome(settings.configPath))
@@ -130,23 +134,6 @@ struct SettingsSheet: View {
                 Button("Trotzdem speichern") {
                     if settings.save(force: true) { onSaved() }
                 }
-            }
-        }
-    }
-
-    private var restartBanner: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 10) {
-                Label("Gespeichert. Damit die Änderungen auch im Hermes-Daemon wirken, diesen neu starten.",
-                      systemImage: "checkmark.circle.fill")
-                    .font(.callout).foregroundStyle(.green)
-                Spacer()
-                if settings.restartBusy { ProgressView().controlSize(.small) }
-                Button("Daemon neu starten") { settings.restartDaemon() }
-                    .disabled(settings.restartBusy)
-            }
-            if let result = settings.restartResult {
-                Text(result).font(.caption).foregroundStyle(.secondary)
             }
         }
     }

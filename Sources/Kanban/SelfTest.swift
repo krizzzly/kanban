@@ -12,8 +12,9 @@ enum SelfTest {
 
     static func run() async -> Int32 {
         do {
-            let cfg = try HermesConfigLoader.load()
-            print("✓ Config: \(cfg.projects.count) Projekte, gitlab=\(cfg.hasGitlab)")
+            HermesImport.runIfNeeded()
+            let cfg = try KanbanConfig.load()
+            print("✓ Config \(KanbanConfig.path): \(cfg.projects.count) Projekte, gitlab=\(cfg.hasGitlab)")
 
             let wanted = argValue("--project")
             guard let project = cfg.projects.first(where: { $0.key == wanted }) ?? cfg.projects.first else {
@@ -24,7 +25,7 @@ enum SelfTest {
             print("  repoDir   = \(project.repoDir)")
             print("  gitlab    = \(project.gitlabProjectPath ?? "—")")
 
-            let jira = JiraClient(email: cfg.jiraEmail, apiToken: cfg.jiraApiToken)
+            let jira = JiraClient(config: cfg)
             guard let board = try await jira.board(prefix: project.prefix, baseUrl: project.jiraBaseUrl) else {
                 print("✗ kein Board für \(project.prefix)"); return 1
             }
@@ -45,10 +46,8 @@ enum SelfTest {
             print("✓ \(issues.count) Issues (\(subtaskCount) Unteraufgaben ausgeblendet)")
 
             var mrs: [MergeRequestRef] = []
-            if cfg.hasGitlab, let path = project.gitlabProjectPath,
-               let apiUrl = cfg.gitlabApiUrl, let token = cfg.gitlabApiToken {
-                mrs = (try? await GitLabClient(apiBaseUrl: apiUrl, token: token)
-                    .openedAndMergedMRs(projectPath: path)) ?? []
+            if let gitlab = GitLabClient(config: cfg), let path = project.gitlabProjectPath {
+                mrs = (try? await gitlab.openedAndMergedMRs(projectPath: path)) ?? []
                 let drafts = mrs.filter { $0.state == "opened" && $0.draft }.count
                 print("✓ \(mrs.count) MRs (opened+merged)" + (drafts > 0 ? ", davon \(drafts) Draft (nicht Review)" : ""))
             } else {
@@ -58,16 +57,35 @@ enum SelfTest {
             let worktrees = await WorktreeScanner.scan(repoDir: project.repoDir)
             print("✓ \(worktrees.count) Worktrees")
 
+            // „Mir zugewiesen" holt ein Ticket aus der Sprint-Spalte nach Offen — dieselbe Frage
+            // wie auf dem Board, also dieselbe Quelle.
+            let me = try? await jira.currentUser(baseUrl: project.jiraBaseUrl)
+            let myAccountId = me?.accountId
+            let mine = issues.filter { $0.assigneeAccountId != nil && $0.assigneeAccountId == myAccountId }
+            print("✓ angemeldet als \(me?.displayName ?? "?") — \(mine.count) Issues mir zugewiesen")
+
             var dist: [KanbanColumn: Int] = [:]
             for ticket in issues {
                 let info = TaskFileLoader.statusMarker(ticketKey: ticket.key, in: project.tasksPathAbsolute)
                 let wt = WorktreeScanner.worktree(for: ticket.key, in: worktrees)
                 let r = WorkflowStatus.resolve(ticketKey: ticket.key, hasTaskFile: info.exists,
-                                               statusMarker: info.marker, worktree: wt, mergeRequests: mrs)
+                                               statusMarker: info.marker, worktree: wt, mergeRequests: mrs,
+                                               jiraState: ticket.jiraDoneState,
+                                               isAssignedToMe: ticket.assigneeAccountId != nil
+                                                   && ticket.assigneeAccountId == myAccountId)
                 dist[r.column, default: 0] += 1
             }
             print("✓ Spalten-Verteilung:")
             for col in KanbanColumn.ordered { print("    \(col.rawValue.padding(toLength: 16, withPad: " ", startingAt: 0)) \(dist[col] ?? 0)") }
+
+            // Freier Modus: dieselbe Pipeline, andere Quelle — die Ticketliste kommt lokal statt
+            // aus dem Sprint.
+            let local = LocalTickets.discover(tasksDirectory: project.tasksPathAbsolute,
+                                              prefix: project.prefix,
+                                              worktrees: worktrees, mergeRequests: mrs)
+            let untitled = local.filter { $0.summary.isEmpty }.count
+            print("✓ Freier Modus: \(local.count) Tickets lokal gefunden"
+                  + (untitled > 0 ? " (\(untitled) ohne Titel)" : ""))
 
             printEpics(issues: issues)
             await printClaudeTimes(issues: issues, project: project)

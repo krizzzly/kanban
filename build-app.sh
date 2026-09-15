@@ -45,11 +45,6 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
     <key>LSMinimumSystemVersion</key><string>15.0</string>
     <key>NSHighResolutionCapable</key><true/>
     <key>NSPrincipalClass</key><string>NSApplication</string>
-    <!-- Allow plain-HTTP calls to the local Hermes daemon (localhost:7891) for GitLab MRs. -->
-    <key>NSAppTransportSecurity</key>
-    <dict>
-        <key>NSAllowsLocalNetworking</key><true/>
-    </dict>
 </dict>
 </plist>
 PLIST

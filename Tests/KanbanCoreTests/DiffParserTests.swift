@@ -69,18 +69,84 @@ final class DiffParserTests: XCTestCase {
 
     // MARK: - git status parsing
 
-    func testStatusLineParsing() {
-        let modified = GitCommitController.parseStatusLine(" M src/Foo.php")
+    func testStatusRecordParsing() {
+        let modified = GitCommitController.parseStatusRecord(" M src/Foo.php")
         XCTAssertEqual(modified?.path, "src/Foo.php")
         XCTAssertEqual(modified?.marker, "M")
         XCTAssertFalse(modified?.isUntracked ?? true)
 
-        let untracked = GitCommitController.parseStatusLine("?? docs/new.md")
+        let untracked = GitCommitController.parseStatusRecord("?? docs/new.md")
         XCTAssertTrue(untracked?.isUntracked ?? false)
         XCTAssertEqual(untracked?.marker, "?")
 
-        // A rename lists both paths — the new one is what the dialog shows.
-        XCTAssertEqual(GitCommitController.parseStatusLine("R  old.php -> new.php")?.path, "new.php")
-        XCTAssertNil(GitCommitController.parseStatusLine(""))
+        XCTAssertNil(GitCommitController.parseStatusRecord(""))
+    }
+
+    func testStatusParsesUntrackedFilesWithSpacesAndUmlauts() {
+        // `-z` hands the path over raw — no quoting, no octal escaping to undo.
+        let files = GitCommitController.parseStatus("?? docs/Lösung.md\0?? mit leer.md\0 M src/Foo.php\0")
+        XCTAssertEqual(files.map(\.path), ["docs/Lösung.md", "mit leer.md", "src/Foo.php"])
+        XCTAssertEqual(files.filter(\.isUntracked).count, 2)
+    }
+
+    func testStatusSkipsTheSourcePathOfARename() {
+        // A rename is two records: `R  <new>` then the source path on its own.
+        let files = GitCommitController.parseStatus("R  new.php\0old.php\0?? docs/new.md\0")
+        XCTAssertEqual(files.map(\.path), ["new.php", "docs/new.md"])
+        XCTAssertEqual(files.first?.marker, "R")
+    }
+
+    func testStatusListsEveryFileOfANewDirectory() {
+        // `--untracked-files=all` is what makes these separate records instead of one `newdir/` entry.
+        let files = GitCommitController.parseStatus("?? newdir/a.txt\0?? newdir/sub/b.txt\0")
+        XCTAssertEqual(files.count, 2)
+        XCTAssertTrue(files.allSatisfy(\.isUntracked))
+    }
+
+    // MARK: - git diff --name-status -z (Reiter „Diff“)
+
+    /// Der Formatunterschied, an dem ein Parser scheitert, der von `--name-status` **ohne** `-z`
+    /// ausgeht: dort trennt ein **Tab** Status und Pfad, mit `-z` ist es ein NUL wie zwischen den
+    /// Einträgen. Am echten git abgelesen, nicht der Doku entnommen.
+    func testNameStatusFieldsAreNulSeparatedNotTabSeparated() {
+        let files = GitCommitController.parseNameStatus("M\0CLAUDE.md\0A\0src/Neu.php\0D\0alt.md\0")
+        XCTAssertEqual(files.map(\.path), ["CLAUDE.md", "src/Neu.php", "alt.md"])
+        XCTAssertEqual(files.map(\.marker), ["M", "A", "D"])
+    }
+
+    /// Ein Umbenennen trägt seine Ähnlichkeit im Statusfeld (`R095`) und **zwei** Pfade dahinter.
+    /// Gezeigt wird der neue — wie in der Status-Liste. Wer den zweiten Pfad nicht verbraucht,
+    /// liest ihn als nächsten Status und die ganze restliche Liste verrutscht.
+    func testNameStatusTakesTheTargetPathOfARename() {
+        let files = GitCommitController.parseNameStatus(
+            "R095\0commands/create-task.md\0skills/create-task/SKILL.md\0M\0CLAUDE.md\0")
+        XCTAssertEqual(files.map(\.path), ["skills/create-task/SKILL.md", "CLAUDE.md"])
+        XCTAssertEqual(files.map(\.marker), ["R", "M"])
+    }
+
+    func testNameStatusHandlesCopiesLikeRenames() {
+        let files = GitCommitController.parseNameStatus("C070\0a.php\0b.php\0")
+        XCTAssertEqual(files.map(\.path), ["b.php"])
+        XCTAssertEqual(files.first?.marker, "C")
+    }
+
+    /// Pfade kommen mit `-z` roh — keine Anführungszeichen, keine Oktal-Escapes zurückzurechnen.
+    func testNameStatusKeepsRawPaths() {
+        let files = GitCommitController.parseNameStatus("M\0docs/Lösung.md\0M\0mit leer.md\0")
+        XCTAssertEqual(files.map(\.path), ["docs/Lösung.md", "mit leer.md"])
+    }
+
+    /// Ein Branch ohne eigene Änderung ist kein Fehler — die leere Ausgabe endet auf einem NUL und
+    /// darf keinen Geister-Eintrag ergeben.
+    func testNameStatusOfAnUnchangedBranchIsEmpty() {
+        XCTAssertTrue(GitCommitController.parseNameStatus("").isEmpty)
+        XCTAssertTrue(GitCommitController.parseNameStatus("\0").isEmpty)
+    }
+
+    /// Nichts aus dem Branch-Diff ist „unversioniert": gegen einen Commit hat jede Datei zwei
+    /// Seiten. Sonst liefe die Anzeige in den `--no-index`-Sonderweg des Arbeitsverzeichnisses.
+    func testNameStatusEntriesAreNeverUntracked() {
+        let files = GitCommitController.parseNameStatus("A\0neu.php\0M\0alt.php\0")
+        XCTAssertTrue(files.allSatisfy { !$0.isUntracked })
     }
 }

@@ -47,15 +47,39 @@ public enum TerminalSessionResolver {
         return hasTranscript ? "claude --resume '\(id)'" : "claude --session-id '\(id)'"
     }
 
+    /// Der Startbefehl für den Agent des Projekts.
+    ///
+    /// Codex bekommt bewusst **keine** Id mit: `--session-id` gibt es dort nicht, die Id erfindet
+    /// Codex selbst und `codex resume <id|name>` greift erst nachträglich. Eine erfundene Id würde
+    /// also nur eine Zuordnung vortäuschen, die es nicht gibt — die Wiederaufnahme über die
+    /// Rollout-Dateien (`~/.codex/sessions/…`) ist der nächste Schritt.
+    public static func launchCommand(agent: AgentKind, sessionId: String?,
+                                     hasTranscript: Bool = false) -> String {
+        switch agent {
+        case .claude:
+            return claudeLaunchCommand(sessionId: sessionId, hasTranscript: hasTranscript)
+        case .codex:
+            // Ohne Rollout scheitert `resume` sichtbar („no rollout found for thread id …",
+            // verifiziert gegen 0.147) — deshalb dieselbe Regel wie bei Claude: resume nur, wenn es
+            // wirklich etwas fortzusetzen gibt, sonst frisch starten.
+            guard let id = sessionId, !id.isEmpty, hasTranscript else { return agent.executable }
+            // `tui.resume_cwd=current` unterdrückt die Rückfrage „Session- oder aktuelles
+            // Verzeichnis?", die sonst kommt, sobald die aufgezeichnete cwd abweicht. Kanban startet
+            // immer im Repo des Projekts, also ist „current" genau das Gewollte.
+            return "\(agent.executable) resume '\(id)' -c tui.resume_cwd=current"
+        }
+    }
+
     /// Resolution order (first match wins):
     /// 1. Our own `kanban-<TICKET>` session already exists → attach.
     /// 2. A foreign session matches the worktree (path / dir name / branch) → attach (compat).
-    /// 3. Nothing yet → create `kanban-<TICKET>` in the **main tree** and launch Claude.
+    /// 3. Nothing yet → create `kanban-<TICKET>` in the **main tree** and launch the project's agent.
     public static func resolve(ticketKey: String,
                                repoDir: String,
                                worktree: Worktree?,
                                sessionId: String?,
                                hasTranscript: Bool = false,
+                               agent: AgentKind = .claude,
                                existing: [TmuxSession]) -> TerminalSessionPlan {
         let own = sessionName(forTicket: ticketKey)
 
@@ -69,8 +93,8 @@ public enum TerminalSessionResolver {
         }
 
         return TerminalSessionPlan(name: own, cwd: repoDir,
-                                   launchCommand: claudeLaunchCommand(sessionId: sessionId,
-                                                                      hasTranscript: hasTranscript))
+                                   launchCommand: launchCommand(agent: agent, sessionId: sessionId,
+                                                                hasTranscript: hasTranscript))
     }
 
     /// Mirrors kanban-code's `findSessionForWorktree` matching so we reuse sessions started by

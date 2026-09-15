@@ -8,8 +8,12 @@ import KanbanCore
 struct TerminalTabsView: View {
     @Bindable var model: AppModel
     @State private var selected: Tab = .claude
+    /// The prompt timeline slides in over the terminal (see `PromptTimelinePanel`).
+    @State private var showPrompts = false
 
-    private enum Tab: Hashable { case stack, claude, worktree, extra(String) }
+    private static let promptPanelWidth: CGFloat = 380
+
+    private enum Tab: Hashable { case maintree, stack, claude, worktree, extra(String) }
 
     private var claudeSession: String? { model.activeTerminalSession }
     private var worktreeSession: String? { model.activeWorktreeTerminalSession }
@@ -20,10 +24,29 @@ struct TerminalTabsView: View {
             VStack(spacing: 0) {
                 tabBar
                 Divider()
-                content(claude: claude)
+                // Overlay, not a split: the panel must not resize the pane — a SIGWINCH would make
+                // tmux reflow Claude's whole TUI just to look at what was typed.
+                ZStack(alignment: .topTrailing) {
+                    content(claude: claude)
+                    if showPrompts {
+                        PromptTimelinePanel(model: model) { showPrompts = false }
+                            .frame(width: Self.promptPanelWidth)
+                            // Sits a little below the tab bar and keeps its top corner rounded, so
+                            // it reads as a panel lying *on* the terminal instead of a second bar.
+                            .clipShape(UnevenRoundedRectangle(topLeadingRadius: 10))
+                            .padding(.top, 10)
+                            .shadow(color: .black.opacity(0.18), radius: 8, x: -2, y: 2)
+                            .transition(.move(edge: .trailing))
+                    }
+                }
+                .clipped()
+                .animation(.snappy(duration: 0.22), value: showPrompts)
             }
             .onChange(of: model.selectedTicketKey) { selected = .claude }
             .onChange(of: model.claudeTerminalFocusRequest) { selected = .claude }
+            // Back to the console → the overlay gets out of the way. The click itself still reaches
+            // the terminal (see `TerminalCache.handleClick`), so this costs no extra click.
+            .onChange(of: model.terminalClickTick) { showPrompts = false }
             .onChange(of: worktreeSession) {
                 if worktreeSession == nil, selected == .worktree { selected = .claude }
             }
@@ -34,6 +57,9 @@ struct TerminalTabsView: View {
 
     private var tabBar: some View {
         HStack(spacing: 4) {
+            // Maintree links vom Worktree: dasselbe Panel, anderes Ziel — der Stack des Haupt-Repos.
+            // Er hängt am Projekt, nicht am Ticket, und ist deshalb immer da.
+            pill("Maintree", active: selected == .maintree) { selected = .maintree }
             pill("Worktree", active: selected == .stack) { selected = .stack }
             pill("Claude", active: selected == .claude) { selected = .claude }
             if worktreeSession != nil {
@@ -47,9 +73,27 @@ struct TerminalTabsView: View {
             }
             addButton
             Spacer()
+            promptsButton
         }
         .padding(.horizontal, 10).padding(.vertical, 6)
         .background(Color(nsColor: .windowBackgroundColor))
+    }
+
+    /// Trailing end of the bar: slides the prompt timeline in over the terminal. Only meaningful for
+    /// the Claude console — the worktree/extra shells have no prompts.
+    @ViewBuilder
+    private var promptsButton: some View {
+        if selected == .claude || selected == .stack {
+            Button { showPrompts.toggle() } label: {
+                Image(systemName: showPrompts ? "sidebar.right" : "text.bubble")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(showPrompts ? Color.accentColor : Color.secondary)
+                    .padding(.horizontal, 8).padding(.vertical, 6)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Prompts dieser Session — klicken springt im Terminal dorthin")
+        }
     }
 
     private var addButton: some View {
@@ -69,8 +113,10 @@ struct TerminalTabsView: View {
     @ViewBuilder
     private func content(claude: String) -> some View {
         switch selected {
+        case .maintree:
+            WorktreeStackView(model: model, target: .maintree)
         case .stack:
-            WorktreeStackView(model: model)
+            WorktreeStackView(model: model, target: .worktree)
         case .worktree:
             if let worktreeSession {
                 TerminalContainerView(session: worktreeSession).id(worktreeSession)

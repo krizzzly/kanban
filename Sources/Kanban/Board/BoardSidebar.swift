@@ -21,6 +21,9 @@ struct BoardSidebar: View {
             // VStack (not Lazy) with spacing 0 — section headers carry their own outer padding,
             // matching kanban-code's list board.
             VStack(alignment: .leading, spacing: 0) {
+                // Im freien Modus steht hier, wo sonst die Sprint-Spalte anfängt, der Einstieg in
+                // die Arbeit: ein neuer Task entsteht nicht in Jira, sondern hier.
+                if model.boardMode == .free { newTaskButton }
                 if model.cards.isEmpty {
                     emptyState
                 } else {
@@ -33,11 +36,15 @@ struct BoardSidebar: View {
                             onToggle: { withAnimation(.easeInOut(duration: 0.2)) { toggle(entry.column) } },
                             onSelect: { model.selectTicket($0) },
                             commands: model.claudeCommands,
+                            commandPrefix: model.agent.commandPrefix,
                             onCommand: { card, command in
                                 model.sendClaudeCommand(command, ticketKey: card.ticket.key)
                             },
                             onReviewMerge: { card, iid in
                                 model.sendReviewMerge(ticketKey: card.ticket.key, mrIid: iid)
+                            },
+                            onCreateTask: { card in
+                                model.startTaskFromBranch(card.ticket)
                             }
                         )
                     }
@@ -46,6 +53,35 @@ struct BoardSidebar: View {
             .padding(.vertical, 8)
         }
         .background(Color(nsColor: .windowBackgroundColor))
+    }
+
+    /// „Task erstellen" — im freien Modus der Platz der Sprint-Spalte.
+    private var newTaskButton: some View {
+        VStack(spacing: 6) {
+            Button {
+                model.newTaskSheetPresented = true
+            } label: {
+                Label("Task erstellen", systemImage: "plus.circle.fill")
+                    .font(.app(.headline))
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 10)
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.large)
+            .disabled(model.selectedProject == nil)
+            .help("Beschreibung eingeben → /create-task in der Projekt-Console")
+
+            // Die Console bleibt am Leben, auch wenn danach eine Karte angeklickt wurde.
+            if model.hasNewTaskConsole && model.newTaskConsoleSession == nil {
+                Button("Console anzeigen") { model.showNewTaskConsole() }
+                    .buttonStyle(.plain)
+                    .font(.app(.caption))
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.top, 4)
+        .padding(.bottom, 12)
     }
 
     @ViewBuilder
@@ -58,11 +94,27 @@ struct BoardSidebar: View {
             .frame(maxWidth: .infinity)
             .padding(.top, 40)
         } else {
-            Text(model.selectedSprint == nil ? "Kein Sprint ausgewählt." : "Keine Tickets im Sprint.")
+            Text(emptyMessage)
                 .font(.app(.callout))
                 .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
                 .frame(maxWidth: .infinity)
+                .padding(.horizontal, 12)
                 .padding(.top, 40)
+        }
+    }
+
+    private var emptyMessage: String {
+        switch model.boardMode {
+        case .free:
+            return "Noch keine Task-Files, Worktrees oder MRs in diesem Projekt.\n"
+                 + "Leg oben einen Task an."
+        case .sprint:
+            switch model.selectedChoice {
+            case nil: return "Kein Sprint und kein Board ausgewählt."
+            case .board: return "Keine offenen Tickets auf dem Board."
+            case .sprint: return "Keine Tickets im Sprint."
+            }
         }
     }
 }

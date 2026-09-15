@@ -27,14 +27,15 @@ public enum ConfigStoreError: Error, LocalizedError, Equatable {
     }
 }
 
-/// Round-trip-safe reader/writer for `~/.hermes/config.json`. Unlike `HermesConfigLoader` it
-/// parses lax (any valid JSON object, no required fields) so the settings UI stays usable with a
-/// broken or missing config. Saving normalizes formatting (pretty-printed, sorted keys), writes a
-/// `.bak` backup of the previous content first, and writes atomically.
+/// Round-trip-safe reader/writer for a JSON config file — by default Kanban's own
+/// (`~/Library/Application Support/Kanban/config.json`), with the Hermes config as the other caller.
+/// Unlike `KanbanConfig` it parses lax (any valid JSON object, no required fields) so the settings UI
+/// stays usable with a broken or missing config. Saving normalizes formatting (pretty-printed, sorted
+/// keys), writes a `.bak` backup of the previous content first, and writes atomically.
 public struct ConfigStore: Sendable {
     public let path: String
 
-    public init(path: String = HermesConfigLoader.defaultPath) {
+    public init(path: String = KanbanConfig.path) {
         self.path = path
     }
 

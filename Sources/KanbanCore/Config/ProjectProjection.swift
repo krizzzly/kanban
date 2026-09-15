@@ -28,11 +28,16 @@ public enum ProjectProjection {
         ["modules", module, "projects"]
     }
 
+    /// Sections, die **nur Kanban** kennt: sie stehen nicht in `moduleNames`, weil die Registry sie
+    /// nicht besitzt — `apply` würde sie sonst bei jeder Projektion löschen. Beim ausdrücklichen
+    /// Entfernen eines Projekts müssen sie aber mit weg, sonst bliebe ein verwaister Eintrag stehen.
+    static let kanbanOnlySections = ["knowledgebase"]
+
     /// Löscht ein Projekt aus **allen** Sections. Bewusst getrennt von `apply(_:to:)`: das Entfernen
     /// ist eine ausdrückliche Nutzeraktion, während die Projektion selbst nie löscht.
     public static func remove(_ key: String, from config: JSONValue) -> JSONValue {
         var result = config
-        for module in moduleNames {
+        for module in moduleNames + kanbanOnlySections {
             let path = projectsPath(module) + [key]
             if result.value(at: path) != nil { result.set(nil, at: path) }
         }

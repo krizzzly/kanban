@@ -32,62 +32,109 @@ struct TranscriptTail: Sendable {
     }
 }
 
-/// Cumulative Claude timings per session, cached across refreshes.
+/// Welcher Parser die Zeilen deutet — Claudes Transcript oder Codex' Rollout. Ein Enum statt eines
+/// Protokolls, weil `consume` `mutating` ist: durch ein Existential mutiert man nur eine Kopie.
+enum TurnParser: Sendable {
+    case claude(ClaudeTurnAccumulator)
+    case codex(CodexTurnAccumulator)
+
+    static func fresh(for agent: AgentKind) -> TurnParser {
+        switch agent {
+        case .claude: return .claude(ClaudeTurnAccumulator())
+        case .codex:  return .codex(CodexTurnAccumulator())
+        }
+    }
+
+    mutating func consume(line: String) {
+        switch self {
+        case .claude(var acc): acc.consume(line: line); self = .claude(acc)
+        case .codex(var acc):  acc.consume(line: line); self = .codex(acc)
+        }
+    }
+
+    func snapshot() -> [ClaudeTurn] {
+        switch self {
+        case .claude(let acc): return acc.snapshot()
+        case .codex(let acc):  return acc.snapshot()
+        }
+    }
+}
+
+/// Cumulative agent timings per session, cached across refreshes.
 ///
 /// The first look at a session parses its whole transcript (they reach tens of megabytes); every
-/// later look reads only what Claude appended since. That is what makes polling the board — and
+/// later look reads only what the agent appended since. That is what makes polling the board — and
 /// watching the live transcript of the selected ticket — cheap.
+///
+/// Die Datei unterscheidet sich je Agent (`~/.claude/projects/<slug>/<id>.jsonl` gegen
+/// `~/.codex/sessions/…/rollout-*-<id>.jsonl`), das Format ebenso — dahinter ist alles gleich:
+/// beide Parser liefern `ClaudeTurn`s, also hängen Badge, Chip, Turn-Liste und Buchung unverändert
+/// daran. Codex' Turns sind dabei durchweg exakt (siehe `CodexTurnAccumulator`).
 public actor ClaudeTimingStore {
     public static let shared = ClaudeTimingStore()
 
     private struct Cached {
         var url: URL
         var tail: TranscriptTail
-        var accumulator: ClaudeTurnAccumulator
+        var parser: TurnParser
     }
 
     private var cache: [String: Cached] = [:]
 
     public init() {}
 
-    /// Timing for one session, or nil when no transcript exists yet (Claude was never launched).
-    /// `cwd` is the directory Claude runs in — the transcript is looked up there first.
-    public func timing(sessionId: String, cwd: String) -> ClaudeSessionTiming? {
-        guard let url = ClaudeTranscripts.transcriptURL(sessionId: sessionId, cwd: cwd) else {
+    /// Timing for one session, or nil when no transcript exists yet (the agent was never launched,
+    /// or — bei Codex — noch kein Turn gelaufen: die Rollout-Datei entsteht erst mit dem Inhalt).
+    /// `cwd` is the directory the agent runs in — Claudes Transcript wird dort zuerst gesucht.
+    public func timing(sessionId: String, cwd: String,
+                       agent: AgentKind = .claude) -> ClaudeSessionTiming? {
+        guard let url = Self.transcriptURL(sessionId: sessionId, cwd: cwd, agent: agent) else {
             cache[sessionId] = nil
             return nil
         }
         var state = cache[sessionId]
         if state?.url != url {
-            state = Cached(url: url, tail: TranscriptTail(), accumulator: ClaudeTurnAccumulator())
+            state = Cached(url: url, tail: TranscriptTail(), parser: .fresh(for: agent))
         }
         guard var state else { return nil }
 
-        var accumulator = state.accumulator
-        if !state.tail.consumeNewLines(url: url, into: { accumulator.consume(line: $0) }) {
+        var parser = state.parser
+        if !state.tail.consumeNewLines(url: url, into: { parser.consume(line: $0) }) {
             // The file was rewritten under us — reparse from the top rather than report nonsense.
-            state = Cached(url: url, tail: TranscriptTail(), accumulator: ClaudeTurnAccumulator())
-            accumulator = ClaudeTurnAccumulator()
-            guard state.tail.consumeNewLines(url: url, into: { accumulator.consume(line: $0) }) else {
+            state = Cached(url: url, tail: TranscriptTail(), parser: .fresh(for: agent))
+            parser = .fresh(for: agent)
+            guard state.tail.consumeNewLines(url: url, into: { parser.consume(line: $0) }) else {
                 cache[sessionId] = nil
                 return nil
             }
         }
-        state.accumulator = accumulator
+        state.parser = parser
         cache[sessionId] = state
 
-        let turns = accumulator.snapshot()
+        let turns = parser.snapshot()
         guard !turns.isEmpty else { return nil }
         let mtime = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
         return ClaudeSessionTiming(sessionId: sessionId, turns: turns, lastModified: mtime)
     }
 
-    /// Timings for a whole board: `sessionIds` maps ticket key → Claude session id.
-    public func timings(sessionIds: [String: String], cwd: String) -> [String: ClaudeSessionTiming] {
+    /// Timings for a whole board: `sessionIds` maps ticket key → session id des Agents.
+    public func timings(sessionIds: [String: String], cwd: String,
+                        agent: AgentKind = .claude) -> [String: ClaudeSessionTiming] {
         var result: [String: ClaudeSessionTiming] = [:]
         for (ticketKey, sessionId) in sessionIds {
-            if let timing = timing(sessionId: sessionId, cwd: cwd) { result[ticketKey] = timing }
+            if let timing = timing(sessionId: sessionId, cwd: cwd, agent: agent) {
+                result[ticketKey] = timing
+            }
         }
         return result
+    }
+
+    /// Wo die Konversation liegt — der einzige agent-abhängige Schritt. Öffentlich, weil auch der
+    /// Live-Watcher (`AppModel.startTimingWatch`) genau diese Datei beobachtet.
+    public static func transcriptURL(sessionId: String, cwd: String, agent: AgentKind) -> URL? {
+        switch agent {
+        case .claude: return ClaudeTranscripts.transcriptURL(sessionId: sessionId, cwd: cwd)
+        case .codex:  return CodexSessions.rolloutURL(sessionId: sessionId)
+        }
     }
 }

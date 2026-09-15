@@ -23,12 +23,47 @@ public struct ANSISpan: Sendable, Hashable {
 /// Everything else (cursor moves, erase-line, 256/true-colour selectors) is **stripped**, not
 /// rendered — a progress bar redrawing itself must not leave escape litter in a scrollback pane.
 public enum ANSIParser {
-    public static func parse(_ input: String) -> [ANSISpan] {
-        var spans: [ANSISpan] = []
-        var current = ""
+    /// Was am Ende eines Stücks offen bleibt: die geltenden Farben **und** eine angefangene
+    /// Escape-Sequenz.
+    ///
+    /// Nötig, seit die Ausgabe **stückweise** gerendert wird (`LogTextView` hängt nur das Neue an,
+    /// statt alles neu zu bauen): ein `ESC[32m` gilt bis zum nächsten Reset, also über die
+    /// Stückgrenze hinweg, und eine Grenze mitten in der Sequenz darf nicht als Text durchfallen —
+    /// bei 47 Byte je pty-Lesevorgang trifft sie ständig eine.
+    public struct State: Sendable, Equatable {
         var foreground: Int?
         var background: Int?
-        var bold = false
+        var bold: Bool
+        /// Angefangene, noch unvollständige Sequenz — wird dem nächsten Stück vorangestellt.
+        var pending: String
+
+        public init() {
+            foreground = nil
+            background = nil
+            bold = false
+            pending = ""
+        }
+    }
+
+    public static func parse(_ input: String) -> [ANSISpan] {
+        var state = State()
+        return parse(input, state: &state)
+    }
+
+    /// Parst das nächste Stück eines Stroms und schreibt den offenen Zustand fort.
+    public static func parse(_ input: String, state: inout State) -> [ANSISpan] {
+        let input = state.pending.isEmpty ? input : state.pending + input
+        state.pending = ""
+        var spans: [ANSISpan] = []
+        var current = ""
+        var foreground: Int? = state.foreground
+        var background: Int? = state.background
+        var bold = state.bold
+        defer {
+            state.foreground = foreground
+            state.background = background
+            state.bold = bold
+        }
 
         func flush() {
             guard !current.isEmpty else { return }
@@ -47,7 +82,12 @@ public enum ANSIParser {
             }
             // ESC [ … <final byte>
             let afterEscape = input.index(after: index)
-            guard afterEscape < input.endIndex, input[afterEscape] == "[" else {
+            guard afterEscape < input.endIndex else {
+                flush()
+                state.pending = String(input[index...])   // ESC am Stückende — im nächsten weiterlesen
+                return spans
+            }
+            guard input[afterEscape] == "[" else {
                 index = afterEscape          // lone ESC — drop it
                 continue
             }
@@ -57,7 +97,11 @@ public enum ANSIParser {
                 parameters.append(input[cursor])
                 cursor = input.index(after: cursor)
             }
-            guard cursor < input.endIndex else { break }   // truncated sequence
+            guard cursor < input.endIndex else {          // abgeschnittene Sequenz
+                flush()
+                state.pending = String(input[index...])   // ganz aufheben, nicht halb verwerfen
+                return spans
+            }
             let final = input[cursor]
             index = input.index(after: cursor)
 

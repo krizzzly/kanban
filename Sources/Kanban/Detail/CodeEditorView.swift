@@ -15,6 +15,10 @@ struct CodeEditorView: NSViewRepresentable {
     let language: CodeLanguage
     /// Bumped by the owner to force a reload from `text` (e.g. after switching files or saving).
     let reloadToken: Int
+    /// Schreibbar? Der Commit-Dialog bearbeitet hier; die Knowledgebase **zeigt** nur eine Datei
+    /// aus dem Repo — ein Feld, das Tippen annimmt und die Änderung wegwirft, wäre schlimmer als
+    /// ein sichtbar gesperrtes.
+    var isEditable = true
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -23,6 +27,8 @@ struct CodeEditorView: NSViewRepresentable {
         guard let textView = scroll.documentView as? NSTextView else { return scroll }
 
         textView.delegate = context.coordinator
+        textView.isEditable = isEditable
+        textView.isSelectable = true
         textView.isRichText = false
         textView.isAutomaticQuoteSubstitutionEnabled = false
         textView.isAutomaticSpellingCorrectionEnabled = false

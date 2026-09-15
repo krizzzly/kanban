@@ -1,5 +1,20 @@
 import Foundation
 
+/// Welcher Stack gemeint ist — der eines Ticket-Worktrees oder der des Haupt-Repos.
+///
+/// Beide werden identisch **abgeleitet** (`DockerStatusScanner` bekommt schlicht den anderen Pfad;
+/// der Stack-Name ist so oder so der Ordnername). Sie unterscheiden sich nur darin, wie man sie
+/// bedient — und darin, was man **nicht** anbieten darf: `iwf stack destroy` aus dem Haupt-Repo
+/// nähme wegen des Substring-Filters jedes `local/<projekt>-*`-Image mit, und ein DB-Seed träfe die
+/// Haupt-Entwicklungsdatenbank.
+public enum StackTarget: String, Sendable, CaseIterable {
+    case worktree
+    case maintree
+
+    /// Ob dieser Stack zerstörende Eingriffe anbieten darf (Destroy, DB-Seed).
+    public var allowsDestructiveActions: Bool { self == .worktree }
+}
+
 /// One container of a worktree stack, as `docker ps -a` reports it.
 public struct StackService: Sendable, Hashable, Identifiable {
     public enum Health: Sendable, Hashable { case healthy, unhealthy, starting, none }
@@ -94,6 +109,20 @@ public struct StackPhase: Sendable, Hashable, Identifiable {
         /// with `yarn install --production=false && yarn build`. The image throws its `node_modules`
         /// away afterwards (`rm -rf node_modules`), so in a worktree they are simply absent and a bare
         /// `yarn build` dies with `vite: not found`.
+        /// Für welchen Stack die Reparatur gilt. Der Unterschied ist genau **einer**: ein Worktree
+        /// wird über `iwf worktree start|restart` hoch- und runtergefahren (iwf findet ihn über
+        /// seine Nummer), das Haupt-Repo über `iwf stack start|restart` im eigenen Verzeichnis.
+        /// Alles andere — build, cert, composer, yarn, vite — ist wortgleich, es läuft ohnehin
+        /// relativ zum cwd. Gegen `iwf stack --help` geprüft (build/destroy/logs/ps/restart/start/
+        /// stop/update).
+        public func commands(for target: StackTarget) -> [[String]] {
+            switch (self, target) {
+            case (.start, .maintree): return [["stack", "start"]]
+            case (.restart, .maintree): return [["stack", "restart"]]
+            default: return commands
+            }
+        }
+
         public var commands: [[String]] {
             switch self {
             case .build: return [["stack", "build"]]
@@ -171,14 +200,28 @@ public struct WorktreeStackStatus: Sendable, Hashable {
 /// Parsers for the docker output the scanner collects. Pure, so the shape of every line is pinned
 /// down by tests rather than discovered in production.
 public enum StackStatusParser {
-    /// `name<TAB>state<TAB>status` from `docker ps -a --format`.
+    /// `name<TAB>state<TAB>status<TAB>compose-project` from `docker ps -a --format`.
+    ///
+    /// Die Zugehörigkeit entscheidet das **Compose-Label**, nicht der Name. Über den Namen ging es
+    /// so lange gut, wie nur Worktrees verglichen wurden (`even-3602-` fängt kein `even-3518-`) —
+    /// im Haupt-Repo heisst der Stack aber `even` und ist damit Präfix **jedes** Worktree-Stacks:
+    /// `even-3602-db` bestand den Test und tauchte, um das Präfix gekürzt, als Dienst „3602-db" des
+    /// Haupt-Repos auf. Das Label ist die Auskunft von Docker selbst und trennt sauber
+    /// (`com.docker.compose.project` = `even` vs. `even-3602`).
+    ///
+    /// Zeilen ohne Label gehören keinem Compose-Projekt — also auch keinem Stack — und fallen weg.
     public static func services(from output: String, stackName: String) -> [StackService] {
         output.components(separatedBy: .newlines).compactMap { line in
             let parts = line.components(separatedBy: "\t")
-            guard parts.count >= 3 else { return nil }
+            guard parts.count >= 4 else { return nil }
             let container = parts[0].trimmingCharacters(in: .whitespaces)
-            guard container.hasPrefix(stackName + "-") else { return nil }
-            let short = String(container.dropFirst(stackName.count + 1))
+            guard parts[3].trimmingCharacters(in: .whitespaces) == stackName else { return nil }
+            // Anzeigename ohne Stack-Präfix. Ein Container mit eigenem `container_name` trägt es
+            // nicht — dann ist der volle Name der beste Name, den es gibt.
+            let prefix = stackName + "-"
+            let short = container.hasPrefix(prefix)
+                ? String(container.dropFirst(prefix.count))
+                : container
             let status = parts[2].trimmingCharacters(in: .whitespaces)
             return StackService(name: short,
                                 container: container,
@@ -204,5 +247,20 @@ public enum StackStatusParser {
         if lower.contains("(healthy)") { return .healthy }
         if lower.contains("health: starting") { return .starting }
         return .none
+    }
+}
+
+/// Die drei umkehrbaren Lebenszyklus-Aktionen, die ein Stack-Panel anbietet. Destroy steht
+/// bewusst **nicht** hier — es ist kein Lebenszyklus, sondern ein Abriss, und für das Haupt-Repo
+/// gar nicht erlaubt (siehe `StackTarget`).
+public enum StackLifecycle: String, Sendable, CaseIterable {
+    case start, stop, restart
+
+    public var label: String {
+        switch self {
+        case .start: return "Start"
+        case .stop: return "Stop"
+        case .restart: return "Neustart"
+        }
     }
 }

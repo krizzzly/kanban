@@ -6,9 +6,20 @@ struct ChangedFileRow: View {
     let file: GitChangedFile
     /// The folder line under the name — off in the tree, where the folder is already the parent row.
     var showPath = true
+    /// Haken „geht in den Commit". **nil = kein Haken** — im Reiter „Diff" wird nur gelesen, dort
+    /// wäre ein Kästchen, das nichts bewirkt, schlimmer als keins.
+    var included: Binding<Bool>?
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
+            if let included {
+                Toggle("", isOn: included)
+                    .toggleStyle(.checkbox)
+                    .labelsHidden()
+                    .help(included.wrappedValue
+                          ? "Wird mitcommittet — abwählen lässt sie draussen"
+                          : "Bleibt draussen: die Änderung bleibt im Arbeitsverzeichnis stehen")
+            }
             Text(file.marker)
                 .font(.system(size: 12, weight: .bold, design: .monospaced))
                 .foregroundStyle(markerColor)
@@ -30,6 +41,7 @@ struct ChangedFileRow: View {
         }
         .padding(.vertical, 2)
         .contentShape(Rectangle())
+        .opacity(included?.wrappedValue == false ? 0.45 : 1)
         .help(file.path)
     }
 
@@ -51,13 +63,15 @@ struct ChangedFileRow: View {
 struct FileTreeView: View {
     let files: [GitChangedFile]
     @Binding var selection: String?
+    /// Pfad → „geht in den Commit". nil im reinen Leseblick (Reiter „Diff").
+    var inclusion: ((String) -> Binding<Bool>)?
     @State private var expanded: Set<String> = []
 
     private var tree: [FileTreeNode] { FileTreeBuilder.build(files) }
 
     var body: some View {
         List(selection: $selection) {
-            FileTreeRows(nodes: tree, expanded: $expanded)
+            FileTreeRows(nodes: tree, expanded: $expanded, inclusion: inclusion)
         }
         .listStyle(.sidebar)
         .onAppear { expandAll() }
@@ -74,14 +88,16 @@ struct FileTreeView: View {
 private struct FileTreeRows: View {
     let nodes: [FileTreeNode]
     @Binding var expanded: Set<String>
+    let inclusion: ((String) -> Binding<Bool>)?
 
     var body: some View {
         ForEach(nodes) { node in
             if let file = node.file {
-                ChangedFileRow(file: file, showPath: false).tag(file.path)
+                ChangedFileRow(file: file, showPath: false, included: inclusion?(file.path))
+                    .tag(file.path)
             } else {
                 DisclosureGroup(isExpanded: binding(for: node.id)) {
-                    FileTreeRows(nodes: node.children ?? [], expanded: $expanded)
+                    FileTreeRows(nodes: node.children ?? [], expanded: $expanded, inclusion: inclusion)
                 } label: {
                     HStack(spacing: 7) {
                         Image(systemName: "folder.fill")

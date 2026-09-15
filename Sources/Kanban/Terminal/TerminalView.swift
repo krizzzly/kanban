@@ -64,6 +64,51 @@ final class KanbanTerminalView: LocalProcessTerminalView {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
+    // MARK: - Wortweises Bearbeiten (⌥← / ⌥→ / ⌥⌫)
+
+    /// Tastencodes der drei Kombinationen — layoutunabhängig, im Gegensatz zu
+    /// `charactersIgnoringModifiers`.
+    private enum KeyCode {
+        static let delete: UInt16 = 51
+        static let leftArrow: UInt16 = 123
+        static let rightArrow: UInt16 = 124
+    }
+
+    /// ⌥← / ⌥→ / ⌥⌫ als Meta-Sequenzen, weil `optionAsMetaKey` **aus** ist: ⌥ soll auf dem
+    /// Schweizer Layout weiter `@ # { }` schreiben, und mit ausgeschaltetem Meta gibt SwiftTerm die
+    /// drei Kombinationen an AppKit weiter, wo sie ins Leere laufen (ein `moveWordLeft:` o. ä.
+    /// behandelt der Terminal-View nicht) — ⌥← bewegte den Cursor also um **ein Zeichen**, ⌥⌫ tat
+    /// gar nichts.
+    ///
+    /// Gesendet wird die emacs-Schreibweise (`ESC b` / `ESC f` / `ESC DEL`, wie iTerm2s „natural
+    /// text editing“), nicht die CSI-Form: gegen die echten Konsolen gemessen versteht **jede** der
+    /// drei Empfänger die Meta-Sequenzen — Claude Code (`\x1Bb` → meta+left → `prevWord`, `ESC DEL`
+    /// → `deleteWordBefore`), Codex und die zsh. `ESC[1;3D` verstehen dagegen nur Claude und Codex;
+    /// in der zsh landet daraus ein wörtliches „D“ auf der Zeile.
+    ///
+    /// Bei eingeschaltetem `optionAsMeta` macht SwiftTerm dasselbe schon selbst, deshalb greift die
+    /// Behandlung nur, solange der Schalter aus ist.
+    private static func metaSequence(for event: NSEvent) -> [UInt8]? {
+        let flags = event.modifierFlags
+        guard flags.contains(.option), flags.intersection([.command, .control]).isEmpty else { return nil }
+        switch event.keyCode {
+        case KeyCode.leftArrow:  return EscapeSequences.emacsBack      // ESC b — ein Wort zurück
+        case KeyCode.rightArrow: return EscapeSequences.emacsForward   // ESC f — ein Wort vorwärts
+        case KeyCode.delete:     return [0x1b, 0x7f]                   // ESC DEL — Wort davor löschen
+        default:                 return nil
+        }
+    }
+
+    /// Schickt die Meta-Sequenz, wenn `event` eine der drei Kombinationen ist, und meldet, dass die
+    /// Taste damit verbraucht ist. Aufgerufen wird das aus `TerminalCache`s Tastatur-Monitor:
+    /// SwiftTerms `keyDown` ist `public` und nicht `open`, lässt sich also nicht überschreiben —
+    /// derselbe Grund, aus dem schon das Scrollen app-seitig abgefangen wird.
+    func handleWordEditingKey(_ event: NSEvent) -> Bool {
+        guard !optionAsMetaKey, let bytes = Self.metaSequence(for: event) else { return false }
+        send(bytes)
+        return true
+    }
+
     /// Keep the caret steady: any blinking style the inner app (or the SwiftTerm default) requests is
     /// coerced to its non-blinking equivalent, so the cursor never blinks while typing.
     override func cursorStyleChanged(source: Terminal, newStyle: CursorStyle) {

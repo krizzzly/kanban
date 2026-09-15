@@ -9,6 +9,9 @@ struct CardVM: Identifiable, Hashable {
     let badges: [CardBadge]
     let statusMarker: TaskStatusMarker?   // Claude's task-file status (shown as a dot, separate from column)
     var unresolvedMRComments: Int = 0     // open (unresolved) review discussions of the opened MR
+    var resolvedMRComments: Int = 0       // the settled ones — together they give GitLab's "x of y"
+    var mrReviewState: MRReviewState = .none  // approved / resolved verdict shown flush right
+    var approvedBy: [String] = []         // approvers, for the Approved badge's tooltip
     var mergeRequestURL: String?          // web URL of the MR in the 🔀/🚧 badge — the badge opens it
     var commentsURL: String?              // web URL of the MR the open-comment count belongs to
     var needsAttention: Bool = false      // the ticket's Claude console is waiting for an answer
@@ -22,6 +25,9 @@ struct CardVM: Identifiable, Hashable {
     /// True once every measured second is booked (used for the card's ✓). False while nothing was
     /// measured, so a Jira-only ticket shows no booking state at all.
     var fullyBooked: Bool { claudeSeconds > 0 && openToBookSeconds == 0 }
+
+    /// All review threads of the opened MR — the "of y" in the card's thread counter.
+    var totalMRComments: Int { resolvedMRComments + unresolvedMRComments }
 
     /// The iid printed on the 🔀/🚧 badge. Not always `primaryMR`: the badge prefers a *merged* MR,
     /// `WorkflowStatus.primaryMR` the newest *opened* one — so the badge links via this iid.
@@ -39,18 +45,57 @@ struct CardVM: Identifiable, Hashable {
     }
 }
 
+/// Ein Command, der auf die PROD-Daten-Bestätigung wartet (`get-task`/`start-task`). Trägt den
+/// fertigen Console-Text mit, damit die Bestätigung nichts neu zusammenbauen muss — und die
+/// Schreibweise, die der Agent dieses Projekts versteht (`/get-task …` bzw. `$get-task …`).
+struct PendingProdConfirmation: Identifiable {
+    let commandName: String
+    let ticketKey: String
+    let invocation: String
+    let text: String
+
+    var id: String { "\(commandName)|\(ticketKey)" }
+}
+
+/// Das Ergebnis der Jira-Nachführung vor `solve-task`, als eine Zeile für die Toolbar.
+/// `isWarning` heisst: etwas ist **nicht** passiert — die Meldung bleibt dann stehen, statt sich
+/// nach ein paar Sekunden selbst wegzuräumen.
+struct StartWorkNotice: Equatable {
+    let text: String
+    let isWarning: Bool
+}
+
 @MainActor
 @Observable
 final class AppModel {
     // Config
-    private(set) var config: HermesConfig?
+    private(set) var config: AppConfig?
     private(set) var configError: String?
+
+    /// Der Session-Watchdog. Hängt am Model, damit die Leiste ihn erreicht; er lebt aber für sich
+    /// (eigener Takt, eigene Datei) und weiss nichts vom Board.
+    let watchdog = WatchdogModel()
+    /// Nothing configured yet (fresh install, no Hermes to adopt from) — the app shows its setup
+    /// screen. Deliberately separate from `configError`: an empty config is a starting point, the
+    /// user did nothing wrong.
+    private(set) var needsSetup = false
     private(set) var projects: [ProjectConfig] = []
     private(set) var selectedProject: ProjectConfig?
 
     // Sprints
     private(set) var sprints: [JiraSprint] = []
-    private(set) var selectedSprint: JiraSprint?
+    /// Die Jira-Quelle des Boards: ein Sprint oder das Board als Ganzes (`SprintChoice`).
+    /// nil, solange die Sprintliste nicht geladen ist.
+    private(set) var selectedChoice: SprintChoice?
+    /// Das Agile-Board des Projekts — gebraucht für die Board-Wahl, die keinen Sprint hat.
+    private(set) var board: JiraBoard?
+
+    /// Der gewählte Sprint, wo einer gewählt ist. Bleibt als eigene Eigenschaft bestehen, weil das
+    /// halbe UI danach fragt; bei Board-Wahl ist er nil.
+    var selectedSprint: JiraSprint? { selectedChoice?.sprint }
+
+    /// Sprint- oder freier Modus. Je Projekt gemerkt (`SelectionStore`), Default Sprint.
+    private(set) var boardMode: BoardMode = .sprint
 
     // Board
     private(set) var cards: [CardVM] = []
@@ -59,11 +104,19 @@ final class AppModel {
     private var lastMergeRequests: [MergeRequestRef] = []   // cached to re-derive a card locally
 
     // Detail
-    private(set) var selectedTicketKey: String?
+    private(set) var selectedTicketKey: String? {
+        didSet { updateCurrentWorktree() }
+    }
     private(set) var taskFile: TaskFile?
     private(set) var reviewMarkdowns: [String] = []   // full content of each <KEY>_review*.md → "Review" tab(s)
     private(set) var fallbackSections: [TaskSection] = []
     private(set) var detailLoading = false
+    /// Der Inhalt des Task-Ordners (`<tasksPath>/<TICKET>/`) als Baum — siehe `TaskAttachments`.
+    /// Leer heisst: es gibt nichts, und der Knopf in der Tableiste bleibt aus.
+    private(set) var taskAttachments: [KBNode] = []
+    /// Die im Dateibaum gewählte Datei (absoluter Pfad). Nicht-nil heisst zugleich: rechts steht die
+    /// Vorschau statt des Task-Tabs.
+    var taskAttachmentSelection: String?
 
     // Terminal
     private(set) var activeTerminalSession: String?           // left: Claude, main-tree cwd
@@ -98,16 +151,67 @@ final class AppModel {
     private(set) var worktreeBusy = false
     private(set) var worktreeDbDump: StagedDbDump?       // staged DB seed file (path/size/age)
 
+    // Derselbe Panel-Aufbau für den **Haupt-Repo-Stack**. Eigene Felder statt eines gemeinsamen
+    // Zustands: beide Tabs stehen nebeneinander, ihre Ausgaben dürfen sich nicht überschreiben, und
+    // ein laufender `iwf stack build` im Maintree darf den Worktree-Tab nicht sperren.
+    private(set) var maintreeStackStatus: WorktreeStackStatus?
+    private(set) var maintreeStatusLoading = false
+    private(set) var maintreeStatusText: String = ""
+    private(set) var maintreeCommandOutput: String = ""
+    private(set) var maintreeBusy = false
+
+    // DB-Snapshots (`iwf db snapshot`) — je Stack ein Ordner unter ~/.iwf-dev/snapshots.
+    private(set) var worktreeSnapshots: [DbSnapshot] = []
+    private(set) var maintreeSnapshots: [DbSnapshot] = []
+
     // Status
     private(set) var isLoadingSprints = false
     private(set) var isRefreshing = false
     private(set) var errorMessage: String?
     private(set) var lastRefresh: Date?
 
+    // Jira-Feld „Lösung" des offenen Tickets: Stand, Ladezustand und der Editor.
+    /// nil = noch nicht geladen **oder** das Ticket hat kein solches Feld (dann bleibt der Knopf weg).
+    private(set) var solution: JiraSolution?
+    private(set) var solutionLoading = false
+    private(set) var solutionSaving = false
+    private(set) var solutionError: String?
+    /// Feld-Id je Projekt gemerkt: sie ist eine Eigenschaft der Instanz, nicht des Tickets, und der
+    /// Edit-Screen-Aufruf ist der teuerste Teil des Ladens.
+    private var solutionFieldIdByProject: [String: String] = [:]
+    var solutionSheetPresented = false
+
+    // Jira-Nachführung beim Absetzen von `solve-task` (Status „In Arbeit“ + Zuweisung an dich).
+    /// Was dabei herauskam — nil, solange in dieser Sitzung nichts nachgeführt wurde.
+    private(set) var startWorkNotice: StartWorkNotice?
+    /// Der angemeldete Jira-Benutzer je Instanz: `/myself` ändert sich über die Sitzung nicht, und
+    /// die Nachführung braucht die `accountId` bei jedem Aufruf. Das Board fragt dieselbe Stelle —
+    /// „mir zugewiesen" entscheidet über die Spalte (siehe `WorkflowStatus`).
+    private var jiraSelfByBaseUrl: [String: JiraUser] = [:]
+    /// Zählt die Nachführungen, damit eine späte Antwort (oder das Aufräumen der Meldung) eine
+    /// neuere Nachführung nicht überschreibt.
+    private var startWorkGeneration = 0
+
     // Settings sheet (gear button); writable — bound to the sheet presentation.
     var settingsPresented = false
+    /// „Task erstellen" im freien Modus — bound to the sheet presentation.
+    var newTaskSheetPresented = false
+    /// Vorbelegung für das Sheet. Gesetzt, wenn der Task aus einer **Karte ohne Nummer** entsteht:
+    /// dann sind MR-Titel und Branch schon bekannt und niemand soll sie abtippen.
+    var newTaskDraft = ""
     /// Eigenes Fenster (kein Sheet) mit dem Editor über Commands/Skills/Rules.
     var claudeWorkflowPresented = false
+
+    // MARK: Knowledgebase (📚 neben der Modus-Umschaltung)
+
+    /// Die Knowledgebase des Projekts (`modules.knowledgebase.projects.<key>.path`) — Baum links,
+    /// Ansicht rechts. Sie **ersetzt** Board und Detail im Fenster, statt sich als Sheet
+    /// davorzulegen: sie ist selbst ein Zwei-Spalten-Bild und will die ganze Fläche.
+    private(set) var knowledgebaseOpen = false
+    private(set) var kbNodes: [KBNode] = []
+    private(set) var kbLoading = false
+    /// Pfad der gewählten Datei — die Auswahl der Liste, deshalb schreibbar.
+    var kbSelection: String?
 
     // Attention: which tickets' Claude consoles are waiting for an answer (hook markers + pane
     // fallback). Which sections hold open questions is derived on demand (see questionSectionIDs).
@@ -147,10 +251,52 @@ final class AppModel {
     private(set) var commitSaveError: String?
 
     var commitEditorDirty: Bool { commitFileText != commitFileLoadedText }
+    /// Liegt die gewählte Datei überhaupt auf der Platte? Im Reiter „Diff" steht auch, was der
+    /// Branch **gelöscht** hat — dort gibt es nichts zu bearbeiten, und ein Speichern würde die
+    /// Datei wieder anlegen.
+    private(set) var commitFileExists = true
+
+    /// Dateien, die **nicht** mitcommittet werden (Pfade wie in `git status`). Der Haken je Zeile im
+    /// Commit-Fenster schreibt hier hinein; `GitCommitController` nimmt sie nach dem `add -A` wieder
+    /// aus dem Index.
+    private(set) var commitExcluded: Set<String> = []
+
+    func setCommitInclusion(_ included: Bool, path: String) {
+        if included { commitExcluded.remove(path) } else { commitExcluded.insert(path) }
+    }
+
+    func isCommitIncluded(_ path: String) -> Bool { !commitExcluded.contains(path) }
+
+    /// Was tatsächlich in den Commit geht — für die Zählung im Fenster und die Freigabe des Knopfs.
+    var commitIncludedCount: Int {
+        (commitState?.changedFiles ?? []).count { isCommitIncluded($0.path) }
+    }
+
+    /// Woher das Diff im rechten Feld stammt. Der Reiter „Diff" zeigt dieselbe Fläche, nur gegen die
+    /// Abzweig-Basis statt gegen das Arbeitsverzeichnis — deshalb ein Schalter statt einer zweiten
+    /// Ansicht.
+    enum CommitDiffSource: Equatable { case working, branch }
+    private(set) var commitDiffSource: CommitDiffSource = .working
+
+    /// Was der Branch gegenüber seiner Abzweig-Basis geändert hat (Reiter „Diff").
+    private(set) var branchDiff: GitBranchDiff?
+    private(set) var branchDiffLoading = false
+    /// Warum es kein Branch-Diff gibt — eine leere Liste und „keine Basis gefunden" sind zwei
+    /// verschiedene Auskünfte und dürfen nicht gleich aussehen.
+    private(set) var branchDiffError: String?
+
+    /// Die Dateiliste, die zur gewählten Quelle gehört.
+    var commitFiles: [GitChangedFile] {
+        commitDiffSource == .branch ? (branchDiff?.files ?? []) : (commitState?.changedFiles ?? [])
+    }
 
     // Worklog booking: how much ⏱ time is already booked per ticket (local ledger), plus the state
     // of an in-flight booking. Writing to Jira is explicit (a button), never automatic.
     private(set) var bookedByTicket: [String: TimeInterval] = [:]
+    /// Der ganze Ledger-Stand im Speicher. Nötig, weil die Tagesposten je Karte gerechnet werden und
+    /// `applyTimingsToCards` bei jedem Timing-Tick über alle Karten läuft — von der Platte gelesen
+    /// wäre das ein Datei-Zugriff je Karte und Tick.
+    private var ledgerByTicket: [String: WorklogLedger.Entry] = [:]
     private(set) var bookingBusy = false
     private(set) var bookingError: String?
     var bookingSheetPresented = false   // the "Alle offenen buchen" confirmation sheet
@@ -186,19 +332,25 @@ final class AppModel {
 
     func bootstrap() {
         guard config == nil, configError == nil else { return }
+        TerminalCache.shared.onTerminalClick = { [weak self] in self?.terminalClickTick &+= 1 }
         do {
-            let cfg = try HermesConfigLoader.load()
+            // First start on a machine that has Hermes: adopt its Jira/GitLab config once. Without
+            // Hermes this does nothing at all — Kanban is standalone, the setup screen takes over.
+            HermesImport.runIfNeeded()
+            let cfg = try KanbanConfig.load()
             config = cfg
+            guard cfg.isConfigured else {
+                needsSetup = true
+                return
+            }
             projects = cfg.projects
             // project.json für ALLE Projekte aktualisieren, nicht nur das gewählte — die zentral
             // verlinkten Commands lesen es in jedem Repo, unabhängig davon, was das Board zeigt.
             for project in cfg.projects where FileManager.default.fileExists(atPath: project.repoDir) {
                 _ = try? ClaudeProjectFile.write(for: project)
             }
-            jira = JiraClient(email: cfg.jiraEmail, apiToken: cfg.jiraApiToken)
-            if let apiUrl = cfg.gitlabApiUrl, let token = cfg.gitlabApiToken, !token.isEmpty {
-                gitlab = GitLabClient(apiBaseUrl: apiUrl, token: token, backend: cfg.gitlabBackend)
-            }
+            jira = JiraClient(config: cfg)
+            gitlab = GitLabClient(config: cfg)   // nil, solange GitLab nicht konfiguriert ist
             let creds = Data("\(cfg.jiraEmail):\(cfg.jiraApiToken)".utf8).base64EncodedString()
             AvatarCache.shared.configure(
                 authHeader: "Basic \(creds)",
@@ -226,8 +378,8 @@ final class AppModel {
 
     var hasGitlab: Bool { gitlab != nil }
 
-    /// Re-reads the Hermes config after the settings sheet saved it: rebuilds clients + project
-    /// list via `bootstrap()` and restores the previous selection where it still exists.
+    /// Re-reads the config after the settings sheet saved it: rebuilds clients + project list via
+    /// `bootstrap()` and restores the previous selection where it still exists.
     func reloadConfig() {
         let previousProject = selectedProject?.key
         let previousTicket = selectedTicketKey
@@ -235,6 +387,7 @@ final class AppModel {
         pollTask = nil
         config = nil
         configError = nil
+        needsSetup = false
         jira = nil
         gitlab = nil
         projects = []
@@ -259,31 +412,68 @@ final class AppModel {
     func selectProject(_ project: ProjectConfig) {
         guard project.id != selectedProject?.id else { return }
         selectedProject = project
+        // Die Knowledgebase gehört dem Projekt: der Baum des alten Projekts wäre nach dem Wechsel
+        // schlicht falsch. Offen bleibt die Ansicht, wenn das neue Projekt auch eine hat.
+        kbNodes = []
+        kbSelection = nil
+        if knowledgebaseOpen {
+            if project.kbPathAbsolute == nil { knowledgebaseOpen = false }
+            else { loadKnowledgebase() }
+        }
         SelectionStore.projectKey = project.key   // restored on the next launch
+        boardMode = SelectionStore.boardMode(forProject: project.key) ?? .sprint
         sprints = []
-        selectedSprint = nil
+        selectedChoice = nil
+        board = nil
         cards = []
         columns = []
+        newTaskConsoleSession = nil
         claudeCommands = ClaudeCommandScanner.scan(repoDir: project.repoDir,
-                                                   only: Self.ticketCommandNames)
+                                                   only: Self.ticketCommandNames,
+                                                   agent: project.agent)
         // Projektwerte für die kanonischen (projektunabhängigen) Commands/Skills bereitstellen.
         // Still: ein fehlendes Repo darf den Projektwechsel nicht stören.
         _ = try? ClaudeProjectFile.write(for: project)
         clearDetail()
-        Task { await loadSprints() }
+        Task { await loadForCurrentMode() }
     }
 
-    func selectSprint(_ sprint: JiraSprint) {
-        guard sprint.id != selectedSprint?.id else { return }
-        selectedSprint = sprint
+    /// Sprint-Modus braucht erst die Sprintliste (die dann `refresh` auslöst); der freie Modus liest
+    /// direkt lokal.
+    private func loadForCurrentMode() async {
+        switch boardMode {
+        case .sprint: await loadSprints()
+        case .free: await refresh()
+        }
+    }
+
+    /// Umschalten zwischen Sprint- und freiem Modus. Die Wahl gilt je Projekt und überlebt den
+    /// Neustart — genau wie der gewählte Sprint.
+    func setBoardMode(_ mode: BoardMode) {
+        guard mode != boardMode else { return }
+        boardMode = mode
         if let project = selectedProject {
-            SelectionStore.setSprintId(sprint.id, forProject: project.key)   // restored on the next launch
+            SelectionStore.setBoardMode(mode, forProject: project.key)
+        }
+        cards = []
+        columns = []
+        Task { await loadForCurrentMode() }
+    }
+
+    /// Sprint **oder** Board wählen — beides kommt aus demselben Picker, weil es dieselbe Frage
+    /// beantwortet: welche Jira-Tickets stehen auf dem Brett?
+    func selectChoice(_ choice: SprintChoice) {
+        guard choice != selectedChoice else { return }
+        selectedChoice = choice
+        if let project = selectedProject {
+            SelectionStore.setSprintChoice(choice.id, forProject: project.key)  // beim nächsten Start wieder da
         }
         Task { await refresh() }
     }
 
     func selectTicket(_ key: String) {
         if pendingConsoleText?.ticketKey != key { pendingConsoleText = nil }
+        newTaskConsoleSession = nil   // die Projekt-Console tritt hinter das Ticket zurück
         selectedTicketKey = key
         loadDetail(for: key)
         setupTerminal(for: key)
@@ -302,47 +492,47 @@ final class AppModel {
                 errorMessage = "Kein Board für \(project.prefix) gefunden."
                 return
             }
+            self.board = board
             let all = try await jira.sprints(boardId: board.id, baseUrl: project.jiraBaseUrl,
                                              states: "active,future,closed")
-            let sorted = SprintSelection.ordered(all)
-            sprints = sorted
-            // Restores the sprint the user last picked for this project (see SprintSelection.resolve).
-            selectedSprint = SprintSelection.resolve(
-                sprints: sorted, storedId: SelectionStore.sprintId(forProject: project.key))
-            if selectedSprint != nil {
-                await refresh()
-            } else {
-                errorMessage = "Keine Sprints für dieses Board."
-            }
+            sprints = SprintSelection.ordered(all)
+            // Stellt die zuletzt getroffene Wahl wieder her (siehe `SprintSelection.resolve`). Ein
+            // Board ohne aktiven Sprint landet auf `.board` — früher stand hier „Keine Sprints für
+            // dieses Board" und das Brett blieb leer.
+            selectedChoice = SprintSelection.resolve(
+                sprints: sprints, storedId: SelectionStore.sprintChoice(forProject: project.key))
+            await refresh()
         } catch {
             errorMessage = "Sprints laden fehlgeschlagen: \(error.localizedDescription)"
         }
     }
 
     func refresh() async {
-        guard let project = selectedProject, let sprint = selectedSprint, let jira else { return }
+        guard let project = selectedProject else { return }
+        guard boardMode == .free || selectedChoice != nil else { return }
         isRefreshing = true
         defer { isRefreshing = false; lastRefresh = Date() }
         do {
-            async let issuesTask = jira.sprintIssues(sprintId: sprint.id, baseUrl: project.jiraBaseUrl)
             async let mrsTask = fetchMergeRequests(for: project)
             async let worktreesTask = WorktreeScanner.scan(repoDir: project.repoDir)
-
-            // Sub-tasks are not shown as standalone cards — the story carries the work. Filter them
-            // before building cards. (Epic inheritance stays for parity with the self-test; on the
-            // board it is a no-op now, since the sub-tasks that would inherit are gone.)
-            let issues = EpicResolution.inheritFromParents(try await issuesTask)
-                .filter { !$0.isSubtask }
             let mrs = await mrsTask
             let worktrees = await worktreesTask
+
+            let issues = try await tickets(for: project, worktrees: worktrees, mergeRequests: mrs)
             self.worktrees = worktrees
             self.lastMergeRequests = mrs
 
             let dir = project.tasksPathAbsolute
+            // Wer bin ich auf dieser Instanz? Einmal je Sitzung geholt; ohne Auskunft ist eben kein
+            // Ticket „meins" und die Ableitung bleibt, wie sie war.
+            let myAccountId = await jiraSelf(baseUrl: project.jiraBaseUrl)?.accountId
             var sessionMap: [String: String] = [:]
             cards = issues.map { ticket in
                 var info = TaskFileLoader.statusMarker(ticketKey: ticket.key, in: dir)
-                let wt = WorktreeScanner.worktree(for: ticket.key, in: worktrees)
+                // Ein Ticket ohne Nummer wird über seinen Branch erkannt, nicht über den Key —
+                // `!139` steht in keinem Branchnamen (siehe `TicketMatching.matches`).
+                let branch = ticket.sourceBranch
+                let wt = WorktreeScanner.worktree(for: ticket.key, in: worktrees, branch: branch)
                 // A ticket can carry two recorded ids that disagree; the one with a transcript is the
                 // real conversation (see ClaudeSessionResolution). Read-only here — the file is only
                 // corrected when the ticket is actually opened.
@@ -353,7 +543,7 @@ final class AppModel {
                     sessionMap[ticket.key] = sid
                 }
 
-                let mr = WorkflowStatus.primaryMR(ticketKey: ticket.key, mergeRequests: mrs)
+                let mr = WorkflowStatus.primaryMR(ticketKey: ticket.key, mergeRequests: mrs, branch: branch)
 
                 // Rename the task file to match the MR's feature branch. First, so the writes below
                 // re-find the renamed file. Safe: only when the new name still belongs to the ticket.
@@ -365,15 +555,18 @@ final class AppModel {
                 // Auto-advance the persisted task-file status marker, idempotently, to match reality:
                 //   • ✅ Done   when Jira says Erledigt/Geschlossen (statusCategory "done"), or
                 //   • 🔵 Review when an MR is open for this ticket.
-                // Done wins (higher precedence); neither overrides an existing ✅ Done. Keeps the
-                // dot/marker in sync with the derived column so Claude and other tools see it too.
+                // Done wins (higher precedence); neither overrides an existing ✅ Done — **ausser** das
+                // Ticket ist wieder aufgemacht (Jira ausdrücklich nicht erledigt + neuerer offener MR),
+                // dann ist das ✅ ein Fossil und wird auf 🔵 zurückgesetzt. Keeps the dot/marker in sync
+                // with the derived column so Claude and other tools see it too.
                 if WorkflowStatus.shouldAutoSetDone(hasTaskFile: info.exists, currentMarker: info.marker,
                                                     jiraDone: ticket.isDoneInJira),
                    let url = TaskFileLoader.find(ticketKey: ticket.key, in: dir),
                    TaskFileLoader.writeStatus(.done, url: url) {
                     info.marker = .done
                 } else if WorkflowStatus.shouldAutoSetReview(ticketKey: ticket.key, hasTaskFile: info.exists,
-                                                             currentMarker: info.marker, mergeRequests: mrs),
+                                                             currentMarker: info.marker, mergeRequests: mrs,
+                                                             jiraState: ticket.jiraDoneState),
                           let url = TaskFileLoader.find(ticketKey: ticket.key, in: dir),
                           TaskFileLoader.writeStatus(.review, url: url) {
                     info.marker = .review
@@ -391,22 +584,31 @@ final class AppModel {
                     statusMarker: info.marker,
                     worktree: wt,
                     mergeRequests: mrs,
-                    jiraDone: ticket.isDoneInJira
+                    jiraState: ticket.jiraDoneState,
+                    isAssignedToMe: Self.isAssigned(ticket, to: myAccountId),
+                    branch: branch
                 )
                 var card = CardVM(ticket: ticket, column: res.column, badges: res.badges, statusMarker: info.marker)
-                // Open review comments on the ticket's opened MR (merged MRs always carry 0).
+                // Review state of the ticket's opened MR (merged MRs always carry the blank one).
                 card.unresolvedMRComments = mr?.unresolvedDiscussions ?? 0
+                card.resolvedMRComments = mr?.resolvedDiscussions ?? 0
+                card.mrReviewState = mr?.reviewState ?? .none
+                card.approvedBy = mr?.approvedBy ?? []
                 card.commentsURL = mr?.webUrl
                 card.mergeRequestURL = card.badgeMergeRequestIid
                     .flatMap { iid in mrs.first { $0.iid == iid }?.webUrl }
                 return card
             }
             sessionIdByTicket = sessionMap
-            bookedByTicket = WorklogLedger.bookedSeconds()
+            reloadLedger()
+            // Der Worktree des offenen Tickets hängt an beidem, was hier gerade neu wurde: der
+            // Worktree-Liste und den Tickets (der Branch der `!<iid>`-Karten).
+            updateCurrentWorktree()
             applyTimingsToCards()               // carry the cached ⏱ over, so badges don't blink per poll
             regroupColumns()                    // build columns from cards (always)
             recomputeAttention(notify: false)   // paint the ❓ where a console is waiting
             Task { await refreshPaneAttention() }
+            Task { await loadStackSweep() }   // Toolbar-Zähler „N Stacks stoppen“
             Task { await refreshTimings() }     // ⏱ cumulated Claude time per card
             // If the selected ticket's file was renamed under it (branch sync), reload the detail
             // on the new path so the tabs/watcher don't go stale.
@@ -417,12 +619,57 @@ final class AppModel {
             }
             errorMessage = nil
             // Open a ticket (and its terminal) automatically on first load, so the terminal is
-            // visible from the start instead of only after the user clicks a card.
-            if selectedTicketKey == nil, let first = firstBoardTicket() {
+            // visible from the start instead of only after the user clicks a card. Ausnahme: die
+            // Projekt-Console steht gerade im Detail — die darf ein Poll nicht wegschieben.
+            if selectedTicketKey == nil, newTaskConsoleSession == nil, let first = firstBoardTicket() {
                 selectTicket(first)
             }
         } catch {
             errorMessage = "Aktualisieren fehlgeschlagen: \(error.localizedDescription)"
+        }
+    }
+
+    /// Woher die Ticketliste kommt — der einzige Unterschied zwischen den beiden Modi. Alles danach
+    /// (Task-File, Worktree, MR, Statuslogik) ist identisch.
+    /// Der angemeldete Jira-Benutzer der Instanz — aus dem Cache, sonst einmal geholt. Ein
+    /// Fehlschlag ist hier **kein** Board-Fehler (anders als bei `solve-task`, wo ohne `accountId`
+    /// nichts zugewiesen werden kann): dann weiss die App nur nicht, welche Tickets meine sind.
+    private func jiraSelf(baseUrl: String) async -> JiraUser? {
+        if let cached = jiraSelfByBaseUrl[baseUrl] { return cached }
+        guard let jira, let me = try? await jira.currentUser(baseUrl: baseUrl) else { return nil }
+        jiraSelfByBaseUrl[baseUrl] = me
+        return me
+    }
+
+    /// „Gehört mir": verglichen wird die `accountId`, nicht der Anzeigename — der ist nicht eindeutig
+    /// und je Instanz anders geschrieben. Ohne bekannte eigene Id gehört nichts mir.
+    private static func isAssigned(_ ticket: Ticket, to accountId: String?) -> Bool {
+        guard let accountId, let mine = ticket.assigneeAccountId else { return false }
+        return mine == accountId
+    }
+
+    private func tickets(for project: ProjectConfig, worktrees: [Worktree],
+                         mergeRequests: [MergeRequestRef]) async throws -> [Ticket] {
+        switch boardMode {
+        case .sprint:
+            guard let choice = selectedChoice, let jira else { return [] }
+            // Sub-tasks are not shown as standalone cards — the story carries the work. Filter them
+            // before building cards. (Epic inheritance stays for parity with the self-test; on the
+            // board it is a no-op now, since the sub-tasks that would inherit are gone.)
+            let issues: [Ticket]
+            switch choice {
+            case .sprint(let sprint):
+                issues = try await jira.sprintIssues(sprintId: sprint.id, baseUrl: project.jiraBaseUrl)
+            case .board:
+                guard let board else { return [] }
+                issues = try await jira.boardIssues(boardId: board.id, baseUrl: project.jiraBaseUrl)
+            }
+            return EpicResolution.inheritFromParents(issues).filter { !$0.isSubtask }
+        case .free:
+            return LocalTickets.discover(tasksDirectory: project.tasksPathAbsolute,
+                                         prefix: project.prefix,
+                                         worktrees: worktrees,
+                                         mergeRequests: mergeRequests)
         }
     }
 
@@ -443,9 +690,16 @@ final class AppModel {
         return cards.first?.ticket.key
     }
 
+    /// Karten in Spalten. Sortiert wird **numerisch** (`TicketNumber`) statt lexikografisch — sonst
+    /// stünde EVEN-999 hinter EVEN-1000. In „Done" absteigend: dort landet im freien Modus die ganze
+    /// Historie, und das zuletzt Fertige gehört nach oben.
     private func regroupColumns() {
-        columns = KanbanColumn.ordered.map { col in
-            (col, cards.filter { $0.column == col }.sorted { $0.ticket.key < $1.ticket.key })
+        columns = boardMode.columns.map { col in
+            let inColumn = cards.filter { $0.column == col }
+            let sorted = col == .done
+                ? inColumn.sorted { TicketNumber.isAscending($1.ticket.key, $0.ticket.key) }
+                : inColumn.sorted { TicketNumber.isAscending($0.ticket.key, $1.ticket.key) }
+            return (col, sorted)
         }
     }
 
@@ -537,14 +791,22 @@ final class AppModel {
     private func reresolveCard(ticketKey key: String, project: ProjectConfig) {
         guard let idx = cards.firstIndex(where: { $0.ticket.key == key }) else { return }
         let info = TaskFileLoader.statusMarker(ticketKey: key, in: project.tasksPathAbsolute)
-        let wt = WorktreeScanner.worktree(for: key, in: worktrees)
+        let branch = cards[idx].ticket.sourceBranch
+        let wt = WorktreeScanner.worktree(for: key, in: worktrees, branch: branch)
         let res = WorkflowStatus.resolve(
             ticketKey: key, hasTaskFile: info.exists, statusMarker: info.marker,
-            worktree: wt, mergeRequests: lastMergeRequests, jiraDone: cards[idx].ticket.isDoneInJira)
+            worktree: wt, mergeRequests: lastMergeRequests, jiraState: cards[idx].ticket.jiraDoneState,
+            isAssignedToMe: Self.isAssigned(cards[idx].ticket,
+                                            to: jiraSelfByBaseUrl[project.jiraBaseUrl]?.accountId),
+            branch: branch)
         var card = CardVM(ticket: cards[idx].ticket, column: res.column, badges: res.badges, statusMarker: info.marker)
-        // Rebuilt from the cached MRs, so the 💬-count and the badge links survive a local status change.
-        let mr = WorkflowStatus.primaryMR(ticketKey: key, mergeRequests: lastMergeRequests)
+        // Rebuilt from the cached MRs, so the 💬-count, the review badge and the links survive a
+        // local status change.
+        let mr = WorkflowStatus.primaryMR(ticketKey: key, mergeRequests: lastMergeRequests, branch: branch)
         card.unresolvedMRComments = mr?.unresolvedDiscussions ?? 0
+        card.resolvedMRComments = mr?.resolvedDiscussions ?? 0
+        card.mrReviewState = mr?.reviewState ?? .none
+        card.approvedBy = mr?.approvedBy ?? []
         card.commentsURL = mr?.webUrl
         card.mergeRequestURL = card.badgeMergeRequestIid
             .flatMap { iid in lastMergeRequests.first { $0.iid == iid }?.webUrl }
@@ -562,6 +824,8 @@ final class AppModel {
         taskFile = nil
         reviewMarkdowns = []
         fallbackSections = []
+        taskAttachments = []
+        taskAttachmentSelection = nil
         worktreeStatusText = ""
         worktreeCommandOutput = ""
         worktreeDbDump = nil
@@ -583,6 +847,7 @@ final class AppModel {
         }
         let repoDir = project.repoDir
         let tasksDir = project.tasksPathAbsolute
+        let agent = project.agent
         let worktree = WorktreeScanner.worktree(for: key, in: worktrees)
 
         Task.detached { [weak self] in
@@ -602,15 +867,34 @@ final class AppModel {
             // `sessions.json` (which also covers tickets that have no task file yet). Without the
             // write-through the two drift apart as soon as Claude creates the task file mid-session,
             // and the board then watches a conversation that never existed.
-            let taskFileURL = TaskFileLoader.find(ticketKey: key, in: tasksDir)
-            let sessionId = ClaudeSessionResolution.resolve(
-                taskFileId: taskFileURL.flatMap { TaskFileLoader.sessionId(in: $0) },
-                storeId: SessionIdStore.peek(forTicket: key),
-                cwd: repoDir) ?? UUID().uuidString.lowercased()
-            if let taskFileURL { TaskFileLoader.writeSessionId(sessionId, url: taskFileURL) }
-            SessionIdStore.set(sessionId, forTicket: key)
-
-            let hasTranscript = ClaudeTranscripts.transcriptExists(sessionId: sessionId, cwd: repoDir)
+            //
+            // Nur für Agents, die eine Id **annehmen** (`claude --session-id`). Codex erfindet sie
+            // selbst; eine hier erzeugte Id in das Task-File zu schreiben würde eine Konversation
+            // behaupten, die es nicht gibt — und die ⏱-Zeit auf ein Transcript zeigen lassen, das
+            // nie entsteht. Lieber nichts als etwas Falsches.
+            var sessionId: String?
+            var hasTranscript = false
+            if agent.supportsPresetSessionId {
+                let taskFileURL = TaskFileLoader.find(ticketKey: key, in: tasksDir)
+                let resolved = ClaudeSessionResolution.resolve(
+                    taskFileId: taskFileURL.flatMap { TaskFileLoader.sessionId(in: $0) },
+                    storeId: SessionIdStore.peek(forTicket: key),
+                    cwd: repoDir) ?? UUID().uuidString.lowercased()
+                if let taskFileURL { TaskFileLoader.writeSessionId(resolved, url: taskFileURL) }
+                SessionIdStore.set(resolved, forTicket: key)
+                sessionId = resolved
+                hasTranscript = ClaudeTranscripts.transcriptExists(sessionId: resolved, cwd: repoDir)
+            } else {
+                // Codex: die Id gehört Codex, wir finden sie über den Thread-Namen (siehe
+                // `CodexSessions`). `hasTranscript` heisst hier „es gibt einen Rollout" — und nur
+                // dann kann `codex resume` gelingen: ohne Rollout bricht es sichtbar ab
+                // („no rollout found for thread id …"), verifiziert gegen 0.147.
+                let name = CodexSessions.threadName(forTicket: key)
+                if let known = CodexSessions.sessionId(threadName: name) {
+                    sessionId = known
+                    hasTranscript = CodexSessions.rolloutURL(sessionId: known) != nil
+                }
+            }
 
             let plan = TerminalSessionResolver.resolve(
                 ticketKey: key,
@@ -618,11 +902,29 @@ final class AppModel {
                 worktree: worktree,
                 sessionId: sessionId,
                 hasTranscript: hasTranscript,
+                agent: agent,
                 existing: tmux.listSessions()
             )
             _ = tmux.run(plan: plan)
             tmux.setStatusBar(plan.name, visible: false)   // hide the green tmux status bar
             tmux.cancelCopyMode(plan.name)                 // clear any leftover copy-mode
+            // Musste die Session angelegt werden, kann der Cache nur eine **tote** Ansicht dazu
+            // halten (die Session war ja eben noch weg — etwa nach einem `exit` im Pane). Sie stehen
+            // zu lassen hiesse, für immer „can't find session" zu zeigen statt der neuen Session.
+            if plan.needsCreate { await MainActor.run { TerminalCache.shared.remove(plan.name) } }
+
+            // Frische Codex-Console: Codex' eigenem `/rename` den Thread-Namen geben, unter dem
+            // Kanban ihn wiederfindet. Das ist ein **TUI**-Command — Enter schickt keinen Turn ab,
+            // kostet also nichts und ist der einzige Weg zu einer stabilen Zuordnung, weil Codex
+            // keine vorgegebene Session-Id annimmt.
+            // Bedingung ist „neuer Thread", nicht „keine Id bekannt": eine Session, die einmal
+            // umbenannt wurde, aber nie einen Turn hatte, hat einen Index-Eintrag **und** keinen
+            // Rollout — sie wird also frisch gestartet und braucht den Namen wieder.
+            if agent == .codex, plan.needsCreate, !hasTranscript {
+                try? await Task.sleep(for: .seconds(2))    // Codex nimmt erst nach dem Start Eingaben
+                tmux.sendText(plan.name, "/rename \(CodexSessions.threadName(forTicket: key))")
+                tmux.sendKeys(plan.name, "Enter")
+            }
 
             // Second (right) terminal: a plain shell opened in the worktree, if one exists.
             var worktreeSession: String? = nil
@@ -640,7 +942,7 @@ final class AppModel {
                 self.terminalSessionTicket = key
                 self.activeWorktreeTerminalSession = worktreeSession
                 // The id may have been created just now — arm the ⏱ transcript watch on it.
-                self.sessionIdByTicket[key] = sessionId
+                if let sessionId { self.sessionIdByTicket[key] = sessionId }
                 self.startTimingWatch(for: key)
                 // Flush a command parked by the board context menu. A freshly created session is
                 // still booting Claude — give it a moment before typing.
@@ -657,19 +959,137 @@ final class AppModel {
     /// still edit/confirm) and switches the terminal pane to the Claude tab.
     func sendClaudeCommand(_ command: ClaudeCommand) {
         guard let key = selectedTicketKey else { return }
-        typeIntoConsole("/\(command.name) \(key) ", ticketKey: key)
+        dispatchClaudeCommand(name: command.name, argument: key, ticketKey: key)
     }
 
     /// Board context menu: run a command for *any* card — selects the ticket first (which opens
     /// its console), then types `/command <TICKET>`.
     func sendClaudeCommand(_ command: ClaudeCommand, ticketKey: String) {
-        typeIntoConsole("/\(command.name) \(ticketKey) ", ticketKey: ticketKey)
+        dispatchClaudeCommand(name: command.name, argument: ticketKey, ticketKey: ticketKey)
+    }
+
+    // MARK: - PROD-Daten-Bestätigung
+
+    /// Commands, die Jira-Inhalte in die KI holen und deshalb erst nach ausdrücklicher Bestätigung
+    /// in die Console gehen. `start-task` ist mit dabei, obwohl es selbst nichts lädt: fehlt das
+    /// Task-File, ruft es `get-task` auf und holt das Ticket doch.
+    static let prodConfirmCommands: Set<String> = ["get-task", "start-task"]
+
+    /// Der Command, der auf die Bestätigung wartet — non-nil heisst: Dialog offen. Wird nur über
+    /// `confirmProdCommand`/`cancelProdCommand` wieder leer, der Command selbst ist bis dahin
+    /// nicht in der Console.
+    var prodConfirmation: PendingProdConfirmation?
+
+    /// Der Agent des aktuellen Projekts — Präfix, Startbefehl und Asset-Ort hängen daran.
+    /// Ohne Projekt gilt der Fallback, damit nirgends ein Optional durchgeschleift werden muss.
+    var agent: AgentKind { selectedProject?.agent ?? .fallback }
+
+    /// Ein Command auf dem Weg in die Console: entweder direkt oder über die PROD-Bestätigung.
+    private func dispatchClaudeCommand(name: String, argument: String, ticketKey: String) {
+        let text = "\(agent.commandPrefix)\(name) \(argument) "
+        guard Self.prodConfirmCommands.contains(name) else {
+            deliver(commandName: name, text: text, ticketKey: ticketKey)
+            return
+        }
+        prodConfirmation = PendingProdConfirmation(commandName: name, ticketKey: ticketKey,
+                                                  invocation: "\(agent.commandPrefix)\(name) \(argument)",
+                                                  text: text)
+    }
+
+    /// Der gemeinsame letzte Schritt beider Wege (direkt und bestätigt): erst die Jira-Nachführung
+    /// anstossen, dann tippen. Ein abgebrochener Bestätigungsdialog kommt hier nie an — dann wird
+    /// auch in Jira nichts geschrieben.
+    private func deliver(commandName: String, text: String, ticketKey: String) {
+        if Self.startWorkCommands.contains(commandName) { startJiraWork(ticketKey: ticketKey) }
+        typeIntoConsole(text, ticketKey: ticketKey)
+    }
+
+    /// Bestätigt: der Command darf in die Console (getippt, nicht abgeschickt — wie immer).
+    func confirmProdCommand() {
+        guard let pending = prodConfirmation else { return }
+        prodConfirmation = nil
+        deliver(commandName: pending.commandName, text: pending.text, ticketKey: pending.ticketKey)
+    }
+
+    /// Abgebrochen: nichts wird getippt, das Ticket bleibt unangetastet.
+    func cancelProdCommand() {
+        prodConfirmation = nil
+    }
+
+    // MARK: - Arbeit aufnehmen (Jira-Status + Zuweisung)
+
+    /// Commands, bei denen die Arbeit wirklich losgeht. Genau davor zieht Kanban das Jira-Ticket
+    /// nach: Status „In Arbeit“ und Zuweisung an dich.
+    ///
+    /// Warum die App und nicht der Skill: Jira schreiben kann hier nur Kanban — es hält Zugang und
+    /// Host-Guard, der Agent hat für Transition und Zuweisung kein Werkzeug. Und es ist der einzige
+    /// Weg, der nicht davon abhängt, ob die KI den Schritt abarbeitet.
+    static let startWorkCommands: Set<String> = ["solve-task"]
+
+    /// Zieht das Jira-Ticket auf den Stand, den das Absetzen von `solve-task` bedeutet: Status
+    /// „In Arbeit“, zugewiesen an dich. Läuft nebenher — der Command wird sofort getippt, eine
+    /// hakende Jira-Antwort darf die Arbeit nicht aufhalten.
+    ///
+    /// Geschrieben wird nur, was fehlt (siehe `JiraClient.startWork`); ging etwas nicht, bleibt die
+    /// Meldung in der Toolbar stehen, statt still zu verschwinden.
+    private func startJiraWork(ticketKey: String) {
+        guard let jira, let project = selectedProject else { return }
+        let baseUrl = project.jiraBaseUrl
+        startWorkGeneration += 1
+        let generation = startWorkGeneration
+        startWorkNotice = StartWorkNotice(text: "\(ticketKey): Jira wird nachgezogen…", isWarning: false)
+
+        Task { [weak self] in
+            let notice: StartWorkNotice
+            var didWrite = false
+            do {
+                let me: JiraUser
+                if let cached = self?.jiraSelfByBaseUrl[baseUrl] {
+                    me = cached
+                } else {
+                    me = try await jira.currentUser(baseUrl: baseUrl)
+                    self?.jiraSelfByBaseUrl[baseUrl] = me
+                }
+                guard let accountId = me.accountId else {
+                    throw APIError.decode("Jira nennt keine accountId für \(me.displayName)")
+                }
+                let result = try await jira.startWork(issueKey: ticketKey, baseUrl: baseUrl,
+                                                      accountId: accountId, displayName: me.displayName)
+                notice = StartWorkNotice(text: result.summary, isWarning: result.isWarning)
+                didWrite = result.didWrite
+            } catch {
+                notice = Self.startWorkFailureNotice(ticketKey: ticketKey, error: error)
+            }
+
+            guard let self, generation == self.startWorkGeneration else { return }
+            self.startWorkNotice = notice
+            // Geschrieben heisst: das Board stimmt nicht mehr. Die Zuweisung steht als Avatar auf
+            // der Karte — sichtbar wird sie erst mit den neu geholten Issues.
+            if didWrite { await self.refresh() }
+            guard !notice.isWarning else { return }   // Warnungen bleiben stehen
+            Task { [weak self] in
+                try? await Task.sleep(for: .seconds(10))
+                guard let self, generation == self.startWorkGeneration else { return }
+                self.startWorkNotice = nil
+            }
+        }
+    }
+
+    /// Ein Ticket, das Jira nicht kennt (freier Modus, lokal erfundene Nummer), ist kein Fehler —
+    /// dort gibt es schlicht nichts nachzuziehen. Alles andere ist eine Warnung.
+    private static func startWorkFailureNotice(ticketKey: String, error: Error) -> StartWorkNotice {
+        if case APIError.api(_, 404, _) = error {
+            return StartWorkNotice(text: "\(ticketKey) steht nicht in Jira — nichts nachzuziehen.",
+                                   isWarning: false)
+        }
+        return StartWorkNotice(text: "\(ticketKey): Jira nicht nachgezogen — \(error.localizedDescription)",
+                               isWarning: true)
     }
 
     /// Board context menu on Review cards: `/review-merge !<iid>` — the command wants the MR
     /// number, not the ticket key.
     func sendReviewMerge(ticketKey: String, mrIid: Int) {
-        typeIntoConsole("/review-merge !\(mrIid) ", ticketKey: ticketKey)
+        typeIntoConsole("\(agent.commandPrefix)review-merge !\(mrIid) ", ticketKey: ticketKey)
     }
 
     /// Types text into the ticket's Claude console, selecting the ticket first if needed. While
@@ -684,6 +1104,155 @@ final class AppModel {
         } else {
             pendingConsoleText = (ticketKey, text)
         }
+    }
+
+    // MARK: - Task erstellen (freier Modus)
+
+    /// Die Claude-Console des Projekts, in der `/create-task` läuft — nil, solange sie nie gebraucht
+    /// wurde. Bewusst **nicht** an ein Ticket gebunden: das entsteht ja erst durch den Command.
+    private(set) var newTaskConsoleSession: String?
+
+    /// Öffnet „Task erstellen" mit dem, was die Karte schon weiss — Titel und Branch des MR. Der
+    /// Branch steht bewusst mit dabei: `/create-task` soll den vorhandenen Branch weiterbenutzen,
+    /// statt einen zweiten für dieselbe Arbeit anzulegen.
+    func startTaskFromBranch(_ ticket: Ticket) {
+        guard let branch = ticket.sourceBranch else { return }
+        var lines = [ticket.summary]
+        lines.append("")
+        lines.append("Die Arbeit liegt schon auf dem Branch `\(branch)` (Merge Request \(ticket.key)).")
+        newTaskDraft = lines.joined(separator: "\n")
+        newTaskSheetPresented = true
+    }
+
+    /// Beschreibung → `/create-task <text>` in der Projekt-Console.
+    ///
+    /// Der Text wird **gepastet, nicht getippt** (`TmuxController.pasteText`): eine mehrzeilige
+    /// Beschreibung würde als Tastendruck beim ersten Zeilenumbruch abgeschickt. Enter drücken wir
+    /// nicht — wie bei jedem anderen Command liest der Mensch gegen und schickt selbst ab.
+    func createTask(description: String) {
+        let text = description.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty, let project = selectedProject else { return }
+
+        // Die Console tritt an die Stelle des Ticket-Details, sonst sähe niemand Claudes Antwort.
+        selectedTicketKey = nil
+        clearDetail()
+
+        let name = Self.newTaskSessionName(project: project)
+        let repoDir = project.repoDir
+        let storeKey = Self.newTaskSessionStoreKey(project: project)
+        let agent = project.agent
+
+        Task.detached { [weak self] in
+            let tmux = TmuxController()
+            guard tmux.isAvailable else { return }
+
+            guard let setup = await Self.ensureNewTaskSession(name: name, repoDir: repoDir,
+                                                              storeKey: storeKey, agent: agent,
+                                                              tmux: tmux) else {
+                await MainActor.run { self?.noteConsoleFailure(name: name, repoDir: repoDir) }
+                return
+            }
+            tmux.cancelCopyMode(name)
+            // Frisch gestartetes Claude braucht einen Moment, bis es Eingaben annimmt — dieselbe
+            // Wartezeit wie beim Ticket-Terminal.
+            if setup == .created { try? await Task.sleep(for: .seconds(2)) }
+            tmux.pasteText(name, "\(agent.commandPrefix)create-task \(text)")
+
+            await MainActor.run { self?.newTaskConsoleSession = name }
+        }
+    }
+
+    /// Zeigt die Projekt-Console wieder an, ohne etwas zu tippen (nach einem Klick auf eine Karte,
+    /// oder wenn es sie aus einer früheren Sitzung gibt).
+    ///
+    /// Sie wird dabei **angelegt, falls sie nicht läuft**: dass es den Knopf gibt, sagt nur, dass
+    /// dieses Projekt schon einmal eine Console hatte (`SessionIdStore`, überlebt den Neustart) —
+    /// die tmux-Session überlebt einen Rechner-Neustart dagegen nicht, und ein Attach auf eine
+    /// verschwundene Session zeigte im Terminal nur „can't find session: kanban-<KEY>-new".
+    /// Getippt wird nichts; `/create-task` kommt erst aus dem Sheet.
+    func showNewTaskConsole() {
+        guard let project = selectedProject else { return }
+        selectedTicketKey = nil
+        clearDetail()
+
+        let name = Self.newTaskSessionName(project: project)
+        let repoDir = project.repoDir
+        let storeKey = Self.newTaskSessionStoreKey(project: project)
+        let agent = project.agent
+
+        Task.detached { [weak self] in
+            let tmux = TmuxController()
+            guard tmux.isAvailable else { return }
+            guard await Self.ensureNewTaskSession(name: name, repoDir: repoDir, storeKey: storeKey,
+                                                  agent: agent, tmux: tmux) != nil else {
+                await MainActor.run { self?.noteConsoleFailure(name: name, repoDir: repoDir) }
+                return
+            }
+            tmux.cancelCopyMode(name)
+            await MainActor.run { self?.newTaskConsoleSession = name }
+        }
+    }
+
+    /// Ob es für dieses Projekt schon eine Console gibt, die man wieder aufrufen kann.
+    var hasNewTaskConsole: Bool {
+        guard let project = selectedProject else { return false }
+        return SessionIdStore.peek(forTicket: Self.newTaskSessionStoreKey(project: project)) != nil
+    }
+
+    /// Ergebnis von `ensureNewTaskSession` — `created` heisst „der Agent fährt gerade hoch" und ist
+    /// der einzige Fall, in dem vor dem Tippen gewartet werden muss.
+    private enum ConsoleSetup { case existing, created }
+
+    /// Sorgt dafür, dass die Projekt-Console als tmux-Session **existiert**; nil heisst, dass sie
+    /// nicht angelegt werden konnte (typisch: das Repo-Verzeichnis gibt es nicht — `tmux
+    /// new-session -c` scheitert dann). Off-main aufzurufen, sie shellt nach tmux.
+    private static func ensureNewTaskSession(name: String, repoDir: String, storeKey: String,
+                                             agent: AgentKind, tmux: TmuxController) async -> ConsoleSetup? {
+        if tmux.hasSession(name) { return .existing }
+
+        // Eigene, stabile Session-Id je Projekt: die create-task-Gespräche laufen damit über
+        // Neustarts hinweg in derselben Konversation weiter. Für Codex entfällt sie (siehe
+        // `setupTerminal`) — die Console ist dann bei jedem Start eine frische.
+        var sessionId: String?
+        var hasTranscript = false
+        if agent.supportsPresetSessionId {
+            let resolved = await MainActor.run { SessionIdStore.peek(forTicket: storeKey) }
+                ?? UUID().uuidString.lowercased()
+            await MainActor.run { SessionIdStore.set(resolved, forTicket: storeKey) }
+            sessionId = resolved
+            hasTranscript = ClaudeTranscripts.transcriptExists(sessionId: resolved, cwd: repoDir)
+        }
+
+        guard tmux.createSession(
+            name: name, cwd: repoDir,
+            command: TerminalSessionResolver.launchCommand(agent: agent, sessionId: sessionId,
+                                                           hasTranscript: hasTranscript))
+        else { return nil }
+        tmux.setStatusBar(name, visible: false)
+        // Eine Session, die es eben noch nicht gab, kann keinen lebenden Terminal-View haben: ein
+        // zwischenzeitlich gescheitertes Attach („can't find session") hängt sonst als tote Ansicht
+        // im Cache und würde auch die frische Session nie zeigen.
+        await MainActor.run { TerminalCache.shared.remove(name) }
+        return .created
+    }
+
+    /// Die Console liess sich nicht anlegen — das muss man sehen, statt in ein totes Terminal zu
+    /// schauen. Die Warnung bleibt stehen (wie bei der Jira-Nachführung).
+    private func noteConsoleFailure(name: String, repoDir: String) {
+        newTaskConsoleSession = nil
+        startWorkGeneration += 1
+        startWorkNotice = StartWorkNotice(
+            text: "Console \(name) liess sich nicht starten — Verzeichnis \(repoDir) prüfen.",
+            isWarning: true)
+    }
+
+    static func newTaskSessionName(project: ProjectConfig) -> String {
+        "kanban-\(project.key.uppercased())-new"
+    }
+
+    /// Pseudo-Ticket-Key im `SessionIdStore` — kollidiert nicht mit echten Keys (`PREFIX-123`).
+    static func newTaskSessionStoreKey(project: ProjectConfig) -> String {
+        "new:\(project.key.lowercased())"
     }
 
     /// Off-main typing worker: exits copy-mode first (a scrolled-back pane would swallow the
@@ -737,9 +1306,31 @@ final class AppModel {
     // MARK: - Worktree stack
 
     /// The worktree of the currently selected ticket (nil if it has none yet).
-    var currentWorktree: Worktree? {
+    ///
+    /// **Gespeichert, nicht bei jedem Lesen abgeleitet.** Die Ableitung las `cards` mit (für den
+    /// `sourceBranch` der `!<iid>`-Karten), und damit hing jede View, die nach dem Worktree fragt,
+    /// an der ganzen Kartenliste — die schreibt `applyTimingsToCards` alle ~1,5 s, solange Claude
+    /// antwortet, und `setAttention` ebenso. Das Stack-Panel baute daraufhin jedes Mal seine ganze
+    /// Ausgabe neu, ohne dass sich an ihr etwas geändert hätte.
+    ///
+    /// Neu berechnet wird bei den drei Dingen, die den Wert wirklich bestimmen: andere Auswahl
+    /// (`didSet` auf `selectedTicketKey`), neue Worktree-Liste, neue Tickets (beides in `refresh`).
+    private(set) var currentWorktree: Worktree?
+
+    /// Nur schreiben, wenn sich etwas ändert: eine Zuweisung an eine `@Observable`-Eigenschaft
+    /// benachrichtigt auch dann, wenn der Wert derselbe ist.
+    private func updateCurrentWorktree() {
+        let next = selectedTicketKey.flatMap {
+            WorktreeScanner.worktree(for: $0, in: worktrees, branch: selectedTicket?.sourceBranch)
+        }
+        if next != currentWorktree { currentWorktree = next }
+    }
+
+    /// Das gewählte Ticket samt seiner Herkunft — für ein Ticket ohne Nummer steht dort der Branch,
+    /// über den es überhaupt gefunden wird.
+    var selectedTicket: Ticket? {
         guard let key = selectedTicketKey else { return nil }
-        return WorktreeScanner.worktree(for: key, in: worktrees)
+        return cards.first { $0.ticket.key == key }?.ticket
     }
 
     /// The ticket's numeric id used by `iwf worktree create` (e.g. BFEZVM-4569 → "4569").
@@ -908,6 +1499,397 @@ final class AppModel {
     func worktreeRestart() { runWorktreeLifecycle(["worktree", "restart"]) }
     func worktreeDestroy() { runWorktreeLifecycle(["worktree", "destroy", "-f"]) }
 
+    // MARK: - Beide Stacks über ein Ziel angesprochen
+
+    /// Das Verzeichnis, in dem die `iwf`-Befehle dieses Stacks laufen.
+    func directory(for target: StackTarget) -> String? {
+        switch target {
+        case .worktree: return currentWorktree?.path
+        case .maintree: return selectedProject?.repoDir
+        }
+    }
+
+    /// Der Branch, der dort ausgecheckt ist. Beim Haupt-Repo steht er in derselben
+    /// `git worktree list`-Ausgabe wie die Worktrees — es ist dort schlicht der erste Eintrag.
+    func branch(for target: StackTarget) -> String? {
+        switch target {
+        case .worktree: return currentWorktree?.branch
+        case .maintree:
+            guard let repoDir = selectedProject?.repoDir else { return nil }
+            let wanted = (repoDir as NSString).standardizingPath
+            return worktrees.first { ($0.path as NSString).standardizingPath == wanted }?.branch
+        }
+    }
+
+    /// `https://<ordnername>.<stackDomain>` — beim Haupt-Repo der Repo-Ordner, beim Worktree dessen.
+    func stackURL(for target: StackTarget) -> URL? {
+        guard let path = directory(for: target) else { return nil }
+        return URL(string: "https://\((path as NSString).lastPathComponent).test")
+    }
+
+    func stackStatus(for target: StackTarget) -> WorktreeStackStatus? {
+        target == .worktree ? stackStatus : maintreeStackStatus
+    }
+
+    func isLoadingStatus(for target: StackTarget) -> Bool {
+        target == .worktree ? stackStatusLoading : maintreeStatusLoading
+    }
+
+    func isBusy(_ target: StackTarget) -> Bool {
+        target == .worktree ? worktreeBusy : maintreeBusy
+    }
+
+    func statusText(for target: StackTarget) -> String {
+        target == .worktree ? worktreeStatusText : maintreeStatusText
+    }
+
+    func commandOutput(for target: StackTarget) -> String {
+        target == .worktree ? worktreeCommandOutput : maintreeCommandOutput
+    }
+
+    /// `iwf stack ps` + die abgeleitete Herleitung, für das gewählte Ziel.
+    func refreshStatus(for target: StackTarget) {
+        switch target {
+        case .worktree:
+            refreshWorktreeStatus()
+        case .maintree:
+            guard let cwd = directory(for: .maintree) else { return }
+            runIwf(["stack", "ps"], cwd: cwd, into: .status, stack: .maintree)
+            Task { await refreshDerivedStatus(for: .maintree) }
+        }
+    }
+
+    /// Leitet den Zustand aus Docker ab — read-only, deshalb bei jedem Tab-Besuch. Für das
+    /// Haupt-Repo ist der „Worktree-Pfad" schlicht das Repo selbst; der Stack-Name ist so oder so
+    /// der Ordnername, deshalb reicht derselbe Scanner.
+    func refreshDerivedStatus(for target: StackTarget) async {
+        guard target == .maintree else { await refreshStackStatus(); return }
+        guard let repoDir = selectedProject?.repoDir else { maintreeStackStatus = nil; return }
+        let projectName = (repoDir as NSString).lastPathComponent
+        maintreeStatusLoading = true
+        defer { maintreeStatusLoading = false }
+        maintreeStackStatus = await Task.detached {
+            DockerStatusScanner().scan(worktreePath: repoDir, projectName: projectName)
+        }.value
+    }
+
+    /// Start/Stop/Neustart. Der Worktree läuft über `iwf worktree …` (iwf findet ihn über seine
+    /// Nummer), das Haupt-Repo über `iwf stack …` im eigenen Verzeichnis — gegen `iwf stack --help`
+    /// geprüft. **Destroy gibt es hier nicht**: aus dem Haupt-Repo nähme es wegen des
+    /// Substring-Filters jedes `local/<projekt>-*`-Image mit.
+    func lifecycle(_ action: StackLifecycle, for target: StackTarget) {
+        guard let cwd = directory(for: target) else { return }
+        let args: [String]
+        switch (action, target) {
+        case (.start, .worktree):   args = ["worktree", "start"]
+        case (.stop, .worktree):    args = ["worktree", "stop"]
+        case (.restart, .worktree): args = ["worktree", "restart"]
+        case (.start, .maintree):   args = ["stack", "start"]
+        case (.stop, .maintree):    args = ["stack", "stop"]
+        case (.restart, .maintree): args = ["stack", "restart"]
+        }
+        runIwf(args, cwd: cwd, into: .command, stack: target, thenRefresh: true)
+    }
+
+    // MARK: - DB-Snapshots
+
+    /// Der Stack-Name des Ziels — Ordnername des Worktrees bzw. des Repos. Derselbe Wert, den
+    /// `DockerStatusScanner` benutzt und unter dem iwf seine Snapshots ablegt.
+    func stackName(for target: StackTarget) -> String? {
+        directory(for: target).map { ($0 as NSString).lastPathComponent }
+    }
+
+    func snapshots(for target: StackTarget) -> [DbSnapshot] {
+        target == .worktree ? worktreeSnapshots : maintreeSnapshots
+    }
+
+    /// Liest den Snapshot-Ordner neu — read-only, kostet nichts, deshalb bei jedem Tab-Besuch.
+    func refreshSnapshots(for target: StackTarget) {
+        guard let stack = stackName(for: target) else { return }
+        let list = DbSnapshots.list(stack: stack)
+        switch target {
+        case .worktree: worktreeSnapshots = list
+        case .maintree: maintreeSnapshots = list
+        }
+    }
+
+    /// Legt einen Snapshot an: ohne `label` als `latest` (überschreibt den vorhandenen), mit
+    /// `label` über `-t` und anschliessendes Umbenennen — `iwf` selbst kennt keine Namen, aber
+    /// `restore -f` nimmt jeden Basename aus dem Ordner.
+    ///
+    /// `iwf db snapshot create` **stoppt die Datenbank** und startet sie danach wieder; das dauert
+    /// und steht deshalb in der Ausgabe.
+    func createSnapshot(label: String?, for target: StackTarget) {
+        guard !isBusy(target), let cwd = directory(for: target),
+              let stack = stackName(for: target) else { return }
+        let before = DbSnapshots.list(stack: stack)
+        let timestamped = label != nil
+        let args = ["db", "snapshot", "create"] + (timestamped ? ["-t"] : [])
+
+        setBusy(true, target)
+        setText("$ \(Self.displayCommand(args))\n\n", .command, target)
+        Task.detached { [weak self] in
+            let code = WorktreeStackController().run(iwfArgs: args, cwd: cwd) { chunk in
+                Task { @MainActor [weak self] in self?.appendWorktree(chunk, into: .command, stack: target) }
+            }
+            var renameNote = ""
+            if code == 0, let label {
+                let after = DbSnapshots.list(stack: stack)
+                if let fresh = DbSnapshots.added(before: before, after: after) {
+                    let volume = DbSnapshots.defaultVolume(stack: stack)
+                    let target = (DbSnapshots.directory(stack: stack) as NSString)
+                        .appendingPathComponent(DbSnapshots.fileName(volume: volume, label: label))
+                    do {
+                        if FileManager.default.fileExists(atPath: target) {
+                            try FileManager.default.removeItem(atPath: target)
+                        }
+                        try FileManager.default.moveItem(atPath: fresh.path, toPath: target)
+                        renameNote = "\numbenannt: \((target as NSString).lastPathComponent)\n"
+                    } catch {
+                        renameNote = "\n✗ Umbenennen fehlgeschlagen: \(error.localizedDescription)\n"
+                    }
+                }
+            }
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                if !renameNote.isEmpty { self.appendWorktree(renameNote, into: .command, stack: target) }
+                self.appendWorktree("\n— fertig (exit \(code)) —\n", into: .command, stack: target)
+                self.setBusy(false, target)
+                self.refreshSnapshots(for: target)
+            }
+            await self?.refreshDerivedStatus(for: target)
+        }
+    }
+
+    /// Spielt einen Snapshot zurück. **`-y` ist Pflicht**: `iwf db snapshot restore` fragt sonst im
+    /// Terminal nach und bliebe hier für immer stehen — die Bestätigung holt Kanban vorher selbst.
+    func restoreSnapshot(_ snapshot: DbSnapshot, for target: StackTarget) {
+        guard !isBusy(target), let cwd = directory(for: target) else { return }
+        let args = ["db", "snapshot", "restore", "-f", snapshot.name, "-y"]
+        runIwf(args, cwd: cwd, into: .command, stack: target, thenRefresh: true)
+    }
+
+    /// Die Reparatur einer Status-Zeile, im Verzeichnis des gewählten Ziels.
+    func repairStack(_ repair: StackPhase.Repair, for target: StackTarget) {
+        guard target == .maintree else { repairStack(repair); return }
+        guard !maintreeBusy, let cwd = directory(for: .maintree) else { return }
+        let commands = repair.commands(for: .maintree)
+        guard !commands.isEmpty else { return }
+
+        if repair.isLongRunning {
+            maintreeCommandOutput = "$ \(Self.displayCommand(commands[0]))\n\n"
+            Task.detached { [weak self] in
+                _ = WorktreeStackController().run(iwfArgs: commands[0], cwd: cwd) { chunk in
+                    Task { @MainActor [weak self] in
+                        self?.appendWorktree(chunk, into: .command, stack: .maintree)
+                    }
+                }
+                await self?.refreshDerivedStatus(for: .maintree)
+            }
+            Task { [weak self] in
+                try? await Task.sleep(for: .seconds(3))
+                await self?.refreshDerivedStatus(for: .maintree)
+            }
+            return
+        }
+
+        maintreeBusy = true
+        maintreeCommandOutput = ""
+        Task.detached { [weak self] in
+            for command in commands {
+                await MainActor.run { [weak self] in
+                    self?.appendWorktree("$ \(Self.displayCommand(command))\n\n",
+                                         into: .command, stack: .maintree)
+                }
+                let code = WorktreeStackController().run(iwfArgs: command, cwd: cwd) { chunk in
+                    Task { @MainActor [weak self] in
+                        self?.appendWorktree(chunk, into: .command, stack: .maintree)
+                    }
+                }
+                if code != 0 { break }
+            }
+            await MainActor.run { [weak self] in self?.maintreeBusy = false }
+            await self?.refreshDerivedStatus(for: .maintree)
+        }
+    }
+
+    // MARK: - Stack-Sweep („N Stacks stoppen" in der Toolbar)
+
+    /// Welche Worktree-Stacks laufen und ob ihr Ticket sie noch braucht — bei jedem Refresh neu
+    /// abgeleitet. Ein gemerkter „schon abgeräumt"-Zustand wäre falsch, sobald jemand den Stack von
+    /// Hand wieder hochfährt; so ist ein gestoppter Stack einfach kein Kandidat mehr.
+    private(set) var stackSweep: StackSweepPlan = .empty
+    /// Auswahl im Sheet. Vorgewählt sind Review/Done ohne laufenden Turn; alles andere darf man
+    /// dazuwählen — gestoppt ist reversibel (`iwf worktree start <NR>`).
+    var stackSweepSelection: Set<String> = []
+    /// Welche der gewählten Stacks **tief** abgeräumt werden (Volumes + Images dazu). Getrennt von
+    /// der Auswahl, weil es die destruktive Hälfte ist: stoppen ist ein Knopfdruck rückgängig,
+    /// gelöschte Volumes kommen nur über den bereitgestellten Dump zurück.
+    var stackSweepDeep: Set<String> = []
+    private(set) var stackSweepBusy = false
+    private(set) var stackSweepOutput = ""
+    var stackSweepPresented = false
+
+    /// Ein `docker ps` für die ganze Maschine, dazu die schon geladenen Worktrees und Karten.
+    /// Läuft bei jedem Board-Refresh mit, damit der Toolbar-Zähler ohne Klick stimmt.
+    func loadStackSweep() async {
+        guard let repoDir = selectedProject?.repoDir else { stackSweep = .empty; return }
+        let projectName = (repoDir as NSString).lastPathComponent
+        let sweepCards = cards.map {
+            StackSweepCard(key: $0.ticket.key, column: $0.column,
+                           isWorking: $0.claudeRunningSince != nil
+                               || workingTickets.contains($0.ticket.key))
+        }
+        let trees = worktrees
+        // Ein Rutsch statt drei Runden über die Docker-CLI, und die Dump-Prüfung (nur ein
+        // Verzeichnis-Listing je Worktree) gleich mit — sonst hätte die Tiefen-Stufe keine
+        // Rückfahrkarte anzuzeigen.
+        let probe = await Task.detached { () -> ([String], [String], [String], [String: String]) in
+            let scanner = DockerStatusScanner()
+            var dumps: [String: String] = [:]
+            for tree in trees {
+                if let dump = WorktreeDbSeed.staged(worktreePath: tree.path) {
+                    dumps[tree.path] = dump.fileName
+                }
+            }
+            return (scanner.runningContainerNames(), scanner.volumeNames(), scanner.imageTags(), dumps)
+        }.value
+        guard selectedProject?.repoDir == repoDir else { return }   // Projekt wechselte inzwischen
+        stackSweep = StackSweep.plan(cards: sweepCards, worktrees: trees, repoDir: repoDir,
+                                     runningContainers: probe.0, projectName: projectName,
+                                     volumes: probe.1, imageTags: probe.2, stagedDumps: probe.3)
+        // Was inzwischen kein Kandidat mehr ist, kann auch nicht mehr ausgewählt sein.
+        let known = Set(stackSweep.candidates.map(\.stackName))
+        stackSweepSelection.formIntersection(known)
+        stackSweepDeep.formIntersection(Set(stackSweep.candidates.filter(\.canDeepClean).map(\.stackName)))
+    }
+
+    // MARK: - Knowledgebase
+
+    /// 📚 auf/zu. Ohne konfigurierten Pfad gibt es den Knopf gar nicht, also auch hier nichts zu tun.
+    func toggleKnowledgebase() {
+        guard selectedProject?.kbPathAbsolute != nil else { return }
+        knowledgebaseOpen.toggle()
+        if knowledgebaseOpen && kbNodes.isEmpty { loadKnowledgebase() }
+    }
+
+    func closeKnowledgebase() {
+        knowledgebaseOpen = false
+    }
+
+    /// Liest den Baum neu ein — beim Öffnen und über den Aktualisieren-Knopf der Ansicht.
+    ///
+    /// Der Scan läuft **detached**: eine Knowledgebase mit ein paar hundert Dateien ist in
+    /// Millisekunden gelesen, aber der Ordner kann auch ein grosses Repo sein, und das Fenster soll
+    /// dabei nicht stehen. Die Auswahl bleibt, wenn es die Datei noch gibt; sonst führt der Einstieg
+    /// (`artefacts/index.html`, sonst README/index — siehe `KnowledgebaseTree.entryFile`) wieder
+    /// irgendwohin statt ins Leere.
+    func loadKnowledgebase() {
+        guard let root = selectedProject?.kbPathAbsolute else {
+            kbNodes = []
+            return
+        }
+        kbLoading = true
+        Task { [weak self] in
+            let nodes = await Task.detached { KnowledgebaseTree.build(root: root) }.value
+            guard let self, self.selectedProject?.kbPathAbsolute == root else { return }
+            self.kbNodes = nodes
+            self.kbLoading = false
+            let stillThere = self.kbSelection.flatMap { KnowledgebaseTree.node(at: $0, in: nodes) }
+            if stillThere == nil {
+                self.kbSelection = KnowledgebaseTree.entryFile(nodes)?.path
+            }
+        }
+    }
+
+    func openStackSweep() {
+        stackSweepOutput = ""
+        stackSweepPresented = true
+        stackSweepDeep = []     // die destruktive Stufe ist nie vorgewählt
+        Task {
+            await loadStackSweep()
+            stackSweepSelection = stackSweep.preselected
+        }
+    }
+
+    /// Stoppt die gewählten Stacks: `iwf worktree stop <NR>` je Stack, aus dem Haupt-Repo heraus
+    /// (so, wie `worktree.md` es vorschreibt — und mit der Nummer, damit kein `cd` in einen Worktree
+    /// nötig ist, den es vielleicht nicht mehr gibt).
+    ///
+    /// Der reversible Teil des Abräumens: Container und Netzwerk gehen, **Worktree, Branch, Image
+    /// und DB-Volume bleiben** (`iwf worktree stop` = `compose down` ohne `--volumes`). Damit ist der
+    /// Sweep RAM/CPU-Rückgewinnung, keine Datenlöschung — `destroy` wäre das und ist hier bewusst
+    /// nicht verdrahtet.
+    ///
+    /// Sequenziell, nicht parallel: mehrere gleichzeitige `compose down` auf dieselbe Docker-Engine
+    /// bringen nur Gedrängel, und die Ausgabe wäre nicht mehr lesbar zuzuordnen.
+    func runStackSweep() {
+        guard !stackSweepBusy, let repoDir = selectedProject?.repoDir else { return }
+        let targets = stackSweep.candidates.filter { stackSweepSelection.contains($0.stackName) }
+        guard !targets.isEmpty else { return }
+        // Nur was auch tief abgeräumt werden *darf* — die Auswahl kann älter sein als die Liste.
+        let deep = stackSweepDeep.intersection(Set(targets.filter(\.canDeepClean).map(\.stackName)))
+        stackSweepBusy = true
+        stackSweepOutput = ""
+
+        Task.detached { [weak self] in
+            for target in targets {
+                await MainActor.run { [weak self] in
+                    self?.appendSweep("$ iwf worktree stop \(target.number)   → \(target.stackName)\n")
+                }
+                let code = WorktreeStackController()
+                    .run(iwfArgs: ["worktree", "stop", target.number], cwd: repoDir) { chunk in
+                        Task { @MainActor [weak self] in self?.appendSweep(chunk) }
+                    }
+                // „fertig", nicht „gestoppt": Exit 0 beweist es nicht — `iwf worktree stop` endet
+                // auch mit 0, wenn es den Worktree gar nicht gefunden hat (dann steht der Grund im
+                // Text darüber). Den Beweis liefert die neu gelesene Liste unten: ein Stack, der
+                // noch läuft, steht danach wieder da.
+                await MainActor.run { [weak self] in
+                    self?.appendSweep(code == 0 ? "\n— fertig —\n\n"
+                                                : "\n— fehlgeschlagen (exit \(code)) —\n\n")
+                }
+                // Tiefe Stufe nur nach erfolgreichem Stop: solange Container existieren, hält
+                // Docker die Volumes fest („volume is in use"), und ein halb gelöschter Stack wäre
+                // schlimmer als ein laufender.
+                guard code == 0, deep.contains(target.stackName) else { continue }
+                await self?.deepClean(target, cwd: repoDir)
+            }
+            await MainActor.run { [weak self] in self?.stackSweepBusy = false }
+            await self?.loadStackSweep()        // Zähler und Liste gegen die neue Wirklichkeit
+            await self?.refreshStackStatus()    // war der offene Ticket-Stack dabei, sagt es das Panel
+        }
+    }
+
+    /// Volumes und Images eines gestoppten Stacks löschen — die Stufe, für die iwf keinen Befehl
+    /// hat (siehe `WorktreeStackController.run(shellScript:)`).
+    ///
+    /// Gelöscht wird nur, was der Scan **gefunden** hat: ein Stack hat hier zwei Volumes
+    /// (`_dbdata` und, grösser, `_appcache`) und zwei Image-Tags (`local/<name>:latest` und
+    /// `local/<name>-base:latest`). Geratene Namen hätten je die Hälfte liegen lassen.
+    ///
+    /// Erwartungsmanagement, gemessen auf dieser Maschine: die Volumes bringen ~0,85 GB je Stack
+    /// (24,1 GB in 41 `appcache`, 9,9 GB in 41 `dbdata`), die Images fast nichts — `local/even-3563`
+    /// zeigt 1,51 GB, davon sind 1,32 GB **geteilte** Layer und nur 187 MB exklusiv. Das Image
+    /// fliegt trotzdem mit, weil ein Tag ohne Stack nur noch Verwirrung ist.
+    private func deepClean(_ candidate: StackSweepCandidate, cwd: String) async {
+        let controller = WorktreeStackController()
+        for command in StackSweep.deepCleanCommands(candidate) {
+            await MainActor.run { appendSweep("$ \(command)\n") }
+            let code = controller.run(shellScript: command, cwd: cwd) { chunk in
+                Task { @MainActor [weak self] in self?.appendSweep(chunk) }
+            }
+            await MainActor.run {
+                appendSweep(code == 0 ? "\n" : "\n— fehlgeschlagen (exit \(code)) —\n")
+            }
+        }
+    }
+
+    @MainActor
+    private func appendSweep(_ chunk: String) {
+        stackSweepOutput = LogText.appending(stackSweepOutput, chunk)
+    }
+
     /// Creates the worktree + stack for a ticket that has none yet (run from the main repo).
     func worktreeCreate() {
         guard let id = worktreeId, let repo = selectedProject?.repoDir else { return }
@@ -919,37 +1901,57 @@ final class AppModel {
         runIwf(args, cwd: cwd, into: .command, thenRefresh: true)
     }
 
-    private func runIwf(_ args: [String], cwd: String, into target: WtOutput, thenRefresh: Bool = false) {
-        guard !worktreeBusy else { return }
-        worktreeBusy = true
-        switch target {
-        case .status:  worktreeStatusText = "Lade Status…\n"
-        case .command: worktreeCommandOutput = "$ iwf \(args.joined(separator: " "))\n\n"
+    private func runIwf(_ args: [String], cwd: String, into output: WtOutput,
+                        stack: StackTarget = .worktree, thenRefresh: Bool = false) {
+        guard !isBusy(stack) else { return }
+        setBusy(true, stack)
+        switch output {
+        case .status:  setText("Lade Status…\n", output, stack)
+        case .command: setText("$ iwf \(args.joined(separator: " "))\n\n", output, stack)
         }
         Task.detached { [weak self] in
             let code = WorktreeStackController().run(iwfArgs: args, cwd: cwd) { chunk in
-                Task { @MainActor [weak self] in self?.appendWorktree(chunk, into: target) }
+                Task { @MainActor [weak self] in self?.appendWorktree(chunk, into: output, stack: stack) }
             }
             await MainActor.run { [weak self] in
                 guard let self else { return }
-                self.worktreeBusy = false
-                if target == .command { self.worktreeCommandOutput += "\n— fertig (exit \(code)) —\n" }
-                if thenRefresh { self.refreshWorktreeStatus() }
+                self.setBusy(false, stack)
+                if output == .command {
+                    self.appendWorktree("\n— fertig (exit \(code)) —\n", into: .command, stack: stack)
+                }
+                if thenRefresh { self.refreshStatus(for: stack) }
             }
         }
     }
 
     @MainActor
-    private func appendWorktree(_ chunk: String, into target: WtOutput) {
-        switch target {
+    private func appendWorktree(_ chunk: String, into output: WtOutput,
+                                stack: StackTarget = .worktree) {
+        switch output {
         case .status:
-            if worktreeStatusText == "Lade Status…\n" { worktreeStatusText = "" }
-            worktreeStatusText += chunk
+            if statusText(for: stack) == "Lade Status…\n" { setText("", output, stack) }
+            setText(statusText(for: stack) + chunk, output, stack)
         case .command:
-            worktreeCommandOutput += chunk
-            if worktreeCommandOutput.count > 60_000 {
-                worktreeCommandOutput = String(worktreeCommandOutput.suffix(50_000))
-            }
+            // `LogText` prüft die Grösse in **Bytes** und kappt in Blöcken auf Zeilengrenze;
+            // `String.count` zählte hier die Graphemcluster des ganzen Puffers — bei einem Anhängen
+            // je pty-Lesevorgang war das die teuerste Zeile des Streams.
+            setText(LogText.appending(commandOutput(for: stack), chunk), output, stack)
+        }
+    }
+
+    private func setBusy(_ value: Bool, _ stack: StackTarget) {
+        switch stack {
+        case .worktree: worktreeBusy = value
+        case .maintree: maintreeBusy = value
+        }
+    }
+
+    private func setText(_ value: String, _ output: WtOutput, _ stack: StackTarget) {
+        switch (output, stack) {
+        case (.status, .worktree):  worktreeStatusText = value
+        case (.status, .maintree):  maintreeStatusText = value
+        case (.command, .worktree): worktreeCommandOutput = value
+        case (.command, .maintree): maintreeCommandOutput = value
         }
     }
 
@@ -963,11 +1965,19 @@ final class AppModel {
         fallbackSections = []
         displaySections = []
         questionSectionIDs = []; decisionSectionIDs = []
+        taskAttachments = []
+        taskAttachmentSelection = nil
         worktreeStatusText = ""
         worktreeCommandOutput = ""
         worktreeDbDump = nil
+        solution = nil
+        solutionError = nil
         guard let project = selectedProject else { return }
         let dir = project.tasksPathAbsolute
+        loadSolution(for: key, project: project)
+        // Unabhängig vom Task-File: ein Ticket kann Anhänge haben, bevor jemand ein Task-File
+        // angelegt hat (`get-task` legt beides an, aber nicht in einem Zug).
+        rescanAttachments(for: key, in: dir)
 
         if let url = TaskFileLoader.find(ticketKey: key, in: dir) {
             taskFile = TaskFileLoader.load(url)
@@ -983,9 +1993,31 @@ final class AppModel {
             }
             loadReviews(for: key, in: dir)
             refreshSectionSignals()
+        } else if let ticket = selectedTicket, ticket.isBranchOnly {
+            // Ein Ticket ohne Nummer steht in keinem Jira — danach zu fragen gäbe einen 404 und die
+            // Zeile „keine Beschreibung", und der freie Modus soll ohnehin ohne Jira auskommen.
+            fallbackSections = [branchTicketSection(ticket)]
+            refreshSectionSignals()
         } else {
             loadJiraFallback(for: key, project: project)
         }
+    }
+
+    /// Was ein Ticket ohne Nummer zu zeigen hat: seinen MR und seinen Branch — und den Hinweis, wie
+    /// daraus ein richtiger Task wird. Mehr gibt es nicht; genau deshalb steht die Karte ja da.
+    private func branchTicketSection(_ ticket: Ticket) -> TaskSection {
+        let branch = ticket.sourceBranch ?? ""
+        let mr = cards.first { $0.ticket.key == ticket.key }?.mergeRequestURL
+        var lines = ["**\(ticket.summary)**", ""]
+        lines.append("> 🌿 **BRANCH**: `\(branch)`")
+        if let mr { lines.append("> 🔀 **MERGE REQUEST**: \(mr)") }
+        lines.append("")
+        lines.append("_Dieser Branch trägt keine Ticketnummer — es gibt kein Jira-Ticket und (noch) "
+                     + "kein Task-File._")
+        lines.append("")
+        lines.append("Über **Task erstellen** im Kontextmenü der Karte wird daraus ein richtiger "
+                     + "Task: `/create-task` erfindet die Nummer und legt das Task-File an.")
+        return TaskSection(id: 0, title: "Branch", markdown: lines.joined(separator: "\n"))
     }
 
     /// Loads all `<KEY>_review*.md` (shown as numbered "Review" tabs). Watches the **tasks directory**
@@ -1007,6 +2039,33 @@ final class AppModel {
         reviewMarkdowns = TaskFileLoader.reviewFiles(ticketKey: key, in: dir)
             .compactMap { TaskFileLoader.loadReviewMarkdown($0) }
         refreshSectionSignals()
+        // Derselbe Wächter sieht auch, wenn der Task-Ordner des Tickets entsteht oder verschwindet
+        // — er liegt im selben Verzeichnis. Was **innerhalb** des Ordners passiert, sieht er nicht;
+        // dafür steht der Neu-Einlesen-Knopf im Panel.
+        rescanAttachments(for: key, in: dir)
+    }
+
+    /// Liest den Task-Ordner neu ein. Eine Auswahl, deren Datei es nicht mehr gibt, fällt weg —
+    /// sonst stünde rechts die Vorschau einer gelöschten Datei.
+    private func rescanAttachments(for key: String, in dir: String) {
+        taskAttachments = TaskAttachments.tree(ticketKey: key, in: dir)
+        if let selection = taskAttachmentSelection,
+           KnowledgebaseTree.node(at: selection, in: taskAttachments) == nil {
+            taskAttachmentSelection = nil
+        }
+    }
+
+    /// Neu einlesen auf Knopfdruck (Panel-Kopfzeile) — für Dateien, die *im* Task-Ordner dazukommen.
+    func reloadTaskAttachments() {
+        guard let key = selectedTicketKey, let project = selectedProject else { return }
+        rescanAttachments(for: key, in: project.tasksPathAbsolute)
+    }
+
+    /// Der Ordner, gegen den relative Pfade in den Anhängen gelten: das Tasks-Verzeichnis, **nicht**
+    /// der Ticket-Ordner. `comments.json` verweist auf seine Profilbilder als
+    /// `CORETEST-4214/avatars/…` — eine Ebene höher, genau wie im Task-File.
+    var taskAttachmentBaseDirectory: URL? {
+        selectedProject.map { URL(fileURLWithPath: $0.tasksPathAbsolute) }
     }
 
     private func loadJiraFallback(for key: String, project: ProjectConfig) {
@@ -1042,7 +2101,9 @@ final class AppModel {
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 45_000_000_000)  // 45s
                 guard let self else { return }
-                if self.selectedSprint != nil { await self.refresh() }
+                // Im freien Modus gibt es keinen Sprint, an dem der Poll hängen könnte — dort ist
+                // gerade das lokale Dateisystem die Quelle und will beobachtet werden.
+                if self.boardMode == .free || self.selectedChoice != nil { await self.refresh() }
             }
         }
     }
@@ -1134,24 +2195,16 @@ final class AppModel {
 
     // MARK: - Claude time (⏱ per prompt+answer, cumulated)
 
-    /// How long a transcript may be untouched before its unfinished last turn stops counting as
-    /// live. Long tool calls (a build, a test run) append nothing meanwhile, so the tmux "working"
-    /// signal carries those; this window covers the start of a turn before the first pane scan.
-    private static let liveWindow: TimeInterval = 120
-
     /// The selected ticket's session timing (nil when Claude never ran for it).
     var selectedTiming: ClaudeSessionTiming? {
         selectedTicketKey.flatMap { timingByTicket[$0] }
     }
 
-    /// Start of the turn that is running right now for a ticket, or nil when nothing runs. A turn
-    /// counts as running when Claude wrote no turn-end record for it **and** the console still shows
-    /// activity — otherwise an interrupted turn would tick up forever.
+    /// Start of the turn that is running right now for a ticket, or nil when nothing runs. The rule
+    /// itself is pure logic in `LiveTurn` (testable there); the app only supplies the pane verdict.
     func runningTurnStart(ticketKey: String) -> Date? {
-        guard let timing = timingByTicket[ticketKey], let open = timing.openTurn else { return nil }
-        let fresh = Date().timeIntervalSince(timing.lastModified ?? .distantPast) < Self.liveWindow
-        guard fresh || workingTickets.contains(ticketKey) else { return nil }
-        return open.start
+        guard let timing = timingByTicket[ticketKey] else { return nil }
+        return LiveTurn.start(timing: timing, isWorking: workingTickets.contains(ticketKey))
     }
 
     /// Cumulated Claude time across every card of the current sprint.
@@ -1159,12 +2212,66 @@ final class AppModel {
         cards.reduce(0) { $0 + $1.claudeSeconds }
     }
 
+    // MARK: - Prompt timeline
+
+    /// Which prompts of the selected ticket are still in the tmux scrollback (turn indices). Empty
+    /// until `refreshPromptReachability` ran; everything not in here is read from the transcript.
+    private(set) var reachablePrompts: Set<Int> = []
+
+    /// Bumped on every click inside a terminal, so the prompt timeline can get out of the way when
+    /// the user goes back to typing. A counter rather than a flag — consecutive clicks must each
+    /// trigger `onChange`.
+    private(set) var terminalClickTick = 0
+
+    /// The selected ticket's prompts, oldest first — the timeline's bubbles.
+    var selectedPrompts: [ClaudeTurn] { selectedTiming?.turns ?? [] }
+
+    /// Re-checks which prompts the terminal can still scroll to. Cheap (one `capture-pane`), but not
+    /// free, so it runs when the timeline opens and when the transcript grew — not per render.
+    func refreshPromptReachability() async {
+        guard let session = activeTerminalSession, !selectedPrompts.isEmpty else {
+            reachablePrompts = []
+            return
+        }
+        let prompts = selectedPrompts.map(\.prompt)
+        reachablePrompts = await TerminalCache.shared.reachablePrompts(session: session, prompts: prompts)
+    }
+
+    /// Scrolls the Claude terminal to where the turn's prompt was sent. False when it has scrolled
+    /// out of the history — the caller then expands the turn from the transcript instead.
+    func jumpToPrompt(turnIndex: Int) async -> Bool {
+        guard let session = activeTerminalSession else { return false }
+        let prompts = selectedPrompts.map(\.prompt)
+        let jumped = await TerminalCache.shared.jump(session: session, prompts: prompts, turnIndex: turnIndex)
+        // Keep the bubble's icon honest about what just happened, without a second scan.
+        if jumped { reachablePrompts.insert(turnIndex) } else { reachablePrompts.remove(turnIndex) }
+        return jumped
+    }
+
+    /// Reads one turn back out of the transcript (prose + tool summary) — the fallback for prompts
+    /// the scrollback no longer holds.
+    func turnContent(turnIndex: Int) async -> ClaudeTurnContent? {
+        guard let key = selectedTicketKey, let sessionId = sessionIdByTicket[key],
+              let repoDir = selectedProject?.repoDir,
+              let url = ClaudeTimingStore.transcriptURL(sessionId: sessionId, cwd: repoDir,
+                                                        agent: agent)
+        else { return nil }
+        let agent = self.agent
+        return await Task.detached(priority: .userInitiated) {
+            switch agent {
+            case .claude: return ClaudeTurnReader.content(turnIndex: turnIndex, transcript: url)
+            case .codex:  return CodexTurnReader.content(turnIndex: turnIndex, rollout: url)
+            }
+        }.value
+    }
+
     /// Re-derives the timings of every card from the transcripts. Cheap after the first pass: the
     /// store only reads what Claude appended since (see `ClaudeTimingStore`).
     private func refreshTimings() async {
         guard let repoDir = selectedProject?.repoDir, !sessionIdByTicket.isEmpty else { return }
         let map = sessionIdByTicket
-        let timings = await ClaudeTimingStore.shared.timings(sessionIds: map, cwd: repoDir)
+        let timings = await ClaudeTimingStore.shared.timings(sessionIds: map, cwd: repoDir,
+                                                            agent: agent)
         timingByTicket = timings
         applyTimingsToCards()
     }
@@ -1173,7 +2280,8 @@ final class AppModel {
     /// the open ticket follows Claude's answer instead of waiting for the 45 s board poll.
     private func refreshTiming(for key: String) async {
         guard let repoDir = selectedProject?.repoDir, let sessionId = sessionIdByTicket[key] else { return }
-        let timing = await ClaudeTimingStore.shared.timing(sessionId: sessionId, cwd: repoDir)
+        let timing = await ClaudeTimingStore.shared.timing(sessionId: sessionId, cwd: repoDir,
+                                                          agent: agent)
         timingByTicket[key] = timing
         applyTimingsToCards()
     }
@@ -1213,11 +2321,16 @@ final class AppModel {
         Task { [weak self] in
             guard let self else { return }
             let known = self.sessionIdByTicket[key]
+            let agent = self.agent
             // Off-main: the fallback store reads a file and locating the transcript may scan every
-            // Claude project directory.
+            // project directory (bei Codex die Datums-Ordner der Rollouts).
             let resolved: (id: String, url: URL)? = await Task.detached {
-                guard let id = known ?? SessionIdStore.peek(forTicket: key),
-                      let url = ClaudeTranscripts.transcriptURL(sessionId: id, cwd: repoDir)
+                let fallback = agent == .codex
+                    ? CodexSessions.sessionId(threadName: CodexSessions.threadName(forTicket: key))
+                    : SessionIdStore.peek(forTicket: key)
+                guard let id = known ?? fallback,
+                      let url = ClaudeTimingStore.transcriptURL(sessionId: id, cwd: repoDir,
+                                                                agent: agent)
                 else { return nil }
                 return (id, url)
             }.value
@@ -1248,6 +2361,84 @@ final class AppModel {
     /// could sweep up unrelated changes.
     var canCommit: Bool { taskFile != nil || currentWorktree != nil }
 
+    // MARK: - Jira-Feld „Lösung"
+
+    /// Liest den Stand des Lösungsfelds für das offene Ticket. Still: hat das Ticket kein solches
+    /// Feld oder scheitert die Anfrage, bleibt `solution` nil und der Knopf weg — ein Ladefehler
+    /// darf das Detail nicht kaputtmachen.
+    private func loadSolution(for key: String, project: ProjectConfig) {
+        guard let jira else { return }
+        solutionLoading = true
+        Task { [weak self] in
+            defer { Task { @MainActor [weak self] in self?.solutionLoading = false } }
+            do {
+                let cached = await MainActor.run { self?.solutionFieldIdByProject[project.key] }
+                let loaded = try await jira.solution(issueKey: key, baseUrl: project.jiraBaseUrl,
+                                                     knownFieldId: cached)
+                await MainActor.run {
+                    guard let self, self.selectedTicketKey == key else { return }
+                    self.solution = loaded
+                    if let loaded { self.solutionFieldIdByProject[project.key] = loaded.fieldId }
+                }
+            } catch {
+                await MainActor.run {
+                    guard let self, self.selectedTicketKey == key else { return }
+                    self.solution = nil
+                }
+            }
+        }
+    }
+
+    /// Ob der Lösungs-Knopf angezeigt wird: nur mit Jira-Ticket und vorhandenem Feld.
+    var canEditSolution: Bool { solution != nil && selectedTicketKey != nil }
+
+    /// **Der Alarm**: das Ticket ist so weit, dass jemand die Lösung liest — Spalte **Review** oder
+    /// **Done** — aber das Feld ist leer. Genau dann muss die Lösung nachgetragen werden, und der
+    /// Knopf wird rot umrandet. Done gehört dazu, weil ein gemergter MR das Versäumnis nicht heilt:
+    /// das Task-File wird nicht mitcommittet, das Jira-Feld ist danach die einzige Spur.
+    /// Nil = kein Alarm; sonst die Spalte, damit die Anzeige sie benennen kann.
+    var solutionMissingColumn: KanbanColumn? {
+        guard let solution, solution.isEmpty, let key = selectedTicketKey else { return nil }
+        guard let column = cards.first(where: { $0.ticket.key == key })?.column,
+              column == .review || column == .done else { return nil }
+        return column
+    }
+
+    /// Was das Task-File für das Feld anbietet: `## JIRA Lösungsfeld` → `### Für Kunde` (siehe
+    /// `SolutionDraft`) — die Prosa, die in Jira gehört, samt Entscheidungen, Abweichungen von den AK
+    /// und Annahmen. Nicht `## Lösung`: das ist der interne Abschnitt mit Commit-Message und
+    /// Test-URL. Gelesen wird die Datei roh, nicht `displaySections` — dort wären Bilder schon als
+    /// base64 eingebettet.
+    var taskFileSolutionSuggestion: (text: String, source: SolutionDraft.Source)? {
+        taskFile
+            .flatMap { try? String(contentsOf: $0.url, encoding: .utf8) }
+            .flatMap { SolutionDraft.suggestion(in: $0) }
+    }
+
+    /// Vorbelegung des Editors: der bestehende Jira-Inhalt, sonst der Vorschlag aus dem Task-File.
+    var solutionDraft: String {
+        if let solution, !solution.isEmpty { return solution.markdown }
+        return taskFileSolutionSuggestion?.text ?? ""
+    }
+
+    /// Schreibt das Feld und liest es danach zurück, damit die Anzeige dem entspricht, was in Jira
+    /// steht (und nicht dem, was wir gesendet haben).
+    func saveSolution(_ markdown: String) async {
+        guard let key = selectedTicketKey, let project = selectedProject, let jira,
+              let fieldId = solution?.fieldId ?? solutionFieldIdByProject[project.key] else { return }
+        solutionSaving = true
+        solutionError = nil
+        defer { solutionSaving = false }
+        do {
+            try await jira.setSolution(issueKey: key, fieldId: fieldId, markdown: markdown,
+                                       baseUrl: project.jiraBaseUrl)
+            solution = try await jira.solution(issueKey: key, baseUrl: project.jiraBaseUrl)
+            solutionSheetPresented = false
+        } catch {
+            solutionError = error.localizedDescription
+        }
+    }
+
     /// Where the commit runs: the ticket's worktree, else the main repo (`--no-worktree` tasks).
     var commitDirectory: String? { currentWorktree?.path ?? selectedProject?.repoDir }
 
@@ -1259,6 +2450,21 @@ final class AppModel {
         return fromFile ?? CommitMessage.fallback(ticketKey: selectedTicketKey ?? "")
     }
 
+    /// Einmal beim Öffnen des Commit-Fensters: Abwahl zurücksetzen und die Vorgabe anwenden.
+    ///
+    /// Bewusst **nicht** in `loadCommitState` — das läuft auch nach jedem Speichern und nach dem
+    /// Commit. Dort erneut abzuwählen hiesse, die Wahl des Menschen bei jedem Neuladen zu
+    /// überschreiben; wer `.claude/project.json` bewusst dazuwählt, will das behalten.
+    func prepareCommitDialog() async {
+        commitExcluded = []
+        commitDiffSource = .working
+        await loadCommitState()
+        if config?.excludeClaudeProjectFileFromCommit ?? true,
+           (commitState?.changedFiles ?? []).contains(where: { $0.path == AppConfig.claudeProjectFilePath }) {
+            commitExcluded.insert(AppConfig.claudeProjectFilePath)
+        }
+    }
+
     /// Reads branch / pending files / HEAD subject for the dialog. Off-main: it shells out to git.
     /// Preselects the first changed file so the diff pane is never empty on open.
     func loadCommitState() async {
@@ -1267,10 +2473,60 @@ final class AppModel {
         commitLog = ""
         let state = await Task.detached { GitCommitController().state(dir: dir) }.value
         commitState = state
+        // Eine abgewählte Datei, die es nicht mehr gibt, darf nicht als Geist weiterleben — sonst
+        // stünde sie beim nächsten Commit als unbekannter Pfad in `restore --staged`.
+        commitExcluded.formIntersection(state.changedFiles.map(\.path))
+        // Steht der Reiter „Diff" vorn, gehört die Auswahl dem Branch-Diff — die Statusliste darf
+        // sie dann nicht überschreiben (`saveCommitFile` und `performCommit` laufen hier durch).
+        guard commitDiffSource == .working else { return }
         let stillThere = commitSelectedFile.flatMap { previous in
             state.changedFiles.first { $0.path == previous.path }
         }
         await selectCommitFile(stillThere ?? state.changedFiles.first)
+    }
+
+    /// Lädt das Branch-Diff: erst die Abzweig-Basis ableiten (`BranchParent`, derselbe Weg wie beim
+    /// ←-Chip im Worktree-Panel), dann den Dreipunkt-Vergleich dagegen. Off-main, es sind mehrere
+    /// git-Aufrufe.
+    func loadBranchDiff() async {
+        guard let dir = commitDirectory else { return }
+        branchDiffLoading = true
+        defer { branchDiffLoading = false }
+        branchDiffError = nil
+        let found: (diff: GitBranchDiff?, base: BranchBase?) = await Task.detached {
+            guard let base = BranchParentScanner().parent(worktreePath: dir) else { return (nil, nil) }
+            return (GitCommitController().branchDiff(dir: dir, baseRef: base.ref), base)
+        }.value
+        guard commitDiffSource == .branch else { return }   // Reiter zwischenzeitlich gewechselt
+        branchDiff = found.diff
+        if found.base == nil {
+            branchDiffError = "Keine Abzweig-Basis gefunden — ohne sie gibt es keinen Vergleich."
+        } else if found.diff == nil {
+            branchDiffError = "Kein gemeinsamer Vorfahre mit \(found.base!.ref)."
+        }
+        let stillThere = commitSelectedFile.flatMap { previous in
+            found.diff?.files.first { $0.path == previous.path }
+        }
+        await selectCommitFile(stillThere ?? found.diff?.files.first)
+    }
+
+    /// Reiterwechsel: Quelle umstellen und die passende Liste laden.
+    ///
+    /// Der Editor gilt in **beiden** Reitern. Im Branch-Diff war er zunächst gesperrt, weil er den
+    /// heutigen Dateiinhalt neben einer Einfärbung gegen HEAD zeigte; das ist behoben — die
+    /// Editor-Einfärbung kommt jetzt aus dem Vergleich gegen den Arbeitsstand
+    /// (`GitCommitController.diffWorktree`). Was man hier ändert und speichert, steht danach als
+    /// Änderung im Arbeitsverzeichnis und damit in „Neuer Commit"/„Amend".
+    func setCommitDiffSource(_ source: CommitDiffSource) async {
+        guard source != commitDiffSource else { return }
+        commitDiffSource = source
+        commitSelectedFile = nil
+        commitDiff = []
+        if source == .branch {
+            await loadBranchDiff()
+        } else {
+            await selectCommitFile(commitState?.changedFiles.first)
+        }
     }
 
     /// Loads and parses one file's diff for the right pane, plus the file itself for the editor.
@@ -1284,16 +2540,32 @@ final class AppModel {
         commitDiffLoading = true
         defer { commitDiffLoading = false }
         let path = (dir as NSString).appendingPathComponent(file.path)
-        let loaded: (diff: String, text: String) = await Task.detached {
-            let raw = GitCommitController().diff(dir: dir, file: file)
+        // Gegen den **einmal aufgelösten** Merge-Base, nicht gegen `base...HEAD`: so vergleicht jede
+        // Datei gegen denselben Stand, auch wenn sich die Basis zwischendurch bewegt.
+        let base = commitDiffSource == .branch ? branchDiff?.mergeBase : nil
+        let loaded: (diff: String, editorDiff: String, text: String, exists: Bool) = await Task.detached {
+            let git = GitCommitController()
+            // Gezeigt wird, was der Reiter verspricht: im Arbeitsverzeichnis gegen HEAD, im Reiter
+            // „Diff" der Dreipunkt-Vergleich des Branches.
+            let raw = base.map { git.diff(dir: dir, file: file, against: $0) }
+                ?? git.diff(dir: dir, file: file)
+            // Die **Editor**-Einfärbung dagegen gilt immer der Datei auf der Platte — das ist es ja,
+            // was im Editor steht. Im Arbeitsverzeichnis ist das schon dasselbe Diff; im Branch-Diff
+            // braucht es dafür den Vergleich ohne `HEAD`.
+            let forEditor = base.map { git.diffWorktree(dir: dir, file: file, against: $0) } ?? raw
             let text = (try? String(contentsOfFile: path, encoding: .utf8)) ?? ""
-            return (raw, text)
+            return (raw, forEditor, text, FileManager.default.fileExists(atPath: path))
         }.value
         guard commitSelectedFile?.path == file.path else { return }   // a newer selection won
         commitDiff = DiffParser.parse(loaded.diff)
-        commitFileHighlight = DiffHighlight.from(commitDiff)
+        commitFileHighlight = DiffHighlight.from(
+            loaded.editorDiff == loaded.diff ? commitDiff : DiffParser.parse(loaded.editorDiff))
         commitFileText = loaded.text
         commitFileLoadedText = loaded.text
+        commitFileExists = loaded.exists
+        // Eine Datei, die es nicht (mehr) gibt, hat nichts zu bearbeiten — der Editor bliebe leer
+        // und ein Speichern legte sie wieder an.
+        if !loaded.exists { commitEditorMode = false }
         commitEditorReloadToken += 1
     }
 
@@ -1313,7 +2585,13 @@ final class AppModel {
         commitSaveError = error
         guard error == nil else { return }
         commitFileLoadedText = text
-        await loadCommitState()      // status + diff reflect the edit
+        // Die Statusliste zuerst: dort taucht die eben bearbeitete Datei jetzt als Änderung auf —
+        // das ist der Weg, auf dem sie in „Neuer Commit"/„Amend" landet.
+        await loadCommitState()
+        // Im Reiter „Diff" hält `loadCommitState` bewusst die Finger von der Auswahl (die gehört
+        // dort dem Branch-Diff) — die Einfärbung des Editors muss trotzdem nachziehen, sonst zeigt
+        // sie den Stand vor dem Speichern.
+        if commitDiffSource == .branch { await selectCommitFile(commitSelectedFile) }
     }
 
     /// Drops the edits and reloads the file from disk.
@@ -1330,10 +2608,12 @@ final class AppModel {
         defer { commitBusy = false }
 
         let needsUpstream = commitState?.hasUpstream == false
+        let excluded = Array(commitExcluded).sorted()
         let result: Result<String, Error> = await Task.detached {
             let git = GitCommitController()
             do {
-                var log = amend ? try git.amend(dir: dir) : try git.commit(dir: dir, message: message)
+                var log = amend ? try git.amend(dir: dir, excluding: excluded)
+                                : try git.commit(dir: dir, message: message, excluding: excluded)
                 if push {
                     log += try git.push(dir: dir, force: amend, setUpstream: needsUpstream)
                 }
@@ -1355,35 +2635,63 @@ final class AppModel {
 
     // MARK: - Worklog booking (Jira-Zeit buchen)
 
+    /// Liest den Ledger einmal in den Speicher — nach dem Start und nach jeder Buchung.
+    private func reloadLedger() {
+        ledgerByTicket = WorklogLedger.load()
+        bookedByTicket = ledgerByTicket.mapValues(\.bookedSeconds)
+    }
+
     /// ⏱ time already booked to Jira for a ticket.
     func bookedSeconds(ticketKey key: String) -> TimeInterval { bookedByTicket[key] ?? 0 }
 
-    /// What a booking would log now: the rounded-up cumulative minus what is already booked. 0 means
-    /// nothing new to book (and the button stays disabled — that is the no-double-booking guard).
+    /// Die offenen Tagesposten eines Tickets, chronologisch — je Kalendertag einer, weil auf den
+    /// Arbeitstag gebucht wird und nicht auf heute.
+    func dailyBookings(ticketKey key: String) -> [DailyBooking] {
+        guard let turns = timingByTicket[key]?.turns, !turns.isEmpty else { return [] }
+        let entry = ledgerByTicket[key]
+        return WorklogBooking.dailyBookings(turns: turns,
+                                            bookedByDay: entry?.byDay ?? [:],
+                                            unattributedBooked: entry?.unattributedSeconds ?? 0,
+                                            settledThrough: entry?.lastBookedAt)
+    }
+
+    /// What a booking would log now: die Summe der offenen Tagesposten. 0 heisst nichts Neues zu
+    /// buchen (und der Knopf bleibt aus — das ist die Sperre gegen Doppelbuchung).
     func openToBookSeconds(ticketKey key: String) -> TimeInterval {
-        WorklogBooking.secondsToBook(measured: timingByTicket[key]?.total ?? 0,
-                                     alreadyBooked: bookedSeconds(ticketKey: key))
+        dailyBookings(ticketKey: key).reduce(0) { $0 + $1.seconds }
     }
 
     /// When this ticket was last booked (nil if never).
-    func lastBookedAt(ticketKey key: String) -> Date? { WorklogLedger.entry(forTicket: key)?.lastBookedAt }
+    func lastBookedAt(ticketKey key: String) -> Date? { ledgerByTicket[key]?.lastBookedAt }
 
     /// One line of the batch-booking confirmation: a ticket with open (unbooked) time.
     struct OpenBooking: Identifiable {
         let key: String
         let summary: String
         let seconds: TimeInterval
+        /// Die Tagesposten, aus denen sich `seconds` zusammensetzt — jeder wird einzeln gebucht.
+        let days: [DailyBooking]
         var id: String { key }
+
+        /// „19.–20.08." bzw. „20.08." — damit im Sheet sichtbar ist, worauf gebucht wird.
+        var dayLabel: String {
+            let formatter = DateFormatter()
+            formatter.locale = Locale(identifier: "de_CH")
+            formatter.dateFormat = "dd.MM."
+            guard let first = days.first, let last = days.last else { return "" }
+            let start = formatter.string(from: first.day)
+            return days.count == 1 ? start : "\(start)–\(formatter.string(from: last.day))"
+        }
     }
 
     /// Every card that has unbooked ⏱ time, most first — the list the "Alle offenen buchen" sheet
     /// shows and books.
     var openBookings: [OpenBooking] {
         cards.compactMap { card in
-            card.openToBookSeconds > 0
-                ? OpenBooking(key: card.ticket.key, summary: card.ticket.summary,
-                              seconds: card.openToBookSeconds)
-                : nil
+            let days = dailyBookings(ticketKey: card.ticket.key)
+            guard !days.isEmpty else { return nil }
+            return OpenBooking(key: card.ticket.key, summary: card.ticket.summary,
+                               seconds: days.reduce(0) { $0 + $1.seconds }, days: days)
         }.sorted { $0.seconds > $1.seconds }
     }
 
@@ -1396,9 +2704,12 @@ final class AppModel {
     /// reports which ones failed.
     func bookAllOpenTime() async { await book(ticketKeys: openBookings.map(\.key)) }
 
-    /// Posts a worklog per ticket and, only on success, records the booked delta in the ledger — so a
-    /// rejected write never marks time as booked. Rounding and the "already booked" subtraction make
-    /// each amount a 15-minute multiple and keep the same time from being logged twice.
+    /// Posts **one worklog per ticket and day** and, only on success, records that day's delta in the
+    /// ledger — so a rejected write never marks time as booked. `started` ist der erste Turn des
+    /// Tages, damit Jira die Zeit auf den Arbeitstag legt und nicht auf heute.
+    ///
+    /// Ein fehlgeschlagener Tag lässt die anderen laufen: sonst würde ein einzelner Ausfall (Ticket
+    /// gesperrt, Netz weg) eine ganze Woche Nachbuchung verhindern.
     private func book(ticketKeys keys: [String]) async {
         guard !bookingBusy, let project = selectedProject, let jira else { return }
         bookingBusy = true
@@ -1407,18 +2718,18 @@ final class AppModel {
 
         var failures: [String] = []
         for key in keys {
-            let seconds = openToBookSeconds(ticketKey: key)
-            guard seconds > 0 else { continue }
-            do {
-                try await jira.addWorklog(issueKey: key, timeSpentSeconds: Int(seconds),
-                                          started: Date(), comment: nil,
-                                          baseUrl: project.jiraBaseUrl)
-                WorklogLedger.record(seconds, at: Date(), forTicket: key)
-            } catch {
-                failures.append("\(key): \(error.localizedDescription)")
+            for day in dailyBookings(ticketKey: key) {
+                do {
+                    try await jira.addWorklog(issueKey: key, timeSpentSeconds: Int(day.seconds),
+                                              started: day.startedAt, comment: nil,
+                                              baseUrl: project.jiraBaseUrl)
+                    WorklogLedger.record(day.seconds, dayKey: day.dayKey, at: Date(), forTicket: key)
+                } catch {
+                    failures.append("\(key) (\(day.dayKey)): \(error.localizedDescription)")
+                }
             }
         }
-        bookedByTicket = WorklogLedger.bookedSeconds()
+        reloadLedger()
         applyTimingsToCards()
         bookingError = failures.isEmpty ? nil : failures.joined(separator: "\n")
     }

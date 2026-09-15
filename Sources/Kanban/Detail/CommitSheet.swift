@@ -12,17 +12,27 @@ struct CommitSheet: View {
     /// Called when the dialog should go away — the owning window closes itself (see `CommitWindow`).
     let onClose: () -> Void
 
+    /// Die drei Reiter. „Diff" committet nichts — er zeigt, was der Branch gegenüber seiner
+    /// Abzweig-Basis geändert hat, und ist damit das, was nach dem Commit noch übrig bleibt: die
+    /// Arbeitsverzeichnis-Liste ist dann leer, der Branch aber nicht.
+    private enum Mode: Hashable { case commit, amend, diff }
+
     @State private var message = ""
-    @State private var amend = false
+    @State private var mode: Mode = .commit
     @State private var push = true
     @State private var loaded = false
+
+    private var amend: Bool { mode == .amend }
     /// Dateiliste flach oder als Ordnerbaum.
     @AppStorage("commitFileTreeMode") private var treeMode = false
 
     private var state: GitWorkingState? { model.commitState }
     private var canSubmit: Bool {
-        guard !model.commitBusy, let state else { return false }
+        guard mode != .diff, !model.commitBusy, let state else { return false }
         if state.isClean && !amend { return false }              // nothing to commit
+        // Alles abgewählt heisst: es bleibt nichts zu committen. Beim Amend schon — dort wird HEAD
+        // ohnehin neu geschrieben und gepusht, auch ohne neue Änderung.
+        if model.commitIncludedCount == 0 && !amend { return false }
         return amend || !message.trimmingCharacters(in: .whitespaces).isEmpty
     }
 
@@ -41,8 +51,11 @@ struct CommitSheet: View {
         .task {
             guard !loaded else { return }
             loaded = true
-            await model.loadCommitState()
+            await model.prepareCommitDialog()
             message = model.suggestedCommitMessage
+        }
+        .onChange(of: mode) { _, new in
+            Task { await model.setCommitDiffSource(new == .diff ? .branch : .working) }
         }
     }
 
@@ -72,7 +85,11 @@ struct CommitSheet: View {
     private var leftPane: some View {
         VStack(alignment: .leading, spacing: 12) {
             modePicker
-            if amend { amendInfo } else { messageEditor }
+            switch mode {
+            case .commit: messageEditor
+            case .amend:  amendInfo
+            case .diff:   branchInfo
+            }
             fileList
         }
         .padding(14)
@@ -80,9 +97,10 @@ struct CommitSheet: View {
     }
 
     private var modePicker: some View {
-        Picker("", selection: $amend) {
-            Text("Neuer Commit").tag(false)
-            Text("Amend (HEAD ändern)").tag(true)
+        Picker("", selection: $mode) {
+            Text("Neuer Commit").tag(Mode.commit)
+            Text("Amend").tag(Mode.amend)
+            Text("Diff").tag(Mode.diff)
         }
         .pickerStyle(.segmented)
         .labelsHidden()
@@ -114,10 +132,51 @@ struct CommitSheet: View {
         }
     }
 
+    /// Wogegen verglichen wird. Die Basis ist **abgeleitet**, nicht konfiguriert (`BranchParent`) —
+    /// also wird sie genannt, samt der Zahl eigener Commits: nur so ist zu sehen, ob der Vergleich
+    /// den Branch meint, den man im Kopf hat.
+    private var branchInfo: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text("Verglichen mit").font(.app(.subheadline, weight: .medium)).foregroundStyle(.secondary)
+            HStack(spacing: 8) {
+                if model.branchDiffLoading { ProgressView().controlSize(.small) }
+                Image(systemName: "arrow.triangle.branch").font(.system(size: 11)).foregroundStyle(.secondary)
+                Text(model.branchDiff?.baseRef ?? "—")
+                    .font(.system(size: 13, design: .monospaced))
+                if let commits = model.branchDiff?.commits, commits > 0 {
+                    Text("· \(commits) Commit\(commits == 1 ? "" : "s")")
+                        .font(.app(.caption)).foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 6))
+
+            if let error = model.branchDiffError {
+                Label(error, systemImage: "exclamationmark.triangle.fill")
+                    .font(.app(.caption)).foregroundStyle(.orange)
+            } else {
+                // Ab dem Merge-Base, nicht ab der Spitze der Basis — sonst stünden fremde Commits
+                // als Rücknahmen im eigenen Diff. Derselbe Vergleich, den der MR zeigt.
+                Text("Ab dem gemeinsamen Vorfahren (`\(model.branchDiff?.baseRef ?? "…")...HEAD`) — "
+                     + "was der Branch geändert hat, wie im Merge Request.")
+                    .font(.app(.subheadline)).foregroundStyle(.secondary)
+            }
+            // Committet ist nicht alles: was noch im Arbeitsverzeichnis liegt, steht hier nicht
+            // drin. Das schweigend wegzulassen wäre genau die Lücke, die diesen Reiter nötig macht.
+            if let pending = state?.changedFiles.count, pending > 0 {
+                Text("Dazu \(pending) ungespeicherte Änderung\(pending == 1 ? "" : "en") — "
+                     + "die stehen unter „Neuer Commit“.")
+                    .font(.app(.caption)).foregroundStyle(.orange)
+            }
+        }
+    }
+
     private var fileList: some View {
         VStack(alignment: .leading, spacing: 5) {
             HStack {
-                Text("Geänderte Dateien (\(state?.changedFiles.count ?? 0))")
+                Text(fileListTitle)
                     .font(.app(.subheadline, weight: .medium)).foregroundStyle(.secondary)
                 Spacer()
                 Picker("", selection: $treeMode) {
@@ -127,24 +186,59 @@ struct CommitSheet: View {
                 .pickerStyle(.segmented).labelsHidden().fixedSize()
                 .help("Flache Liste oder Ordnerstruktur")
             }
-            if let state, !state.isClean {
+            if !files.isEmpty {
                 if treeMode {
-                    FileTreeView(files: state.changedFiles,
-                                 selection: fileSelection(in: state.changedFiles))
+                    FileTreeView(files: files, selection: fileSelection(in: files),
+                                 inclusion: inclusionBinding)
                         .frame(minHeight: 200)
                 } else {
-                    List(state.changedFiles, selection: fileSelection(in: state.changedFiles)) { file in
-                        ChangedFileRow(file: file).tag(file.path)
+                    List(files, selection: fileSelection(in: files)) { file in
+                        ChangedFileRow(file: file, included: inclusionBinding?(file.path))
+                            .tag(file.path)
                     }
                     .listStyle(.plain)   // keine Zebrastreifen, keine Phantom-Zeilen unter der Liste
                     .frame(minHeight: 200)
                 }
             } else {
-                Text(amend ? "Nichts Neues — HEAD wird nur neu gepusht."
-                           : "Keine Änderungen — nichts zu committen.")
+                Text(emptyListMessage)
                     .font(.app(.callout)).foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
+        }
+    }
+
+    /// Die Liste des aktiven Reiters — Arbeitsverzeichnis oder Branch.
+    private var files: [GitChangedFile] { model.commitFiles }
+
+    /// Der Haken je Zeile — nur dort, wo auch wirklich committet wird. Im Reiter „Diff" wird
+    /// gelesen; ein Kästchen ohne Wirkung wäre schlimmer als keins.
+    private var inclusionBinding: ((String) -> Binding<Bool>)? {
+        guard mode != .diff else { return nil }
+        return { path in
+            Binding(get: { model.isCommitIncluded(path) },
+                    set: { model.setCommitInclusion($0, path: path) })
+        }
+    }
+
+    /// Sagt die Abwahl mit, sobald es eine gibt — sonst übersieht man sie und wundert sich über
+    /// einen halben Commit.
+    private var fileListTitle: String {
+        guard mode != .diff else { return "Geänderte Dateien (\(files.count))" }
+        let excluded = files.count - model.commitIncludedCount
+        return excluded > 0
+            ? "Geänderte Dateien (\(model.commitIncludedCount) von \(files.count) — \(excluded) abgewählt)"
+            : "Geänderte Dateien (\(files.count))"
+    }
+
+    private var emptyListMessage: String {
+        switch mode {
+        case .diff:
+            return model.branchDiffLoading ? "Wird gelesen …"
+                 : (model.branchDiffError == nil
+                    ? "Der Branch unterscheidet sich nicht von seiner Basis."
+                    : "Kein Vergleich möglich.")
+        case .amend:  return "Nichts Neues — HEAD wird nur neu gepusht."
+        case .commit: return "Keine Änderungen — nichts zu committen."
         }
     }
 
@@ -168,12 +262,20 @@ struct CommitSheet: View {
                 Text(model.commitSelectedFile?.path ?? "Keine Datei gewählt")
                     .font(.system(size: 13, design: .monospaced)).lineLimit(1).truncationMode(.head)
                     .textSelection(.enabled)
-                if model.commitSelectedFile != nil {
+                // Der Editor gilt in **beiden** Reitern, auch im Branch-Diff: man liest, was der
+                // Branch geändert hat, sieht dabei etwas und bessert es an Ort und Stelle nach.
+                // Gespeichert landet es im Arbeitsverzeichnis und damit in „Neuer Commit"/„Amend".
+                // Eine vom Branch **gelöschte** Datei bleibt aussen vor — dort gäbe es nichts zu
+                // bearbeiten, und ein Speichern legte sie wieder an.
+                if model.commitSelectedFile != nil, model.commitFileExists {
                     Picker("", selection: $model.commitEditorMode) {
                         Text("Diff").tag(false)
                         Text("Editor").tag(true)
                     }
                     .pickerStyle(.segmented).labelsHidden().fixedSize()
+                    .help(mode == .diff
+                          ? "Im Editor geänderte Dateien stehen danach unter „Neuer Commit“/„Amend“"
+                          : "Datei bearbeiten statt nur ansehen")
                 }
                 Spacer()
                 if model.commitDiffLoading { ProgressView().controlSize(.small) }
@@ -215,6 +317,14 @@ struct CommitSheet: View {
                 if let error = model.commitSaveError {
                     Label(error, systemImage: "exclamationmark.triangle.fill")
                         .font(.app(.caption)).foregroundStyle(.orange)
+                        .padding(.horizontal, 12).padding(.vertical, 6)
+                } else if mode == .diff {
+                    // Im Branch-Reiter ist nicht selbstverständlich, wohin eine Änderung geht: der
+                    // Diff daneben zeigt Commits, das Gespeicherte ist erst mal nur Arbeitsstand.
+                    Label("Gespeichertes steht danach unter „Neuer Commit“ / „Amend“ —"
+                          + " das Branch-Diff daneben zeigt weiterhin die Commits.",
+                          systemImage: "info.circle")
+                        .font(.app(.caption)).foregroundStyle(.secondary)
                         .padding(.horizontal, 12).padding(.vertical, 6)
                 }
             } else if model.commitDiff.isEmpty {
@@ -353,25 +463,35 @@ struct CommitSheet: View {
                     .font(.app(.caption)).foregroundStyle(.orange).lineLimit(3)
             }
             HStack(spacing: 10) {
-                Toggle(amend ? "Force-Push (mit Lease)" : "Pushen", isOn: $push)
-                    .toggleStyle(.checkbox)
-                if amend && push {
-                    Text("überschreibt die Remote-Historie")
-                        .font(.app(.caption)).foregroundStyle(.orange)
-                }
-                Spacer()
-                Button("Abbrechen") { onClose() }.keyboardShortcut(.cancelAction)
-                Button {
-                    Task { await model.performCommit(message: message, amend: amend, push: push) }
-                } label: {
-                    HStack(spacing: 6) {
-                        if model.commitBusy { ProgressView().controlSize(.small) }
-                        Text(amend ? "Amend" : "Commit")
+                if mode == .diff {
+                    // Ein Ansichts-Reiter. Kein Push-Schalter und kein Knopf, der etwas schreibt —
+                    // ein grüner „Commit" neben einem reinen Diff wäre eine Einladung zum Vertippen.
+                    Text("Nur Ansicht — hier wird nichts geschrieben.")
+                        .font(.app(.caption)).foregroundStyle(.secondary)
+                } else {
+                    Toggle(amend ? "Force-Push (mit Lease)" : "Pushen", isOn: $push)
+                        .toggleStyle(.checkbox)
+                    if amend && push {
+                        Text("überschreibt die Remote-Historie")
+                            .font(.app(.caption)).foregroundStyle(.orange)
                     }
                 }
-                .buttonStyle(.borderedProminent)
-                .keyboardShortcut(.defaultAction)
-                .disabled(!canSubmit)
+                Spacer()
+                Button(mode == .diff ? "Schliessen" : "Abbrechen") { onClose() }
+                    .keyboardShortcut(.cancelAction)
+                if mode != .diff {
+                    Button {
+                        Task { await model.performCommit(message: message, amend: amend, push: push) }
+                    } label: {
+                        HStack(spacing: 6) {
+                            if model.commitBusy { ProgressView().controlSize(.small) }
+                            Text(amend ? "Amend" : "Commit")
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(!canSubmit)
+                }
             }
         }
         .padding(.horizontal, 16).padding(.vertical, 12)

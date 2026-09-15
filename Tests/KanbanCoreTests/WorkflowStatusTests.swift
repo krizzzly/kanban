@@ -159,8 +159,101 @@ final class WorkflowStatusTests: XCTestCase {
         // Resolved/closed in Jira (statusCategory "done") → Done, even mid-work with no merged MR.
         let r = WorkflowStatus.resolve(
             ticketKey: "EVEN-1", hasTaskFile: true, statusMarker: .inArbeit,
-            worktree: worktree, mergeRequests: [], jiraDone: true)
+            worktree: worktree, mergeRequests: [], jiraState: .done)
         XCTAssertEqual(r.column, .done)
+    }
+
+    // MARK: - Wieder aufgemachte Tickets (Jira zurück auf „In Arbeit", MR wieder offen)
+
+    /// Der beobachtete Fall BFEZVM-4569: Jira „In Arbeit", Task-File ✅ Done (Fossil aus der Zeit, als
+    /// Jira erledigt war), ein gemergter MR aus der ersten Runde und drei neue, review-reife offene.
+    /// Vorher blieb die Karte in Done — weder der gemergte MR noch das ✅ durften sie dort halten.
+    func testReopenedTicketWithNewerOpenedMRGoesToReview() {
+        let mrs = [mr(1123, "opened", branch: "feature/EVEN-1_old_leftover"),
+                   mr(1124, "merged", branch: "feature/EVEN-1_first_round"),
+                   mr(1141, "opened", branch: "feature/EVEN-1_second_round")]
+        let r = WorkflowStatus.resolve(
+            ticketKey: "EVEN-1", hasTaskFile: true, statusMarker: .done,
+            worktree: worktree, mergeRequests: mrs, jiraState: .notDone)
+        XCTAssertEqual(r.column, .review)
+        // Und das Badge zeigt den MR, der jetzt läuft — nicht den gemergten aus der ersten Runde.
+        XCTAssertTrue(r.badges.contains(.mergeRequest(iid: 1141, draft: false)))
+    }
+
+    /// Damit der Marker nicht für immer auf ✅ stehen bleibt (er war der zweite Grund fürs Kleben).
+    func testReopenedTicketAutoResetsTheStaleDoneMarker() {
+        let mrs = [mr(1124, "merged", branch: "feature/EVEN-1_first_round"),
+                   mr(1141, "opened", branch: "feature/EVEN-1_second_round")]
+        XCTAssertTrue(WorkflowStatus.shouldAutoSetReview(
+            ticketKey: "EVEN-1", hasTaskFile: true, currentMarker: .done,
+            mergeRequests: mrs, jiraState: .notDone))
+    }
+
+    /// Jira hinkt nach: gemergt, aber niemand hat das Ticket auf Erledigt gezogen. Das ist der
+    /// Normalfall und muss in Done bleiben — sonst fiele jedes fertige Ticket wieder heraus.
+    func testMergedWithLaggingJiraStatusStaysDone() {
+        let r = WorkflowStatus.resolve(
+            ticketKey: "EVEN-1", hasTaskFile: true, statusMarker: .done,
+            worktree: nil, mergeRequests: [mr(9, "merged", branch: "feature/EVEN-1_x")],
+            jiraState: .notDone)
+        XCTAssertEqual(r.column, .done)
+        XCTAssertFalse(WorkflowStatus.shouldAutoSetReview(
+            ticketKey: "EVEN-1", hasTaskFile: true, currentMarker: .done,
+            mergeRequests: [mr(9, "merged", branch: "feature/EVEN-1_x")], jiraState: .notDone))
+    }
+
+    /// Ein *älterer* offener MR neben dem gemergten ist ein Liegengebliebener, kein Wiederaufmachen.
+    func testOlderLeftoverOpenedMRDoesNotReopen() {
+        let mrs = [mr(7, "opened", branch: "feature/EVEN-1_leftover"),
+                   mr(9, "merged", branch: "feature/EVEN-1_x")]
+        let r = WorkflowStatus.resolve(
+            ticketKey: "EVEN-1", hasTaskFile: true, statusMarker: .done,
+            worktree: nil, mergeRequests: mrs, jiraState: .notDone)
+        XCTAssertEqual(r.column, .done)
+    }
+
+    /// Ohne Jira-Auskunft (freier Modus) bleibt alles wie vorher: das ✅ ist final.
+    func testDoneMarkerStillWinsWithoutJiraInformation() {
+        let r = WorkflowStatus.resolve(
+            ticketKey: "EVEN-1", hasTaskFile: true, statusMarker: .done,
+            worktree: nil, mergeRequests: [mr(7, "opened", branch: "feature/EVEN-1_x")])
+        XCTAssertEqual(r.column, .done)
+        XCTAssertFalse(WorkflowStatus.shouldAutoSetReview(
+            ticketKey: "EVEN-1", hasTaskFile: true, currentMarker: .done,
+            mergeRequests: [mr(7, "opened", branch: "feature/EVEN-1_x")]))
+    }
+
+    /// Jira erledigt sticht alles — auch einen offenen MR und ein wieder aufgemachtes Aussehen.
+    func testJiraDoneStillWinsOverAnOpenedMR() {
+        let r = WorkflowStatus.resolve(
+            ticketKey: "EVEN-1", hasTaskFile: true, statusMarker: .review,
+            worktree: nil, mergeRequests: [mr(7, "opened", branch: "feature/EVEN-1_x")],
+            jiraState: .done)
+        XCTAssertEqual(r.column, .done)
+    }
+
+    /// Nur ein Draft offen: wieder aufgemacht, aber nicht review-reif → Arbeitsspalte, kein 🔵-Write.
+    func testReopenedWithOnlyADraftMRIsInBearbeitung() {
+        let mrs = [mr(9, "merged", branch: "feature/EVEN-1_x"),
+                   mr(11, "opened", branch: "feature/EVEN-1_y", draft: true)]
+        let r = WorkflowStatus.resolve(
+            ticketKey: "EVEN-1", hasTaskFile: true, statusMarker: .done,
+            worktree: worktree, mergeRequests: mrs, jiraState: .notDone)
+        XCTAssertEqual(r.column, .inBearbeitung)
+        XCTAssertTrue(r.badges.contains(.mergeRequest(iid: 11, draft: true)))
+        XCTAssertFalse(WorkflowStatus.shouldAutoSetReview(
+            ticketKey: "EVEN-1", hasTaskFile: true, currentMarker: .done,
+            mergeRequests: mrs, jiraState: .notDone))
+    }
+
+    /// Jira zurück auf „In Arbeit", offener review-reifer MR, aber nie etwas gemergt (Jira war vor dem
+    /// Merge auf Erledigt gezogen worden) — auch das ist ein Wiederaufmachen.
+    func testReopenedWithoutAnyMergedMR() {
+        let r = WorkflowStatus.resolve(
+            ticketKey: "EVEN-1", hasTaskFile: true, statusMarker: .done,
+            worktree: nil, mergeRequests: [mr(7, "opened", branch: "feature/EVEN-1_x")],
+            jiraState: .notDone)
+        XCTAssertEqual(r.column, .review)
     }
 
     func testMergedBeatsOpened() {
@@ -255,6 +348,40 @@ final class WorkflowStatusTests: XCTestCase {
         XCTAssertTrue(r.badges.isEmpty)
     }
 
+    // MARK: - „Mir zugewiesen"
+
+    func testAssignedToMeIsOffenInsteadOfSprint() {
+        // Verantwortlich heisst offen: ohne Task-File, ohne Worktree, ohne MR — aber mir zugewiesen.
+        let r = WorkflowStatus.resolve(
+            ticketKey: "EVEN-1", hasTaskFile: false, statusMarker: nil, worktree: nil,
+            mergeRequests: [], isAssignedToMe: true)
+        XCTAssertEqual(r.column, .offen)
+        XCTAssertTrue(r.badges.isEmpty)   // die Zuweisung ist kein lokales Artefakt
+    }
+
+    func testAssignedToSomeoneElseStaysSprint() {
+        let r = WorkflowStatus.resolve(
+            ticketKey: "EVEN-1", hasTaskFile: false, statusMarker: nil, worktree: nil,
+            mergeRequests: [], isAssignedToMe: false)
+        XCTAssertEqual(r.column, .sprint)
+    }
+
+    func testAssignedToMeDoesNotPullACardOutOfDone() {
+        // Die Zuweisung ist die *letzte* Stufe — sie sticht keinen gemergten MR und kein ✅.
+        let r = WorkflowStatus.resolve(
+            ticketKey: "EVEN-1", hasTaskFile: true, statusMarker: .done,
+            worktree: worktree, mergeRequests: [mr(42, "merged", branch: "feature/EVEN-1_thing")],
+            isAssignedToMe: true)
+        XCTAssertEqual(r.column, .done)
+    }
+
+    func testAssignedToMeDoesNotOverrideAWorktree() {
+        let r = WorkflowStatus.resolve(
+            ticketKey: "EVEN-1", hasTaskFile: false, statusMarker: nil, worktree: worktree,
+            mergeRequests: [], isAssignedToMe: true)
+        XCTAssertEqual(r.column, .inBearbeitung)
+    }
+
     func testNonMatchingMRIgnored() {
         let r = WorkflowStatus.resolve(
             ticketKey: "EVEN-1", hasTaskFile: false, statusMarker: nil, worktree: nil,
@@ -284,6 +411,60 @@ final class WorkflowStatusTests: XCTestCase {
         let r = WorkflowStatus.resolve(
             ticketKey: "EVEN-1", hasTaskFile: false, statusMarker: nil, worktree: nil,
             mergeRequests: [mr(5, "opened", branch: "random-branch", title: "Fix EVEN-1 bug")])
+        XCTAssertEqual(r.column, .review)
+    }
+
+    // MARK: - Karten ohne Ticketnummer: erkannt über den Branch
+
+    /// `!130` steht in keinem Branchnamen — ein Ticket ohne Nummer wird über seinen Branch
+    /// gefunden. Ohne das fände die Karte weder ihren eigenen MR noch ihre Spalte.
+    func testABranchOnlyTicketFindsItsOwnMergeRequest() {
+        let mrs = [mr(130, "opened", branch: "feature/playwright", title: "Frontend-Testing")]
+        let r = WorkflowStatus.resolve(ticketKey: "!130", hasTaskFile: false, statusMarker: nil,
+                                       worktree: nil, mergeRequests: mrs, branch: "feature/playwright")
+        XCTAssertEqual(r.column, .review)
+        XCTAssertTrue(r.badges.contains(.mergeRequest(iid: 130, draft: false)))
+        XCTAssertEqual(WorkflowStatus.primaryMR(ticketKey: "!130", mergeRequests: mrs,
+                                                branch: "feature/playwright")?.iid, 130)
+    }
+
+    /// Ein Draft bleibt auch ohne Nummer aus Review heraus — dieselbe Regel wie überall.
+    func testADraftBranchTicketStaysInTheWorkColumn() {
+        let r = WorkflowStatus.resolve(
+            ticketKey: "!133", hasTaskFile: false, statusMarker: nil, worktree: nil,
+            mergeRequests: [mr(133, "opened", branch: "feature/e2e", draft: true)],
+            branch: "feature/e2e")
+        XCTAssertEqual(r.column, .inBearbeitung)
+        XCTAssertTrue(r.badges.contains(.mergeRequest(iid: 133, draft: true)))
+    }
+
+    /// Der Branch-Vergleich ist **exakt**. Ein Teilstring-Vergleich zöge `feature/pdf` auch
+    /// `feature/pdf_improvements` an sich — in `zba` gibt es beide, und es sind eigene Arbeiten.
+    func testBranchMatchingIsExactNotASubstring() {
+        let mrs = [mr(85, "opened", branch: "feature/pdf_improvements", title: "PDF Improvements")]
+        XCTAssertNil(WorkflowStatus.primaryMR(ticketKey: "!85", mergeRequests: mrs, branch: "feature/pdf"))
+        XCTAssertEqual(WorkflowStatus.primaryMR(ticketKey: "!85", mergeRequests: mrs,
+                                                branch: "feature/pdf_improvements")?.iid, 85)
+    }
+
+    /// Der Worktree hängt am selben Branch — sonst stünde die Karte ohne 🌳 da, obwohl der
+    /// Checkout existiert (`feature/e2e-test-sf7` in `zba`).
+    func testTheWorktreeIsFoundByBranchToo() {
+        let trees = [Worktree(path: "/code/zba-e2e", branch: "feature/e2e-test-sf7"),
+                     Worktree(path: "/code/zba", branch: "develop")]
+        XCTAssertEqual(WorktreeScanner.worktree(for: "!133", in: trees,
+                                                branch: "feature/e2e-test-sf7")?.path, "/code/zba-e2e")
+        // Ohne Branch (normales Ticket) gilt weiter die Key-Suche.
+        XCTAssertNil(WorktreeScanner.worktree(for: "!133", in: trees))
+    }
+
+    /// Ein Branch darf einem nummerierten Ticket nichts wegnehmen: ohne `branch` bleibt alles beim
+    /// alten Verhalten.
+    func testNumberedTicketsAreUnaffected() {
+        let mrs = [mr(42, "opened", branch: "feature/EVEN-1_thing")]
+        XCTAssertEqual(WorkflowStatus.primaryMR(ticketKey: "EVEN-1", mergeRequests: mrs)?.iid, 42)
+        let r = WorkflowStatus.resolve(ticketKey: "EVEN-1", hasTaskFile: true, statusMarker: nil,
+                                       worktree: worktree, mergeRequests: mrs)
         XCTAssertEqual(r.column, .review)
     }
 }

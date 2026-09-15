@@ -54,6 +54,18 @@ final class StatusLinksTests: XCTestCase {
         XCTAssertTrue(linkify().contains("\n### Status\n"))
     }
 
+    /// Eine `!<iid>`-Karte hat kein Jira-Issue — ihre H1 darf nicht auf `/browse/!49` verlinken.
+    func testMRCardTitleGetsNoJiraLink() {
+        let linked = StatusLinks.linkify(
+            preamble: "# !49 - CLI-Option --version",
+            ticketKey: "!49",
+            jiraBaseUrl: "https://jira.example.com",
+            gitlabBaseUrl: "https://gitlab.example.com",
+            gitlabProjectPath: "docker/iwf-local-dev")
+        XCTAssertEqual(linked, "# !49 - CLI-Option --version")
+        XCTAssertFalse(linked.contains("browse"))
+    }
+
     func testGitlabSkippedWhenConfigMissing() {
         let out = StatusLinks.linkify(preamble: preamble, ticketKey: "EVEN-3530",
                                       jiraBaseUrl: "https://jira.example.com",

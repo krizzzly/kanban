@@ -23,7 +23,14 @@ public struct Ticket: Identifiable, Sendable, Hashable {
     public var statusCategory: String?  // Jira status-category key: new / indeterminate / done
     public var assignee: String?
     public var assigneeAvatarUrl: String?
+    /// `assignee.accountId` — the identity the board compares against the logged-in user, so a
+    /// ticket assigned to *me* leaves the Sprint column. The display name is not an identity: it is
+    /// not unique and it is spelled differently per instance.
+    public var assigneeAccountId: String?
     public var type: String?
+    /// `issuetype.iconUrl` — Jira's own type symbol (green Story, red Bug, …), so the card shows the
+    /// same glyph as Jira instead of a guess mapped from the (localised) type name.
+    public var typeIconUrl: String?
     public var priority: String?
     public var storyPoints: Double?
     /// The epic this ticket belongs to. Filled by Jira for issues under an epic and, for sub-tasks,
@@ -34,18 +41,32 @@ public struct Ticket: Identifiable, Sendable, Hashable {
     /// True for a Jira sub-task (`issuetype.subtask`). Sub-tasks are not shown as standalone cards on
     /// the board — the story carries the work. Language-independent, unlike matching the type name.
     public var isSubtask: Bool
+    /// Der Branch, **wenn das Ticket keine Nummer hat** (freier Modus, siehe `LocalTickets`). Ein MR
+    /// auf `feature/playwright-frontend-testing` gehört zu keinem `<PREFIX>-<zahl>` — er wird über
+    /// seinen Branch erkannt statt über den Key. Bei jedem normalen Ticket nil; dann gilt wie bisher
+    /// die Suche nach dem Key in Branch und MR-Titel.
+    public var sourceBranch: String?
+
+    /// Ein Ticket, das es nur als Branch/MR gibt — ohne Nummer, ohne Jira, (noch) ohne Task-File.
+    public var isBranchOnly: Bool { sourceBranch != nil }
 
     public init(key: String, summary: String, status: String? = nil, statusCategory: String? = nil,
                 assignee: String? = nil, assigneeAvatarUrl: String? = nil,
-                type: String? = nil, priority: String? = nil, storyPoints: Double? = nil,
-                epic: EpicRef? = nil, parentKey: String? = nil, isSubtask: Bool = false) {
+                assigneeAccountId: String? = nil,
+                type: String? = nil, typeIconUrl: String? = nil,
+                priority: String? = nil, storyPoints: Double? = nil,
+                epic: EpicRef? = nil, parentKey: String? = nil, isSubtask: Bool = false,
+                sourceBranch: String? = nil) {
         self.key = key
         self.summary = summary
+        self.sourceBranch = sourceBranch
         self.status = status
         self.statusCategory = statusCategory
         self.assignee = assignee
         self.assigneeAvatarUrl = assigneeAvatarUrl
+        self.assigneeAccountId = assigneeAccountId
         self.type = type
+        self.typeIconUrl = typeIconUrl
         self.priority = priority
         self.storyPoints = storyPoints
         self.epic = epic
@@ -54,9 +75,31 @@ public struct Ticket: Identifiable, Sendable, Hashable {
     }
 
     /// True when Jira considers the issue done (category "done" covers "Erledigt" + "Geschlossen").
-    public var isDoneInJira: Bool { statusCategory == "done" }
+    public var isDoneInJira: Bool { jiraDoneState == .done }
+
+    /// What Jira says about this ticket being finished — see `JiraDoneState`.
+    public var jiraDoneState: JiraDoneState {
+        switch statusCategory {
+        case "done": return .done
+        case "new", "indeterminate": return .notDone
+        default: return .unknown          // no status category at all (free mode, local ticket)
+        }
+    }
 
     public var id: String { key }
+}
+
+/// Was Jira über die Erledigung eines Tickets sagt. **Drei** Zustände, kein Bool: „keine Auskunft"
+/// (freier Modus, lokales Ticket ohne Jira-Vorgang) darf nicht mit „Jira führt es ausdrücklich als
+/// **nicht** erledigt" verwechselt werden — nur das Zweite ist ein Mensch, der das Ticket
+/// zurückgeschoben hat, und nur darauf darf das Board reagieren (siehe `WorkflowStatus`).
+public enum JiraDoneState: String, Sendable, Hashable {
+    /// Kein Jira-Status bekannt.
+    case unknown
+    /// statusCategory `done` — „Erledigt" / „Geschlossen".
+    case done
+    /// statusCategory `new` / `indeterminate` — „Offen", „In Arbeit", „Review", …
+    case notDone
 }
 
 /// A merge request reduced to what the status engine needs.
@@ -74,10 +117,18 @@ public struct MergeRequestRef: Sendable, Hashable {
     /// Unresolved review discussions (open comments). Only fetched for opened MRs — merged ones
     /// keep 0, their comments require no action anymore.
     public let unresolvedDiscussions: Int
+    /// Already resolved review discussions — the counterpart of `unresolvedDiscussions`, so the card
+    /// can print GitLab's own "‹resolved› of ‹total›" thread counter.
+    public let resolvedDiscussions: Int
+    /// True when at least one person approved the MR (GitLab `/approvals`). Opened MRs only.
+    public let approved: Bool
+    /// Names of the approvers, for the badge's tooltip. Empty when `approved` is false.
+    public let approvedBy: [String]
 
     public init(iid: Int, title: String, state: String, sourceBranch: String,
                 targetBranch: String, mergedAt: String?, webUrl: String, draft: Bool = false,
-                unresolvedDiscussions: Int = 0) {
+                unresolvedDiscussions: Int = 0, resolvedDiscussions: Int = 0,
+                approved: Bool = false, approvedBy: [String] = []) {
         self.iid = iid
         self.title = title
         self.state = state
@@ -87,6 +138,33 @@ public struct MergeRequestRef: Sendable, Hashable {
         self.webUrl = webUrl
         self.draft = draft
         self.unresolvedDiscussions = unresolvedDiscussions
+        self.resolvedDiscussions = resolvedDiscussions
+        self.approved = approved
+        self.approvedBy = approvedBy
+    }
+
+    /// All resolvable review threads of the MR (resolved + still open).
+    public var totalDiscussions: Int { resolvedDiscussions + unresolvedDiscussions }
+
+    /// What the card advertises about this MR's review progress.
+    public var reviewState: MRReviewState { MRReviewState(mergeRequest: self) }
+}
+
+/// The one review signal a card shows for its opened MR, in GitLab's own vocabulary.
+///
+/// `approved` **wins over** `resolved`: once someone approved, the thread bookkeeping is water under
+/// the bridge and only the approval is worth a badge. Merged MRs stay `.none` — neither approvals nor
+/// discussions are fetched for them (their review is over).
+public enum MRReviewState: Sendable, Hashable {
+    case approved
+    case resolved
+    case none
+
+    public init(mergeRequest mr: MergeRequestRef) {
+        if mr.approved { self = .approved }
+        // Only meaningful once threads exist — an MR nobody commented on is not "resolved".
+        else if mr.totalDiscussions > 0 && mr.unresolvedDiscussions == 0 { self = .resolved }
+        else { self = .none }
     }
 }
 

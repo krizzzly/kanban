@@ -30,6 +30,7 @@ public struct ClaudeTurnAccumulator: Sendable {
         var activeSeconds: TimeInterval = 0
         var reportedSeconds: TimeInterval?
         var prompt: String
+        var promptFull: String
     }
 
     public init() {}
@@ -53,15 +54,25 @@ public struct ClaudeTurnAccumulator: Sendable {
 
         if let promptId = entry["promptId"] as? String, promptId != open?.promptId {
             if let open { finished.append(turn(from: open, index: finished.count)) }
+            let texts = Self.promptTexts(from: entry)
             open = Open(promptId: promptId, start: timestamp, end: timestamp, previous: timestamp,
-                        reportedSeconds: nil, prompt: Self.prompt(from: entry) ?? "")
+                        reportedSeconds: nil, prompt: texts?.short ?? "", promptFull: texts?.full ?? "")
             return
         }
 
         guard var current = open else { return }   // entries before the first prompt belong to no turn
-        switch entry["type"] as? String {
+        let type = entry["type"] as? String
+        switch type {
         case "user", "assistant":
-            break   // conversation content: the answer is still being written
+            // Conversation content: the answer is still being written — but it may also hold the
+            // prompt itself. A turn does not always open on what the user typed (see
+            // `isTypedPrompt`), so the first typed text of the turn stands in when the opening entry
+            // carried none.
+            if type == "user", current.promptFull.isEmpty,
+               let texts = Self.promptTexts(from: entry), Self.isTypedPrompt(texts.full) {
+                current.prompt = texts.short
+                current.promptFull = texts.full
+            }
         case "system":
             guard entry["subtype"] as? String == "turn_duration" else { return }
             current.reportedSeconds = (entry["durationMs"] as? NSNumber).map { $0.doubleValue / 1000 }
@@ -83,12 +94,18 @@ public struct ClaudeTurnAccumulator: Sendable {
     private func turn(from open: Open, index: Int) -> ClaudeTurn {
         ClaudeTurn(index: index, promptId: open.promptId, start: open.start, end: open.end,
                    reportedSeconds: open.reportedSeconds, estimatedSeconds: open.activeSeconds,
-                   prompt: open.prompt)
+                   prompt: open.prompt, promptFull: open.promptFull)
     }
 
     // MARK: - Prompt preview
 
-    private static func prompt(from entry: [String: Any]) -> String? {
+    /// Longest prompt kept in full. Prompts are typed by hand, so this only ever bites on a pasted
+    /// blob — which must not sit in memory once per turn for a session with hundreds of them.
+    public static let fullPromptLimit = 4000
+
+    /// Both renderings of one prompt entry, extracted in a single pass: the one-line preview for the
+    /// turn list, and the full text for the prompt timeline.
+    static func promptTexts(from entry: [String: Any]) -> (short: String, full: String)? {
         guard let message = entry["message"] as? [String: Any] else { return nil }
         let raw: String
         if let text = message["content"] as? String {
@@ -100,20 +117,67 @@ public struct ClaudeTurnAccumulator: Sendable {
         } else {
             return nil
         }
-        return condense(raw)
+        return (condense(raw), fullText(raw))
+    }
+
+    /// The prompt as typed — slash commands still collapsed, but line breaks and length kept.
+    ///
+    /// Empty when the entry is not something the user typed at all: running a local command opens a
+    /// turn whose whole text is Claude Code's `<local-command-caveat>` boilerplate. Those carry time
+    /// (so the ⏱ list keeps them) but have no place in a list of prompts.
+    static func fullText(_ raw: String, limit: Int = fullPromptLimit) -> String {
+        if let command = slashCommand(in: raw) { return command }
+        let stripped = removing("local-command-caveat", from: raw)
+        let trimmed = stripped.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.hasPrefix(Self.interruptMarker) else { return "" }
+        return trimmed.count > limit ? String(trimmed.prefix(limit)) + "…" : trimmed
+    }
+
+    /// What Claude Code writes when a turn is interrupted — `[Request interrupted by user]` or
+    /// `[Request interrupted by user for tool use]`. Never a prompt, so it never fills a bubble.
+    static let interruptMarker = "[Request interrupted by user"
+
+    /// Whether a text can stand in as the turn's prompt. Excludes Claude Code's own injections
+    /// (`<task-notification>`, `<local-command-stdout>`, …) — those arrive as a tag, never as prose,
+    /// while a slash command has already been collapsed to `/name args` by then.
+    ///
+    /// Needed because **a turn does not always open on what the user typed**: interrupting Claude
+    /// files its marker entry under the promptId of the prompt that *follows* it, a rejected tool use
+    /// opens the turn with a `tool_result` that has no text at all, and a local command opens with
+    /// the `<local-command-caveat>` boilerplate (the file even lists it ahead of the `<command-name>`
+    /// entry written a millisecond earlier). Measured across 80 transcripts (974 turns): 38 turns
+    /// showed `[Request interrupted by user]` in place of the prompt and 33 had no text at all, so
+    /// the timeline dropped them — 7 % of all turns, and always the "Esc, then type again" pattern,
+    /// which is why it hit the prompt one had just sent. Stealing from the next turn is impossible:
+    /// not one typed entry in that corpus lacks a promptId, so a typed text always belongs to the
+    /// turn it is read in.
+    static func isTypedPrompt(_ full: String) -> Bool {
+        !full.isEmpty && !full.hasPrefix("<")
+    }
+
+    /// Drops `<tag>…</tag>` including the tag itself; leaves the text untouched when it is absent.
+    private static func removing(_ name: String, from text: String) -> String {
+        guard let open = text.range(of: "<\(name)>"),
+              let close = text.range(of: "</\(name)>", range: open.upperBound..<text.endIndex)
+        else { return text }
+        return text.replacingCharacters(in: open.lowerBound..<close.upperBound, with: "")
     }
 
     /// One readable line: slash commands arrive wrapped in `<command-name>` plus a fully expanded
     /// instruction body, which would otherwise flood the turn list.
     static func condense(_ raw: String, limit: Int = 160) -> String {
-        var text = raw
-        if let name = tag("command-name", in: raw) {
-            let args = tag("command-args", in: raw) ?? ""
-            text = ([name.hasPrefix("/") ? name : "/" + name, args])
-                .filter { !$0.isEmpty }.joined(separator: " ")
-        }
+        let text = slashCommand(in: raw) ?? raw
         let collapsed = text.split(whereSeparator: \.isWhitespace).joined(separator: " ")
         return collapsed.count > limit ? String(collapsed.prefix(limit)) + "…" : collapsed
+    }
+
+    /// `/name args` when the entry is a slash command (they arrive wrapped in `<command-name>` plus a
+    /// fully expanded instruction body), else nil.
+    private static func slashCommand(in raw: String) -> String? {
+        guard let name = tag("command-name", in: raw) else { return nil }
+        let args = tag("command-args", in: raw) ?? ""
+        return [name.hasPrefix("/") ? name : "/" + name, args]
+            .filter { !$0.isEmpty }.joined(separator: " ")
     }
 
     private static func tag(_ name: String, in text: String) -> String? {

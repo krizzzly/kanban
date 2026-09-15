@@ -3,9 +3,13 @@ import KanbanCore
 
 /// Der eine Ort, an dem ein Projekt **angelegt** wird (HERMES-043).
 ///
-/// Gepflegt wird weiter in den Modul-Bereichen — die bleiben die Wahrheit. Zentral ist nur, was
-/// verstreut wehtut: ein neues Projekt in sechs `projects`-Sections eintragen, ohne eine zu
-/// vergessen. Die Werte kommen vorausgefüllt aus den Mustern der bestehenden Projekte.
+/// Gepflegt wird danach in den Modul-Bereichen. Zentral ist nur, was verstreut wehtut: ein neues
+/// Projekt in mehreren `projects`-Sections eintragen, ohne eine zu vergessen. Die Werte kommen
+/// vorausgefüllt aus den Mustern der bestehenden Projekte.
+///
+/// Warum hier auch Confluence, Vertec, Jenkins und DockerHub stehen, obwohl Kanban nur Jira und
+/// GitLab betreibt: `HermesSync` projiziert die Projektliste in eine vorhandene Hermes-Config, und
+/// dort gibt es diese Module. Ohne Hermes bleiben die Felder einfach leer.
 struct ProjectsEditor: View {
     let settings: SettingsModel
 
@@ -17,8 +21,9 @@ struct ProjectsEditor: View {
         Form {
             Section {
                 Text("Ein neues Projekt wird hier einmal erfasst und landet in allen betroffenen "
-                     + "Modul-Bereichen. Zum Ändern einzelner Werte den jeweiligen Bereich nutzen — "
-                     + "Jira, GitLab, Confluence, Vertec, Jenkins, DockerHub.")
+                     + "Modul-Bereichen. Zum Ändern einzelner Werte den jeweiligen Bereich nutzen. "
+                     + "Confluence, Vertec, Jenkins und DockerHub kennt nur Hermes — diese Werte "
+                     + "wandern beim Speichern dorthin (siehe Bereich „Hermes“).")
                     .font(.callout).foregroundStyle(.secondary)
             }
 
@@ -123,7 +128,7 @@ struct ProjectsEditor: View {
                 group("Grunddaten") {
                     TextField("Ticket-Präfix", text: binding(\.prefix), prompt: Text("EVEN"))
                     TextField("Tasks-Pfad", text: binding(\.tasksPath),
-                              prompt: Text("even/docs/tasks"))
+                              prompt: Text("…/Kanban/tasks/even"))
                     TextField("Repo-Ordner (optional)", text: binding(\.repoDir),
                               prompt: Text("leer = erstes Segment des Tasks-Pfads"))
                     TextField("Jira-Host (nur bei Abweichung)", text: binding(\.jiraBaseUrl),
@@ -147,7 +152,7 @@ struct ProjectsEditor: View {
                         get: { $0.confluence?.path },
                         set: { record, value in
                             record.confluence = adjust(record.confluence, .init()) { $0.path = value }
-                        }), prompt: Text("even/docs/kb"))
+                        }), prompt: Text("…/Kanban/docs/even"))
                 }
 
                 group("Vertec") {

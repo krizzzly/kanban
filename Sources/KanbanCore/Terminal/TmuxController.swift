@@ -27,13 +27,22 @@ public struct TmuxController: Sendable {
         run(["has-session", "-t", name])?.exitCode == 0
     }
 
+    /// Scrollback kept per Kanban pane. tmux's default of 2000 lines is nothing next to Claude: one
+    /// measured answer alone filled ~900 of them, so a console held its last two prompts and the
+    /// prompt timeline could jump to almost nothing. ~20 prompts fit in 20 000 lines, at roughly
+    /// 2 MB per pane in the worst case.
+    public static let historyLimit = 20_000
+
     /// Creates a detached session with a shell in `cwd`, then sends `command` + Enter so the shell
     /// survives if the command exits. No-op if the session already exists (never clobbers a live one).
     @discardableResult
     public func createSession(name: String, cwd: String, command: String?) -> Bool {
         if hasSession(name) { return true }
         ensureServerUTF8Locale()
-        guard run(["new-session", "-d", "-s", name, "-c", cwd])?.exitCode == 0 else { return false }
+        let created = withHistoryLimit(Self.historyLimit) {
+            run(["new-session", "-d", "-s", name, "-c", cwd])?.exitCode == 0
+        }
+        guard created else { return false }
         if let command, !command.isEmpty {
             _ = run(["send-keys", "-t", name, command, "Enter"])
         }
@@ -76,6 +85,43 @@ public struct TmuxController: Sendable {
         return result.stdout
     }
 
+    /// The whole pane including its scrollback, one entry per **physical** line.
+    ///
+    /// No `-J`: joining wrapped lines would collapse them into one entry and the array index would
+    /// stop being the pane's line number, which the jump arithmetic depends on. Verified against
+    /// tmux's own accounting — the count equals `history_size + pane_height`.
+    public func capturePaneLines(_ session: String) -> [String]? {
+        guard let result = run(["capture-pane", "-p", "-S", "-", "-t", session]),
+              result.exitCode == 0 else { return nil }
+        var lines = result.stdout.components(separatedBy: "\n")
+        if lines.last == "" { lines.removeLast() }   // trailing newline, not a pane line
+        return lines
+    }
+
+    public func paneHeight(_ session: String) -> Int? {
+        guard let raw = run(["display-message", "-p", "-t", session, "#{pane_height}"])?.stdout else {
+            return nil
+        }
+        return Int(raw.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
+    /// Rows kept above the target line. Two purposes: a line of context reads better than a line
+    /// glued to the top edge, and it absorbs the one or two lines a busy console appends between
+    /// measuring and scrolling — without it, the prompt lands just *above* the edge and is invisible
+    /// (measured against a pane writing 33 lines/s).
+    public static let scrollTopMargin = 2
+
+    /// How far to scroll up so pane line `line` sits near the **top** of the view, or nil when it is
+    /// already on screen (nothing to scroll).
+    ///
+    /// tmux's `goto-line` is not usable for this: it counts from the bottom and always parks the
+    /// cursor in the last row, so the prompt would stick to the bottom edge with its answer out of
+    /// sight — and a following `scroll-down` drags the cursor along. Scrolling the view is exact.
+    public static func scrollDistance(toLine line: Int, totalLines: Int, paneHeight: Int) -> Int? {
+        let distance = totalLines - paneHeight - line + scrollTopMargin
+        return distance > 0 ? distance : nil
+    }
+
     /// Sends literal keystrokes (e.g. after exiting copy-mode on a keypress).
     public func sendKeys(_ session: String, _ keys: String) { _ = run(["send-keys", "-t", session, keys]) }
 
@@ -85,10 +131,39 @@ public struct TmuxController: Sendable {
         _ = run(["send-keys", "-t", session, "-l", text])
     }
 
+    /// Fügt Text als **Paste** ein statt als Tastendrücke: `load-buffer` + `paste-buffer -p` klammert
+    /// ihn in Bracketed-Paste-Marker. Nötig, sobald der Text Zeilenumbrüche hat — als Tastendruck
+    /// wäre das erste `\n` ein Enter und schickte die halbe Beschreibung ab.
+    public func pasteText(_ session: String, _ text: String) {
+        let buffer = "kanban-paste"
+        guard run(["load-buffer", "-b", buffer, "-"], stdin: text) != nil else { return }
+        _ = run(["paste-buffer", "-b", buffer, "-p", "-t", session])
+        _ = run(["delete-buffer", "-b", buffer])
+    }
+
     /// tmux `#{scroll_position}` — "0" means scrolled to the bottom (copy-mode should exit).
     public func scrollPosition(_ session: String) -> String? {
         run(["display-message", "-p", "-t", session, "#{scroll_position}"])?
             .stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Runs `body` with the server's global `history-limit` temporarily raised, then puts the old
+    /// value back.
+    ///
+    /// A pane takes its scrollback size at creation and keeps it — verified: `set-option -t <session>`
+    /// on a live session leaves its pane at the old limit, only `-g` *before* `new-session` counts.
+    /// The global option is therefore raised for the moment of creation and restored right after, so
+    /// panes the user opens in their own terminal keep their own setting.
+    private func withHistoryLimit<T>(_ limit: Int, _ body: () -> T) -> T {
+        let previous = run(["show-options", "-gv", "history-limit"])?
+            .stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        _ = run(["set-option", "-g", "history-limit", "\(limit)"])
+        defer {
+            if let previous, !previous.isEmpty {
+                _ = run(["set-option", "-g", "history-limit", previous])
+            }
+        }
+        return body()
     }
 
     // MARK: - Locale
@@ -118,7 +193,7 @@ public struct TmuxController: Sendable {
 
     private struct ProcResult { let stdout: String; let stderr: String; let exitCode: Int32 }
 
-    private func run(_ args: [String]) -> ProcResult? {
+    private func run(_ args: [String], stdin: String? = nil) -> ProcResult? {
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: tmuxPath)
         proc.arguments = args
@@ -128,6 +203,19 @@ public struct TmuxController: Sendable {
         let outPipe = Pipe(), errPipe = Pipe()
         proc.standardOutput = outPipe
         proc.standardError = errPipe
+        if let stdin {
+            let inPipe = Pipe()
+            proc.standardInput = inPipe
+            do { try proc.run() } catch { return nil }
+            inPipe.fileHandleForWriting.write(Data(stdin.utf8))
+            try? inPipe.fileHandleForWriting.close()
+            let outData = outPipe.fileHandleForReading.readDataToEndOfFile()
+            let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
+            proc.waitUntilExit()
+            return ProcResult(stdout: String(decoding: outData, as: UTF8.self),
+                              stderr: String(decoding: errData, as: UTF8.self),
+                              exitCode: proc.terminationStatus)
+        }
         do { try proc.run() } catch { return nil }
         let outData = outPipe.fileHandleForReading.readDataToEndOfFile()
         let errData = errPipe.fileHandleForReading.readDataToEndOfFile()

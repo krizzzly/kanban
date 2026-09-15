@@ -1,13 +1,17 @@
 import Foundation
 
-/// A slash command visible in the Claude console (`/<name> <args>`), from either the project level
-/// (`<repo>/.claude/commands/`) or the user level (`~/.claude/commands/`, gilt in jedem Projekt).
+/// Ein Workflow-Asset, das Kanban in die Console tippt (`/<name> <args>` bei Claude,
+/// `$<name> <args>` bei Codex — siehe `AgentKind.commandPrefix`).
+///
+/// Quelle ist normalerweise ein **Skill** (`skills/<name>/SKILL.md`) auf User- oder Projekt-Ebene;
+/// gleichnamige Alt-Commands (`commands/<name>.md`, nur Claude) werden weiter gefunden, damit von
+/// Hand angelegte Projekt-Commands nicht verschwinden.
 public struct ClaudeCommand: Sendable, Hashable, Identifiable {
     public enum Level: String, Sendable {
         case user, project
     }
 
-    public let name: String          // filename without .md → "/name"
+    public let name: String          // Skill-Ordner bzw. Dateiname ohne .md → "/name" / "$name"
     public let description: String?  // frontmatter `description:`
     public let argumentHint: String? // frontmatter `argument-hint:`
     public let level: Level
@@ -26,25 +30,37 @@ public struct ClaudeCommand: Sendable, Hashable, Identifiable {
     }
 }
 
-/// Reads the slash commands effective in a project: user level plus project level.
+/// Liest die Workflow-Assets, die in einem Projekt gelten: User-Ebene plus Projekt-Ebene, für den
+/// Agent dieses Projekts (`~/.claude/…` bzw. `~/.codex/…`).
 ///
 /// Bei Namensgleichheit gewinnt die **User-Ebene** — empirisch verifiziert am 2026-08-07 mit
 /// Claude Code 2.1.222 (gleichnamiger Command auf beiden Ebenen via `claude -p`, zweimal
 /// reproduziert plus Gegenprobe ohne User-Kopie). Die verbreitete Annahme „Projekt sticht User"
 /// stimmt nicht; überdeckte Projektkopien werden als `shadowedProjectURL` ausgewiesen.
+///
+/// Innerhalb einer Ebene sticht der **Skill** den gleichnamigen Alt-Command: das ist die Gattung, die
+/// Kanban ausliefert, und die einzige, die beide Agents lesen.
 public enum ClaudeCommandScanner {
-    /// `~/.claude/commands` — der Ort, an den `ClaudeAssetStore` die kanonischen Commands verlinkt.
+    /// `~/.claude/commands` — Altbestand; der kanonische Bestand liegt heute unter `skills/`.
     public static var defaultUserCommandsDir: URL {
-        FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".claude/commands", isDirectory: true)
+        AgentKind.claude.userCommandsDir!
     }
 
-    /// All commands effective in the project, alphabetically. Missing directories → empty.
+    /// Alle Assets, die im Projekt gelten, alphabetisch. Fehlende Ordner → leer.
+    ///
+    /// `userSkillsDir`/`userCommandsDir` sind nur für Tests da; im Betrieb ergeben sie sich aus dem
+    /// Agent (Codex hat keinen Commands-Ordner, dort bleibt der zweite Weg leer).
     public static func scan(repoDir: String,
-                            userCommandsDir: URL = defaultUserCommandsDir) -> [ClaudeCommand] {
-        let projectDir = URL(fileURLWithPath: repoDir).appendingPathComponent(".claude/commands")
-        let project = commandFiles(in: projectDir)
-        let user = commandFiles(in: userCommandsDir)
+                            agent: AgentKind = .claude,
+                            userSkillsDir: URL? = nil,
+                            userCommandsDir: URL? = nil) -> [ClaudeCommand] {
+        let projectRoot = URL(fileURLWithPath: repoDir)
+            .appendingPathComponent(agent.projectDirName, isDirectory: true)
+        let project = merged(skills: skillFiles(in: projectRoot.appendingPathComponent("skills")),
+                             commands: commandFiles(in: projectRoot.appendingPathComponent("commands")))
+        let user = merged(
+            skills: skillFiles(in: userSkillsDir ?? agent.userSkillsDir),
+            commands: commandFiles(in: userCommandsDir ?? agent.userCommandsDir))
 
         var commands = user.map { name, url in
             command(name: name, url: url, level: .user, shadowedProjectURL: project[name])
@@ -56,12 +72,20 @@ public enum ClaudeCommandScanner {
     }
 
     /// The subset of `scan` matching `names`, returned in the order of `names`
-    /// (workflow order, not alphabetical). Commands neither level defines are skipped.
+    /// (workflow order, not alphabetical). Assets neither level defines are skipped.
     public static func scan(repoDir: String, only names: [String],
-                            userCommandsDir: URL = defaultUserCommandsDir) -> [ClaudeCommand] {
+                            agent: AgentKind = .claude,
+                            userSkillsDir: URL? = nil,
+                            userCommandsDir: URL? = nil) -> [ClaudeCommand] {
         let all = Dictionary(uniqueKeysWithValues:
-            scan(repoDir: repoDir, userCommandsDir: userCommandsDir).map { ($0.name, $0) })
+            scan(repoDir: repoDir, agent: agent, userSkillsDir: userSkillsDir,
+                 userCommandsDir: userCommandsDir).map { ($0.name, $0) })
         return names.compactMap { all[$0] }
+    }
+
+    /// Skill sticht Alt-Command bei gleichem Namen.
+    private static func merged(skills: [String: URL], commands: [String: URL]) -> [String: URL] {
+        commands.merging(skills) { _, skill in skill }
     }
 
     private static func command(name: String, url: URL, level: ClaudeCommand.Level,
@@ -75,12 +99,27 @@ public enum ClaudeCommandScanner {
     }
 
     /// `name → url` der .md-Dateien eines Command-Ordners; Symlinks zählen wie Dateien.
-    private static func commandFiles(in dir: URL) -> [String: URL] {
-        guard let entries = try? FileManager.default.contentsOfDirectory(
+    private static func commandFiles(in dir: URL?) -> [String: URL] {
+        guard let dir, let entries = try? FileManager.default.contentsOfDirectory(
             at: dir, includingPropertiesForKeys: nil, options: .skipsHiddenFiles) else { return [:] }
         return Dictionary(uniqueKeysWithValues: entries
             .filter { $0.pathExtension == "md" }
             .map { ($0.deletingPathExtension().lastPathComponent, $0) })
+    }
+
+    /// `name → SKILL.md` eines Skills-Ordners. Der Name ist der **Ordner** (so ruft man den Skill
+    /// auf), nicht das Frontmatter — ein abweichendes `name:` wäre in beiden Agents wirkungslos.
+    /// Symlinks auf Ordner zählen wie Ordner, genau so liegt der kanonische Bestand da.
+    private static func skillFiles(in dir: URL) -> [String: URL] {
+        guard let entries = try? FileManager.default.contentsOfDirectory(
+            at: dir, includingPropertiesForKeys: nil, options: .skipsHiddenFiles) else { return [:] }
+        var result: [String: URL] = [:]
+        for entry in entries {
+            let skill = entry.appendingPathComponent("SKILL.md")
+            guard FileManager.default.fileExists(atPath: skill.path) else { continue }
+            result[entry.lastPathComponent] = skill
+        }
+        return result
     }
 
     /// Minimal YAML frontmatter reader: `key: value` lines between the leading `---` fences.

@@ -2,12 +2,27 @@ import AppKit
 import SwiftUI
 import KanbanCore
 
-/// The "Worktree" tab: controls the ticket's per-worktree docker stack via the `iwf worktree` /
-/// `iwf stack` commands — a status badge (from `iwf stack ps`), a row of lifecycle commands, and the
-/// live stdout of both the status query and the running command.
+/// Das Stack-Panel — **ein** View für zwei Ziele (`StackTarget`): den Worktree des Tickets und das
+/// Haupt-Repo. Statusabzeichen (aus `iwf stack ps`), Lebenszyklus-Knöpfe und die laufende Ausgabe
+/// sind identisch; die Herleitung sowieso, denn `DockerStatusScanner` bekommt nur einen anderen Pfad.
+///
+/// Zwei Dinge gibt es im Maintree **nicht**, und beide mit Grund: **Destroy** nähme aus dem
+/// Haupt-Repo wegen des Substring-Filters jedes `local/<projekt>-*`-Image mit, und ein **DB-Seed**
+/// träfe die Haupt-Entwicklungsdatenbank. Eine Kopie des Views hätte diese Regel nur einmal
+/// gekannt — deshalb ein Parameter statt zweier Dateien.
 struct WorktreeStackView: View {
     @Bindable var model: AppModel
+    var target: StackTarget = .worktree
     @State private var confirmDestroy = false
+    /// Welcher Teil des Panels zu sehen ist. Der Stack und seine Snapshots gehören zusammen, sind
+    /// aber zwei Arbeitsweisen — Zustand ansehen und reparieren gegen sichern und zurückspielen.
+    @State private var section: Section = .stack
+
+    private enum Section: String, CaseIterable, Identifiable {
+        case stack = "Stack"
+        case snapshots = "Snapshots"
+        var id: String { rawValue }
+    }
     @State private var showBranchStack = false
     /// Gewählte Quelle + ob direkt importiert wird, solange die Bestätigung offen ist.
     @State private var pending: (source: StackSeeder.Source, importNow: Bool)?
@@ -16,12 +31,21 @@ struct WorktreeStackView: View {
         VStack(alignment: .leading, spacing: 0) {
             header
             Divider()
-            if model.currentWorktree != nil {
+            if model.directory(for: target) != nil {
+                sectionPicker
+                Divider()
                 // Ausgabe nach rechts: links bleibt so Platz für Status und Aktionen, ohne dass
-                // beides um dieselbe Höhe konkurriert.
+                // beides um dieselbe Höhe konkurriert. Sie gilt für beide Abschnitte — ein
+                // `iwf db snapshot restore` will man genauso mitlesen wie ein `stack build`.
                 HSplitView {
-                    leftColumn.frame(minWidth: 320, idealWidth: 420)
-                    outputBox(title: "COMMAND-AUSGABE", text: model.worktreeCommandOutput,
+                    Group {
+                        switch section {
+                        case .stack: leftColumn
+                        case .snapshots: StackSnapshotsView(model: model, target: target)
+                        }
+                    }
+                    .frame(minWidth: 320, idealWidth: 420, maxHeight: .infinity)
+                    outputBox(title: "COMMAND-AUSGABE", text: model.commandOutput(for: target),
                               minHeight: 0, maxHeight: .infinity)
                         .frame(minWidth: 300)
                 }
@@ -29,6 +53,10 @@ struct WorktreeStackView: View {
                 noWorktree
             }
         }
+        // Volle Höhe beanspruchen, egal was im Panel steht: `VSplitView` richtet sich nach der
+        // Wunschgrösse des Inhalts, und ohne das fiel die untere Zone auf ihr Minimum, sobald der
+        // Abschnitt wenig hergab (Snapshots ohne Einträge, kein Worktree).
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(Color(nsColor: .textBackgroundColor))
         // Am Wurzel-View, nicht am Menü: das Menü liegt inzwischen in der Status-Zeile, und ein
         // Dialog an einer nicht gerenderten View erscheint nie.
@@ -41,15 +69,33 @@ struct WorktreeStackView: View {
         } message: {
             Text(confirmMessage)
         }
-        .task(id: model.selectedTicketKey) {
-            guard model.currentWorktree != nil else { return }
-            await model.refreshStackStatus()          // read-only, deshalb bei jedem Ticketwechsel
-            if model.worktreeStatusText.isEmpty { model.refreshWorktreeStatus() }
+        .task(id: taskKey) {
+            guard model.directory(for: target) != nil else { return }
+            await model.refreshDerivedStatus(for: target)   // read-only, deshalb bei jedem Wechsel
+            if model.statusText(for: target).isEmpty { model.refreshStatus(for: target) }
         }
     }
 
-    private var worktreeName: String {
-        model.currentWorktree.map { ($0.path as NSString).lastPathComponent } ?? (model.selectedTicketKey ?? "")
+    private var sectionPicker: some View {
+        Picker("", selection: $section) {
+            ForEach(Section.allCases) { Text($0.rawValue).tag($0) }
+        }
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .fixedSize()
+        .padding(.horizontal, 12).padding(.bottom, 7)
+    }
+
+    /// Der Stack-Name ist in beiden Fällen der Ordnername — beim Haupt-Repo der des Repos.
+    private var stackName: String {
+        model.directory(for: target).map { ($0 as NSString).lastPathComponent }
+            ?? (target == .worktree ? (model.selectedTicketKey ?? "") : "")
+    }
+
+    /// Der Worktree hängt am Ticket, das Haupt-Repo am Projekt — danach richtet sich, wann der
+    /// Status neu gelesen wird.
+    private var taskKey: String {
+        target == .worktree ? (model.selectedTicketKey ?? "") : (model.selectedProject?.key ?? "")
     }
 
     // MARK: Header + status badge
@@ -59,15 +105,15 @@ struct WorktreeStackView: View {
             HStack(spacing: 8) {
                 Image(systemName: "shippingbox")
                     .foregroundStyle(.secondary)
-                Text(worktreeName)
+                Text(stackName)
                     .font(.system(size: 13, weight: .semibold))
                     .lineLimit(1)
                 statusBadge
                 Spacer()
-                if model.worktreeBusy { ProgressView().controlSize(.small) }
-                Button { model.refreshWorktreeStatus() } label: { Image(systemName: "arrow.clockwise") }
+                if model.isBusy(target) { ProgressView().controlSize(.small) }
+                Button { model.refreshStatus(for: target) } label: { Image(systemName: "arrow.clockwise") }
                     .buttonStyle(.borderless)
-                    .disabled(model.worktreeBusy || model.currentWorktree == nil)
+                    .disabled(model.isBusy(target) || model.directory(for: target) == nil)
                     .help("Status aktualisieren (iwf stack ps)")
             }
             linkBar
@@ -79,14 +125,15 @@ struct WorktreeStackView: View {
     /// Bewusst kräftig statt hellgrau — das sind die Dinge, die man von hier aus ständig öffnet.
     private var linkBar: some View {
         HStack(spacing: 8) {
-            if let branch = model.currentWorktree?.branch {
+            if let branch = model.branch(for: target) {
                 linkChip(branch, icon: "arrow.triangle.branch", tint: .purple,
                          help: "Branch auf GitLab öffnen") {
-                    if let url = model.worktreeBranchURL { StatusLinkOpener.open(url) }
+                    if let url = model.branchURL(for: branch) { StatusLinkOpener.open(url) }
                 }
-                .disabled(model.worktreeBranchURL == nil)
+                .disabled(model.branchURL(for: branch) == nil)
             }
-            if let parent = model.worktreeParentBranch {
+            // Abzweig-Basis und Branch-Hierarchie sind Worktree-Fragen: das Haupt-Repo *ist* die Basis.
+            if target == .worktree, let parent = model.worktreeParentBranch {
                 linkChip("← \(parent.name)", icon: "arrow.triangle.pull", tint: .orange,
                          help: "Abzweig-Basis (abgeleitet): \(parent.ref) · "
                                + "\(parent.ahead) Commits voraus, Basis +\(parent.behind) seither · "
@@ -97,13 +144,13 @@ struct WorktreeStackView: View {
                     BranchStackPopover(model: model)
                 }
             }
-            if let path = model.currentWorktree?.path {
+            if let path = model.directory(for: target) {
                 linkChip((path as NSString).lastPathComponent, icon: "folder", tint: .blue,
                          help: "In PhpStorm öffnen: \(path)") {
                     StatusLinkOpener.open(URL(string: StatusLinks.ideURL(forPath: path))!)
                 }
             }
-            if let url = model.worktreeStackURL {
+            if let url = model.stackURL(for: target) {
                 linkChip(url.host ?? url.absoluteString, icon: "safari", tint: .green,
                          help: "Im Browser öffnen: \(url.absoluteString)") {
                     StatusLinkOpener.open(url)
@@ -144,9 +191,12 @@ struct WorktreeStackView: View {
 
     /// Verdict from the derived status — no longer counted out of the `stack ps` text, which cannot
     /// distinguish "läuft" from "läuft, aber keycloak ist mit Exit 134 weg".
+    ///
+    /// Über `stackStatus(for:)`, wie das Panel darunter: `model.stackStatus` ist immer der
+    /// Worktree-Stack, im Maintree-Tab stand deshalb dessen Zahl über den Diensten des Haupt-Repos.
     @ViewBuilder
     private var statusBadge: some View {
-        if let status = model.stackStatus {
+        if let status = model.stackStatus(for: target) {
             let verdict = status.verdict
             Text("\(verdict.label) · \(status.running.count)/\(status.services.count)")
                 .font(.system(size: 11, weight: .medium))
@@ -165,15 +215,17 @@ struct WorktreeStackView: View {
 
     private var commandBar: some View {
         HStack(spacing: 8) {
-            cmd("Start", "play.fill") { model.worktreeStart() }
-            cmd("Stop", "stop.fill") { model.worktreeStop() }
-            cmd("Restart", "arrow.triangle.2.circlepath") { model.worktreeRestart() }
+            cmd("Start", "play.fill") { model.lifecycle(.start, for: target) }
+            cmd("Stop", "stop.fill") { model.lifecycle(.stop, for: target) }
+            cmd("Restart", "arrow.triangle.2.circlepath") { model.lifecycle(.restart, for: target) }
             Spacer()
-            cmd("Destroy", "trash", role: .destructive) { confirmDestroy = true }
+            if target.allowsDestructiveActions {
+                cmd("Destroy", "trash", role: .destructive) { confirmDestroy = true }
+            }
         }
         .padding(.horizontal, 12).padding(.vertical, 7)
-        .disabled(model.worktreeBusy)
-        .confirmationDialog("Worktree + Stack „\(worktreeName)“ wirklich zerstören?",
+        .disabled(model.isBusy(target))
+        .confirmationDialog("Worktree + Stack „\(stackName)“ wirklich zerstören?",
                             isPresented: $confirmDestroy, titleVisibility: .visible) {
             Button("Destroy", role: .destructive) { model.worktreeDestroy() }
             Button("Abbrechen", role: .cancel) {}
@@ -189,16 +241,23 @@ struct WorktreeStackView: View {
     private var confirmTitle: String {
         guard let pending else { return "" }
         return pending.importNow
-            ? "„\(pending.source.label)“ jetzt in die laufende DB importieren?"
+            ? "Datenbank mit „\(pending.source.label)“ jetzt neu aufsetzen?"
             : "Datenbank mit „\(pending.source.label)“ neu seeden?"
     }
 
+    /// Sagt, was `iwf` wirklich tut — nachgelesen in `project_compose.db_import_dump`.
+    ///
+    /// Hier stand vorher „iwf legt vorher automatisch einen Snapshot an (Wiederherstellung mit
+    /// `iwf db snapshot restore`)". Das war falsch: `import-dump` legt **keinen** Snapshot an. Und es
+    /// war genau der Satz, auf dessen Zusicherung hin man den destruktiven Knopf drückt.
     private var confirmMessage: String {
         guard let pending else { return "" }
         return pending.importNow
-            ? "Der aktuelle Datenbestand wird ersetzt. iwf legt vorher automatisch einen Snapshot an "
-              + "(Wiederherstellung mit `iwf db snapshot restore`). Der Stack muss laufen."
-            : "Der bisherige Dump und das DB-Volume \(worktreeName)_dbdata werden entfernt; beim "
+            ? "Der Stack wird heruntergefahren, das DB-Volume \(stackName)_dbdata **gelöscht** und "
+              + "neu gestartet; MySQL importiert den Dump beim Hochlaufen. Der bisherige "
+              + "Datenbestand ist damit weg — einen Snapshot legt iwf dabei nicht an "
+              + "(vorher selbst: iwf db snapshot create)."
+            : "Der bisherige Dump und das DB-Volume \(stackName)_dbdata werden entfernt; beim "
               + "nächsten Start importiert MySQL den neuen Dump. Der Stack muss gestoppt sein."
     }
 
@@ -231,14 +290,19 @@ struct WorktreeStackView: View {
             Divider()
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
-                    if let status = model.stackStatus {
+                    if let status = model.stackStatus(for: target) {
                         StackStatusView(status: status,
-                                        isLoading: model.stackStatusLoading,
-                                        onRepair: model.worktreeBusy ? nil : { model.repairStack($0) },
-                                        onSeed: model.worktreeBusy ? nil : { source, importNow in
-                                            if let source { pending = (source, importNow) }
-                                            else { chooseSeedFile(importNow: importNow) }
-                                        })
+                                        isLoading: model.isLoadingStatus(for: target),
+                                        onRepair: model.isBusy(target) ? nil
+                                            : { model.repairStack($0, for: target) },
+                                        // Seed nur im Worktree: im Haupt-Repo träfe er die
+                                        // Entwicklungsdatenbank, an der alles hängt.
+                                        onSeed: (model.isBusy(target)
+                                                 || !target.allowsDestructiveActions) ? nil
+                                            : { source, importNow in
+                                                if let source { pending = (source, importNow) }
+                                                else { chooseSeedFile(importNow: importNow) }
+                                            })
                     }
                 }
                 .padding(.horizontal, 12).padding(.vertical, 10)
@@ -258,20 +322,12 @@ struct WorktreeStackView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(Color(nsColor: .windowBackgroundColor))
             Divider()
-            ScrollViewReader { proxy in
-                ScrollView {
-                    Text(text.isEmpty ? AttributedString("—") : CodeTheme.ansiText(text))
-                        .font(CodeTheme.font)
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 12).padding(.vertical, 8)
-                    Color.clear.frame(height: 1).id("bottom")
-                }
-                .onChange(of: text) { proxy.scrollTo("bottom", anchor: .bottom) }
+            // `LogTextView` statt `Text`: die Ausgabe wächst im Sekundentakt, und ein SwiftUI-`Text`
+            // baute dafür jedes Mal den ganzen `AttributedString` neu (40 ms bei vollem Puffer) und
+            // brach ihn bei jeder Breitenänderung neu um. Hier wird angehängt.
+            LogTextView(text: text)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(CodeTheme.background)
-                .environment(\.colorScheme, .dark)   // gleiche Anmutung wie die eingebettete Console
-            }
         }
         .frame(minHeight: minHeight, maxHeight: maxHeight)
     }

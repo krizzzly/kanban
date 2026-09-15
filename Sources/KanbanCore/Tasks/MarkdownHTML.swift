@@ -24,8 +24,16 @@ public enum MarkdownHTML {
             }
         }
 
-        markdown.withCString { ptr in
-            cmark_parser_feed(parser, ptr, strlen(ptr))
+        // Die **Byte-Länge** füttern, nicht `strlen`: ein eingebettetes NUL beendet sonst das
+        // Dokument mitten im Text, und der Rest fehlt lautlos. Aufgefallen an einer Outlook-`.msg`,
+        // deren Empfänger-Property ihre Null mitbringt (siehe `OutlookMessageReader.utf16String`);
+        // ohne NUL ist `strlen` genau diese Länge, das Verhalten ändert sich also sonst nicht.
+        let utf8 = Array(markdown.utf8)
+        utf8.withUnsafeBufferPointer { buffer in
+            guard let base = buffer.baseAddress else { return }
+            base.withMemoryRebound(to: CChar.self, capacity: buffer.count) { ptr in
+                cmark_parser_feed(parser, ptr, buffer.count)
+            }
         }
 
         guard let doc = cmark_parser_finish(parser) else { return fallback(markdown) }

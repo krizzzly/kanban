@@ -3,35 +3,56 @@ import XCTest
 
 final class ClaudeCommandsTests: XCTestCase {
     private var repoDir: URL!
-    private var userDir: URL!   // Ersatz für ~/.claude/commands — der echte darf nicht reinspielen
+    private var userSkillsDir: URL!     // Ersatz für ~/.claude/skills bzw. ~/.codex/skills
+    private var userCommandsDir: URL!   // Ersatz für ~/.claude/commands (Altbestand)
 
     override func setUpWithError() throws {
         let base = FileManager.default.temporaryDirectory
             .appendingPathComponent("kanban-cmd-tests-\(UUID().uuidString)")
         repoDir = base.appendingPathComponent("repo")
-        userDir = base.appendingPathComponent("user-commands")
-        try FileManager.default.createDirectory(
-            at: repoDir.appendingPathComponent(".claude/commands"), withIntermediateDirectories: true)
-        try FileManager.default.createDirectory(at: userDir, withIntermediateDirectories: true)
+        userSkillsDir = base.appendingPathComponent("user-skills")
+        userCommandsDir = base.appendingPathComponent("user-commands")
+        for dir in [repoDir.appendingPathComponent(".claude/commands"),
+                    repoDir.appendingPathComponent(".claude/skills"),
+                    userSkillsDir!, userCommandsDir!] {
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        }
     }
 
     override func tearDownWithError() throws {
         try? FileManager.default.removeItem(at: repoDir.deletingLastPathComponent())
     }
 
+    // MARK: Schreibhilfen
+
+    /// Alt-Command: eine .md-Datei.
     private func write(_ name: String, _ content: String, user: Bool = false) throws {
-        let url = user ? userDir.appendingPathComponent("\(name).md")
+        let url = user ? userCommandsDir.appendingPathComponent("\(name).md")
                        : repoDir.appendingPathComponent(".claude/commands/\(name).md")
         try content.write(to: url, atomically: true, encoding: .utf8)
     }
 
-    private func scan(only names: [String]? = nil) -> [ClaudeCommand] {
-        if let names {
-            return ClaudeCommandScanner.scan(repoDir: repoDir.path, only: names,
-                                             userCommandsDir: userDir)
-        }
-        return ClaudeCommandScanner.scan(repoDir: repoDir.path, userCommandsDir: userDir)
+    /// Skill: ein Ordner mit SKILL.md — die Gattung, die Kanban ausliefert.
+    private func writeSkill(_ name: String, _ content: String, user: Bool = false,
+                            agentDir: String = ".claude") throws {
+        let dir = user ? userSkillsDir.appendingPathComponent(name, isDirectory: true)
+                       : repoDir.appendingPathComponent("\(agentDir)/skills/\(name)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try content.write(to: dir.appendingPathComponent("SKILL.md"), atomically: true, encoding: .utf8)
     }
+
+    private func scan(only names: [String]? = nil, agent: AgentKind = .claude) -> [ClaudeCommand] {
+        if let names {
+            return ClaudeCommandScanner.scan(repoDir: repoDir.path, only: names, agent: agent,
+                                             userSkillsDir: userSkillsDir,
+                                             userCommandsDir: userCommandsDir)
+        }
+        return ClaudeCommandScanner.scan(repoDir: repoDir.path, agent: agent,
+                                         userSkillsDir: userSkillsDir,
+                                         userCommandsDir: userCommandsDir)
+    }
+
+    // MARK: Alt-Commands (weiter lesbar)
 
     func testScanReadsFrontmatter() throws {
         try write("solve-task", """
@@ -88,7 +109,65 @@ final class ClaudeCommandsTests: XCTestCase {
     func testMissingDirectoryYieldsEmpty() {
         let commands = ClaudeCommandScanner.scan(
             repoDir: "/nonexistent/repo",
-            userCommandsDir: userDir.appendingPathComponent("gibtsnicht"))
+            userSkillsDir: userSkillsDir.appendingPathComponent("gibtsnicht"),
+            userCommandsDir: userCommandsDir.appendingPathComponent("gibtsnicht"))
         XCTAssertEqual(commands, [])
+    }
+
+    // MARK: Skills — die Gattung, die Kanban ausliefert
+
+    func testSkillsAreFoundLikeCommands() throws {
+        try writeSkill("get-task", """
+        ---
+        name: get-task
+        description: Lade ein JIRA-Ticket
+        argument-hint: <TICKET-NUMMER>
+        disable-model-invocation: true
+        ---
+        Lies $ARGUMENTS
+        """, user: true)
+
+        let commands = scan()
+        XCTAssertEqual(commands.map(\.name), ["get-task"])
+        XCTAssertEqual(commands[0].description, "Lade ein JIRA-Ticket")
+        XCTAssertEqual(commands[0].argumentHint, "<TICKET-NUMMER>")
+        XCTAssertEqual(commands[0].level, .user)
+    }
+
+    /// Der Name ist der **Ordner**, nicht das Frontmatter — so ruft man den Skill in beiden Agents auf.
+    func testSkillNameComesFromTheDirectory() throws {
+        try writeSkill("get-task", "---\nname: voelliger-unsinn\ndescription: x\n---\n", user: true)
+        XCTAssertEqual(scan().map(\.name), ["get-task"])
+    }
+
+    /// Ein Ordner ohne SKILL.md ist kein Skill (z. B. ein Beiwerk-Verzeichnis).
+    func testDirectoryWithoutSkillFileIsIgnored() throws {
+        try FileManager.default.createDirectory(
+            at: userSkillsDir.appendingPathComponent("references"), withIntermediateDirectories: true)
+        XCTAssertEqual(scan(), [])
+    }
+
+    /// Nach dem Umzug kann beides herumliegen; der Skill ist die neue Wahrheit.
+    func testSkillBeatsLegacyCommandOnTheSameLevel() throws {
+        try write("get-task", "---\ndescription: alt\n---\n", user: true)
+        try writeSkill("get-task", "---\nname: get-task\ndescription: neu\n---\n", user: true)
+
+        let commands = scan()
+        XCTAssertEqual(commands.map(\.name), ["get-task"])
+        XCTAssertEqual(commands[0].description, "neu")
+    }
+
+    /// Codex liest `~/.codex/skills` und `<repo>/.codex/skills` — und hat keine Commands.
+    func testCodexReadsItsOwnProjectDirAndNoCommands() throws {
+        try write("nur-claude", "---\ndescription: alt\n---\n")                  // .claude/commands
+        try writeSkill("nur-claude-skill", "---\ndescription: x\n---\n")         // .claude/skills
+        try writeSkill("codex-skill", "---\ndescription: y\n---\n", agentDir: ".codex")
+
+        let codex = ClaudeCommandScanner.scan(repoDir: repoDir.path, agent: .codex,
+                                              userSkillsDir: userSkillsDir)
+        XCTAssertEqual(codex.map(\.name), ["codex-skill"])
+
+        let claude = scan()
+        XCTAssertEqual(claude.map(\.name), ["nur-claude", "nur-claude-skill"])
     }
 }

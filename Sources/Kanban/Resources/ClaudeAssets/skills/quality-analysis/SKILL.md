@@ -57,7 +57,7 @@ MERGE_BASE=$(git merge-base HEAD develop); git diff --name-only $MERGE_BASE..HEA
 ## Schritt B: Qualitäts-Methodik durchführen
 
 ⚠️ **PFLICHT:** Lies und befolge die vollständige Methodik in der gebündelten
-[methodology.md](methodology.md) (`${CLAUDE_SKILL_DIR}/methodology.md`) — **alle** Schritte, mit dem in
+[methodology.md](methodology.md) (neben dieser Datei im Skill-Verzeichnis) — **alle** Schritte, mit dem in
 Schritt A bestimmten Review-Gegenstand.
 
 Kurzform der Kette: fachliches Wirkungsmodell → Repository-Evidenz (inkl. historischer Ticket-Verfolgung

@@ -317,9 +317,10 @@ public enum TaskFileLoader {
         return nil
     }
 
-    /// Replaces markdown links to **local `.json` files** with the file's contents rendered as a
-    /// fenced ```json code block (monospace), keeping the link text as a label above it. Used for
-    /// the "Kommentare" tab, which links to a `comments.json`. Remote/unreadable links are left as-is.
+    /// Ersetzt Markdown-Links auf **lokale `.json`-Dateien** durch deren Inhalt, der Linktext bleibt
+    /// als Beschriftung darüber stehen. Eine Kommentar-Datei (`comments.json`) wird dabei als
+    /// **Diskussion** gerendert (`CommentThread`), alles andere als ```json-Block. Entfernte oder
+    /// unlesbare Links bleiben, wie sie sind.
     static func embedJsonLinks(_ markdown: String, directory: URL) -> String {
         let pattern = "\\[([^\\]]*)\\]\\(([^)\\s]+\\.json)\\)"
         guard let regex = try? NSRegularExpression(pattern: pattern) else { return markdown }
@@ -331,9 +332,15 @@ public enum TaskFileLoader {
             else { out.append(line); continue }
             out.append(ns.replacingCharacters(in: m.range, with: ns.substring(with: m.range(at: 1))))
             out.append("")
-            out.append("```json")
-            out.append(content.trimmingCharacters(in: .whitespacesAndNewlines))
-            out.append("```")
+            // Eine Kommentar-Diskussion wird als solche gezeigt; alles andere bleibt roher JSON —
+            // eine fremde Datei zu interpretieren, nur weil sie `.json` heisst, ginge daneben.
+            if let comments = CommentThread.parse(content) {
+                out.append(CommentThread.markdown(comments, directory: directory))
+            } else {
+                out.append("```json")
+                out.append(content.trimmingCharacters(in: .whitespacesAndNewlines))
+                out.append("```")
+            }
         }
         return out.joined(separator: "\n")
     }
@@ -358,7 +365,7 @@ public enum TaskFileLoader {
     /// and chokes WKWebView (and a video can't render as an `<img>` anyway; it just showed nothing).
     static let maxInlineImageBytes = 6 * 1024 * 1024
 
-    static func rewriteImagePaths(_ markdown: String, directory: URL) -> String {
+    public static func rewriteImagePaths(_ markdown: String, directory: URL) -> String {
         let pattern = "!\\[([^\\]]*)\\]\\(([^)]+)\\)"
         guard let regex = try? NSRegularExpression(pattern: pattern) else { return markdown }
         let ns = markdown as NSString

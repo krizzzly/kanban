@@ -1,8 +1,10 @@
 import AppKit
 import SwiftUI
 
-/// Loads and caches Jira user avatars. The Jira Basic-auth header is attached **only** for the Jira
-/// host(s) — never for gravatar/CDN URLs — so credentials don't leak to third parties.
+/// Loads and caches Jira images — user avatars and the issue-type icons (`IssueTypeIcon`). The Jira
+/// Basic-auth header is attached **only** for the Jira host(s) — never for gravatar/CDN URLs — so
+/// credentials don't leak to third parties. Cached by URL, so the handful of type icons on a board
+/// cost one request each, not one per card.
 @MainActor
 final class AvatarCache {
     static let shared = AvatarCache()

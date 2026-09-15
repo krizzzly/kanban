@@ -103,6 +103,14 @@ struct ClaudeTimeDetails: View {
     let timing: ClaudeSessionTiming
     let runningSince: Date?
 
+    /// „Mi 19.08." — kurz, aber mit Wochentag: beim Nachbuchen will man sehen, welcher Tag das war.
+    static let dayLabel: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "de_CH")
+        formatter.dateFormat = "EE dd.MM."
+        return formatter
+    }()
+
     private static let time: DateFormatter = {
         let formatter = DateFormatter()
         formatter.dateFormat = "dd.MM. HH:mm"
@@ -161,11 +169,13 @@ struct ClaudeTimeDetails: View {
     }
 
     /// "Gebuchte Zeit": what is already booked, what is still open, and the button that books it.
-    /// The amount is rounded up to 15 min; when nothing new was worked the button is disabled, so
-    /// the same time can never be booked twice.
+    /// Aufgerundet wird je **Tag** auf 15 min, und gebucht wird auf den Arbeitstag — deshalb steht
+    /// hier die Tagesliste und nicht nur eine Summe. Ist nichts Neues gearbeitet, bleibt der Knopf
+    /// aus; dieselbe Zeit kann nicht zweimal gebucht werden.
     private var bookingSection: some View {
         let booked = model.bookedSeconds(ticketKey: ticketKey)
-        let open = model.openToBookSeconds(ticketKey: ticketKey)
+        let days = model.dailyBookings(ticketKey: ticketKey)
+        let open = days.reduce(0) { $0 + $1.seconds }
         return VStack(alignment: .leading, spacing: 6) {
             HStack {
                 Text("Gebuchte Zeit").font(.app(.subheadline, weight: .medium)).foregroundStyle(.secondary)
@@ -177,6 +187,27 @@ struct ClaudeTimeDetails: View {
             }
             row("Gebucht", TimeFormatting.compact(booked))
             row("Offen zum Buchen", open > 0 ? TimeFormatting.compact(open) : "—")
+
+            // Auf welche Tage gebucht wird — je Zeile ein eigener Worklog-Eintrag in Jira.
+            if !days.isEmpty {
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach(days) { day in
+                        HStack(spacing: 6) {
+                            Text(Self.dayLabel.string(from: day.day))
+                                .font(.app(.caption)).foregroundStyle(.secondary)
+                                .frame(width: 74, alignment: .leading)
+                            Text(TimeFormatting.compact(day.seconds))
+                                .font(.app(.caption)).monospacedDigit()
+                            if day.seconds > day.measuredSeconds {
+                                Text("(gemessen \(TimeFormatting.compact(day.measuredSeconds)))")
+                                    .font(.app(.caption2)).foregroundStyle(.tertiary)
+                            }
+                            Spacer(minLength: 0)
+                        }
+                    }
+                }
+                .padding(.leading, 2)
+            }
 
             Button {
                 Task { await model.bookTime(ticketKey: ticketKey) }
@@ -195,7 +226,8 @@ struct ClaudeTimeDetails: View {
             .buttonStyle(.borderedProminent)
             .controlSize(.regular)
             .disabled(open <= 0 || model.bookingBusy)
-            .help("Bucht die offene Zeit als Jira-Worklog (auf 15 min aufgerundet)")
+            .help("Bucht die offene Zeit als Jira-Worklog — ein Eintrag je Arbeitstag, "
+                + "je Tag auf 15 min aufgerundet")
 
             if let error = model.bookingError {
                 Label(error, systemImage: "exclamationmark.triangle.fill")

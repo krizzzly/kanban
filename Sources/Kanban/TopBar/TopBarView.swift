@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 import KanbanCore
 
@@ -10,13 +11,53 @@ struct TopBarToolbar: ToolbarContent {
     var body: some ToolbarContent {
         ToolbarItem(placement: .navigation) { projectMenu }
         ToolbarItem(placement: .navigation) { sprintMenu }
+        // Gruppe statt zwei Einträgen: `ToolbarContent` nimmt nur zehn Elemente, und die Leiste ist
+        // voll. Der Knowledgebase-Knopf steht **neben** Sprint/Frei, weil er dieselbe Frage
+        // beantwortet: was füllt gerade das Fenster.
+        ToolbarItemGroup(placement: .navigation) {
+            modePicker
+            knowledgebaseButton
+        }
         ToolbarItem(placement: .navigation) { statusView }
         ToolbarItem(placement: .navigation) { sprintTimeView }
-        ToolbarItem(placement: .primaryAction) { bookButton }
+        // Gruppe statt zwei Einträge: `ToolbarContent` nimmt nur zehn Elemente, und beide sind
+        // ohnehin Aufräum-Knöpfe, die je nach Lage ganz verschwinden.
+        ToolbarItemGroup(placement: .primaryAction) {
+            bookButton
+            stackSweepButton
+        }
         ToolbarItem(placement: .primaryAction) { refreshButton }
-        ToolbarItem(placement: .primaryAction) { claudeWorkflowButton }
+        // Wieder eine Gruppe statt zwei Einträgen: `ToolbarContent` nimmt nur zehn, und die sind
+        // vergeben. Passt auch inhaltlich — beide drehen an dem, was Claude in den Sessions tut.
+        ToolbarItemGroup(placement: .primaryAction) {
+            watchdogButton
+            claudeWorkflowButton
+        }
         ToolbarItem(placement: .primaryAction) { dataFolderButton }
         ToolbarItem(placement: .primaryAction) { settingsButton }
+    }
+
+    /// Schaltet die Knowledgebase des Projekts auf: Ordnerbaum links, Datei rechts, anstelle von
+    /// Board und Detail. Derselbe Knopf schaltet zurück, und der gefüllte Buchrücken sagt, welcher
+    /// Zustand gerade gilt.
+    ///
+    /// Ohne konfigurierten `kbPath` gibt es den Knopf gar nicht, wie bei den Aufräum-Knöpfen: eine
+    /// dauerhaft graue Schaltfläche wäre nur Rauschen. Ist der Pfad gesetzt, der Ordner aber nicht
+    /// da, bleibt der Knopf und die Ansicht **sagt**, was fehlt — das ist der Fall, den man beheben
+    /// will, nicht einer, den man verstecken sollte. (In den Finder führt der Ordner-Knopf **in**
+    /// der Ansicht; der Ordner-Knopf rechts in der Leiste öffnet Kanbans Datenordner, anderer Ort.)
+    @ViewBuilder
+    private var knowledgebaseButton: some View {
+        if let path = model.selectedProject?.kbPathAbsolute {
+            Button {
+                model.toggleKnowledgebase()
+            } label: {
+                Image(systemName: model.knowledgebaseOpen ? "books.vertical.fill" : "books.vertical")
+            }
+            .help(model.knowledgebaseOpen
+                  ? "Zurück zum Board"
+                  : "Knowledgebase öffnen: \(path)")
+        }
     }
 
     private var projectMenu: some View {
@@ -37,31 +78,52 @@ struct TopBarToolbar: ToolbarContent {
         .help("Projekt wählen")
     }
 
-    @ViewBuilder
-    private var sprintMenu: some View {
-        Menu(model.selectedSprint.map(sprintLabel) ?? "—") {
-            ForEach(model.sprints) { sprint in
-                Button {
-                    model.selectSprint(sprint)
-                } label: {
-                    if sprint.id == model.selectedSprint?.id {
-                        Label(sprintLabel(sprint), systemImage: "checkmark")
-                    } else {
-                        Text(sprintLabel(sprint))
-                    }
-                }
+    /// Sprint- oder freier Modus. Steht direkt neben der Sprint-Auswahl, die im freien Modus
+    /// verschwindet — dort gibt kein Sprint vor, was auf dem Board steht.
+    private var modePicker: some View {
+        Picker("Modus", selection: Binding(get: { model.boardMode },
+                                           set: { model.setBoardMode($0) })) {
+            ForEach(BoardMode.allCases) { mode in
+                Label(mode.label, systemImage: mode.icon).tag(mode)
             }
         }
-        .disabled(model.sprints.isEmpty)
-        .help("Sprint wählen")
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .fixedSize()
+        .disabled(model.selectedProject == nil)
+        .help("Sprint: die Tickets des gewählten Jira-Sprints. Frei: alles, was lokal existiert.")
     }
 
-    private func sprintLabel(_ sprint: JiraSprint) -> String {
-        switch sprint.state {
-        case "active": return "🟢 \(sprint.name)"
-        case "future": return "🔜 \(sprint.name)"
-        case "closed": return "✓ \(sprint.name)"
-        default: return sprint.name
+    @ViewBuilder
+    private var sprintMenu: some View {
+        if model.boardMode == .sprint {
+            sprintMenuContent
+        }
+    }
+
+    /// Sprint **oder** Board: dieselbe Frage, deshalb derselbe Picker. „Ganzes Board" steht immer
+    /// zuunterst und ist bei einem Projekt ohne aktiven Sprint (CORE: 50 Sprints, alle geschlossen)
+    /// die Vorauswahl.
+    @ViewBuilder
+    private var sprintMenuContent: some View {
+        Menu(model.selectedChoice?.label ?? "—") {
+            ForEach(SprintSelection.choices(model.sprints)) { choice in
+                choiceButton(choice)
+            }
+        }
+        .disabled(model.board == nil)
+        .help("Sprint oder ganzes Board wählen")
+    }
+
+    private func choiceButton(_ choice: SprintChoice) -> some View {
+        Button {
+            model.selectChoice(choice)
+        } label: {
+            if choice == model.selectedChoice {
+                Label(choice.label, systemImage: "checkmark")
+            } else {
+                Text(choice.label)
+            }
         }
     }
 
@@ -73,6 +135,16 @@ struct TopBarToolbar: ToolbarContent {
                 Text(model.isLoadingSprints ? "Sprints…" : "Aktualisiere…")
                     .font(.caption).foregroundStyle(.secondary)
             }
+        } else if let notice = model.startWorkNotice {
+            // Frischer als alles andere hier: das Ergebnis der Jira-Nachführung zu dem Command, den
+            // der Benutzer gerade abgesetzt hat. Erfolg räumt sich nach ein paar Sekunden selbst
+            // weg, eine Warnung bleibt stehen (siehe `AppModel.startJiraWork`).
+            Label(notice.text,
+                  systemImage: notice.isWarning ? "exclamationmark.triangle.fill" : "checkmark.circle")
+                .font(.caption)
+                .foregroundStyle(notice.isWarning ? AnyShapeStyle(.orange) : AnyShapeStyle(.secondary))
+                .lineLimit(1)
+                .help(notice.text)
         } else if let error = model.errorMessage {
             Label(error, systemImage: "exclamationmark.triangle.fill")
                 .font(.caption).foregroundStyle(.orange).lineLimit(1).help(error)
@@ -92,7 +164,9 @@ struct TopBarToolbar: ToolbarContent {
             Label(TimeFormatting.compact(seconds), systemImage: "clock")
                 .labelStyle(.titleAndIcon)
                 .font(.caption).foregroundStyle(.secondary).monospacedDigit()
-                .help("Kumulierte Claude-Zeit aller Tickets in diesem Sprint")
+                .help(model.selectedChoice?.sprint != nil
+                      ? "Kumulierte Claude-Zeit aller Tickets in diesem Sprint"
+                      : "Kumulierte Claude-Zeit aller Tickets auf dem Board")
         }
     }
 
@@ -112,6 +186,24 @@ struct TopBarToolbar: ToolbarContent {
         }
     }
 
+    /// „N Stacks stoppen": die laufenden Stacks fertiger Tickets (Review/Done). Zeigt nur die
+    /// fertigen im Zähler — die noch arbeitenden Stacks sind kein Aufräum-Anlass, stehen im Sheet
+    /// aber trotzdem. Ganz weg, wenn nichts fertig läuft: dann gibt es keinen Grund zu klicken.
+    @ViewBuilder
+    private var stackSweepButton: some View {
+        let finished = model.stackSweep.finished.count
+        if finished > 0 {
+            Button {
+                model.openStackSweep()
+            } label: {
+                Label("\(finished) Stacks stoppen", systemImage: "square.stack.3d.down.right")
+                    .labelStyle(.titleAndIcon)
+            }
+            .help("Docker-Stacks von Tickets in Review/Done stoppen — Worktree, Branch und "
+                  + "DB-Volume bleiben (iwf worktree stop)")
+        }
+    }
+
     private var refreshButton: some View {
         Button {
             Task { await model.refresh() }
@@ -119,7 +211,17 @@ struct TopBarToolbar: ToolbarContent {
             Image(systemName: "arrow.clockwise")
         }
         .help("Aktualisieren")
-        .disabled(model.selectedSprint == nil || model.isRefreshing)
+        // Im freien Modus gibt es keinen Sprint, an dem das hängen könnte.
+        .disabled((model.boardMode == .sprint && model.selectedSprint == nil) || model.isRefreshing)
+    }
+
+    /// Die Befundliste des Session-Watchdogs. Steht immer da, auch wenn der Watchdog aus ist:
+    /// er ist der Einstieg, und das Panel sagt selbst, dass geschaltet wird in Einstellungen ›
+    /// Watchdog — ausgeblendet wäre er genau dann weg, wenn man ihn sucht. Er kostet auch keinen
+    /// Platz im Zehner-Budget, weil er sich einen `ToolbarItemGroup`-Eintrag mit dem
+    /// Workflow-Knopf teilt.
+    private var watchdogButton: some View {
+        WatchdogToolbarButton(watchdog: model.watchdog)
     }
 
     private var claudeWorkflowButton: some View {

@@ -16,11 +16,13 @@ final class SettingsModel {
     private(set) var dirty = false
     private(set) var saveError: String?
     private(set) var conflict = false
-    private(set) var savedPendingRestart = false
-    private(set) var restartBusy = false
-    private(set) var restartResult: String?
+    /// Was der Rückweg in die Hermes-Config beim letzten Speichern getan hat (nil = noch nichts).
+    private(set) var syncResult: HermesSync.Result?
 
     var configPath: String { store.path }
+
+    /// Nur wenn es überhaupt eine Hermes-Config gibt, ist die Sync-Sektion sinnvoll.
+    var hermesAvailable: Bool { HermesSync.isAvailable() }
 
     init(store: ConfigStore = ConfigStore()) {
         self.store = store
@@ -47,7 +49,9 @@ final class SettingsModel {
             dirty = false
             saveError = nil
             conflict = false
-            savedPendingRestart = true
+            // Rückweg: die Projekte additiv in eine vorhandene Hermes-Config schreiben, damit CLI
+            // und MCP-Tools dieselben Projekte kennen. Ohne Hermes ein stiller No-Op.
+            syncResult = HermesSync.run(kanban: doc.root)
             return true
         } catch ConfigStoreError.conflict {
             conflict = true
@@ -60,20 +64,26 @@ final class SettingsModel {
         }
     }
 
-    /// Runs `hermes daemon-restart` in the user's login shell (PATH!) off the main thread.
-    func restartDaemon() {
-        guard !restartBusy else { return }
-        restartBusy = true
-        restartResult = nil
-        Task.detached {
-            let result = LoginShell.run("hermes daemon-restart")
-            await MainActor.run {
-                self.restartBusy = false
-                self.restartResult = result.status == 0
-                    ? "✓ Daemon neu gestartet."
-                    : "Daemon-Neustart fehlgeschlagen (Exit \(result.status)): \(result.output)"
-            }
+    /// Was nach dem Speichern unter dem Formular steht — nil, wenn es nichts zu sagen gibt.
+    var syncMessage: String? {
+        switch syncResult {
+        case .synced(let count):
+            return "✓ Gespeichert. \(count) Projekt\(count == 1 ? "" : "e") in die Hermes-Config "
+                 + "übertragen (\(abbreviate(HermesImport.defaultPath)))."
+        case .unchanged:
+            return "✓ Gespeichert. Die Hermes-Config war schon auf demselben Stand."
+        case .skipped(let reason) where reason == "keine Hermes-Config":
+            return "✓ Gespeichert."
+        case .skipped(let reason):
+            return "✓ Gespeichert. Hermes-Abgleich übersprungen: \(reason)."
+        case nil:
+            return nil
         }
+    }
+
+    private func abbreviate(_ path: String) -> String {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        return path.hasPrefix(home) ? "~" + path.dropFirst(home.count) : path
     }
 
     // MARK: - Mutation
@@ -170,75 +180,6 @@ final class SettingsModel {
     /// Entfernt ein Projekt aus allen Sections auf einmal.
     func removeProjectEverywhere(key: String) {
         mutate { $0 = ProjectProjection.remove(key, from: $0) }
-    }
-
-    // MARK: - Arrays of objects (presence blocks, contact people)
-
-    func arrayCount(_ path: [String]) -> Int {
-        (document?.root.value(at: path)?.arrayValue ?? []).count
-    }
-
-    func appendArrayObject(_ path: [String], _ template: JSONValue = .object([:])) {
-        mutate { root in
-            var arr = root.value(at: path)?.arrayValue ?? []
-            arr.append(template)
-            root.set(.array(arr), at: path)
-        }
-    }
-
-    func removeArrayObject(_ path: [String], at index: Int) {
-        mutate { root in
-            var arr = root.value(at: path)?.arrayValue ?? []
-            guard arr.indices.contains(index) else { return }
-            arr.remove(at: index)
-            root.set(arr.isEmpty ? nil : .array(arr), at: path)
-        }
-    }
-
-    private func elementValue(_ path: [String], _ index: Int, _ subPath: [String]) -> JSONValue? {
-        guard let arr = document?.root.value(at: path)?.arrayValue,
-              arr.indices.contains(index) else { return nil }
-        return arr[index].value(at: subPath)
-    }
-
-    private func setElementValue(_ path: [String], _ index: Int, _ subPath: [String], _ value: JSONValue?) {
-        mutate { root in
-            var arr = root.value(at: path)?.arrayValue ?? []
-            guard arr.indices.contains(index) else { return }
-            var element = arr[index]
-            if subPath.isEmpty { if let value { element = value } }
-            else { element.set(value, at: subPath) }
-            arr[index] = element
-            root.set(.array(arr), at: path)
-        }
-    }
-
-    func elementStringBinding(_ path: [String], _ index: Int, _ subPath: [String]) -> Binding<String> {
-        Binding(
-            get: { [weak self] in self?.elementValue(path, index, subPath)?.stringValue ?? "" },
-            set: { [weak self] newValue in
-                guard let self,
-                      (self.elementValue(path, index, subPath)?.stringValue ?? "") != newValue else { return }
-                self.setElementValue(path, index, subPath, newValue.isEmpty ? nil : .string(newValue))
-            })
-    }
-
-    func elementBoolBinding(_ path: [String], _ index: Int, _ subPath: [String],
-                            defaultOn: Bool) -> Binding<Bool> {
-        Binding(
-            get: { [weak self] in self?.elementValue(path, index, subPath)?.boolValue ?? defaultOn },
-            set: { [weak self] newValue in self?.setElementValue(path, index, subPath, .bool(newValue)) })
-    }
-
-    func elementStringListText(_ path: [String], _ index: Int, _ subPath: [String]) -> String {
-        (elementValue(path, index, subPath)?.arrayValue ?? [])
-            .compactMap(\.stringValue).joined(separator: ", ")
-    }
-
-    func setElementStringList(_ path: [String], _ index: Int, _ subPath: [String], from text: String) {
-        let items = text.split(separator: ",")
-            .map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
-        setElementValue(path, index, subPath, items.isEmpty ? nil : .array(items.map { .string($0) }))
     }
 
     // MARK: - Raw JSON escape hatch

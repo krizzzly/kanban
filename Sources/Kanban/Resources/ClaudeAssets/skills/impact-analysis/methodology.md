@@ -5,10 +5,10 @@ Business-Logik-Verzweigungen, Aufwärts-Verfolgung, API-Contract, Read/Write-Imp
 Diese Anleitung ist **projekt-neutral** für Symfony-Backend + React/Ant-Design-Frontend mit CQRS-artiger
 Command/Query-Trennung (Symfony Messenger). Sie wird von mehreren Commands verwendet:
 
-- `/start-task` (Schritt 5b) — **vor** der Umsetzung, basierend auf dem Lösungsplan
-- `/review-task` (Phase 1d) — **nach** der Umsetzung, basierend auf dem git diff
-- `/review-merge` (Phase 3b) — beim **Review eines Kollegen-MRs**, basierend auf dem MR-Branch-Diff
-- `/impact-analysis` — **standalone**, für Tasks in jedem Status (offen, in Bearbeitung, abgeschlossen)
+- `start-task` (Schritt 5b) — **vor** der Umsetzung, basierend auf dem Lösungsplan
+- `review-task` (Phase 1d) — **nach** der Umsetzung, basierend auf dem git diff
+- `review-merge` (Phase 3b) — beim **Review eines Kollegen-MRs**, basierend auf dem MR-Branch-Diff
+- `impact-analysis` — **standalone**, für Tasks in jedem Status (offen, in Bearbeitung, abgeschlossen)
 
 Ziel ist nicht, geänderte Dateien aufzulisten, sondern die fachlichen und technischen Auswirkungen entlang
 der betroffenen Flows zu verstehen:
@@ -86,14 +86,14 @@ Trennung, Verzweigungs-Analyse, QA-Priorisierung) ist projekt-unabhängig.
 
 | Kontext | Datenquelle | Ziel |
 |---------|-------------|------|
-| `/start-task` | **Lösungsplan** — geplante Datei-Änderungen | Nebeneffekte VOR der Umsetzung erkennen |
-| `/review-task` | **git diff** — tatsächliche Code-Änderungen | Test-Bereiche für QA identifizieren |
-| `/review-merge` | **git diff** — MR-Branch des Kollegen | Lücken finden, Findings generieren, QA informieren |
-| `/impact-analysis` | **Lösungsplan, Branch-Diff oder gemergte Commits** | Impact unabhängig vom Task-Status |
+| `start-task` | **Lösungsplan** — geplante Datei-Änderungen | Nebeneffekte VOR der Umsetzung erkennen |
+| `review-task` | **git diff** — tatsächliche Code-Änderungen | Test-Bereiche für QA identifizieren |
+| `review-merge` | **git diff** — MR-Branch des Kollegen | Lücken finden, Findings generieren, QA informieren |
+| `impact-analysis` | **Lösungsplan, Branch-Diff oder gemergte Commits** | Impact unabhängig vom Task-Status |
 
-**`/start-task`:** Aus dem Lösungsplan ermitteln, welche Dateien/Klassen/Methoden geändert werden sollen.
+**`start-task`:** Aus dem Lösungsplan ermitteln, welche Dateien/Klassen/Methoden geändert werden sollen.
 
-**`/review-task`:** Tatsächlich geänderte Dateien aus dem git diff:
+**`review-task`:** Tatsächlich geänderte Dateien aus dem git diff:
 
 ```bash
 MERGE_BASE=$(git merge-base HEAD develop)
@@ -101,14 +101,14 @@ git diff --name-only $MERGE_BASE..HEAD
 git status --short
 ```
 
-**`/review-merge`:** Änderungen des MR-Branches:
+**`review-merge`:** Änderungen des MR-Branches:
 
 ```bash
 git log --oneline origin/develop..origin/<branch-name>
 git show origin/<branch-name> --name-only --oneline
 ```
 
-**`/impact-analysis`:** Zuerst Task, Branch und Status bestimmen. Je nach Status:
+**`impact-analysis`:** Zuerst Task, Branch und Status bestimmen. Je nach Status:
 
 - **Offen:** Lösungsplan aus Task-File
 - **In Bearbeitung:** Branch-Diff gegen `develop`

@@ -54,7 +54,8 @@ public enum WorktreeScanner {
     }
 
     /// First worktree whose branch references the ticket key as a whole token.
-    public static func worktree(for ticketKey: String, in worktrees: [Worktree]) -> Worktree? {
-        worktrees.first { TicketMatching.references($0.branch ?? "", ticketKey: ticketKey) }
+    public static func worktree(for ticketKey: String, in worktrees: [Worktree],
+                                branch: String? = nil) -> Worktree? {
+        worktrees.first { TicketMatching.matches($0, ticketKey: ticketKey, branch: branch) }
     }
 }

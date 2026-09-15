@@ -49,8 +49,11 @@ public enum StatusLinks {
 
     // MARK: - URL builders
 
+    /// Eine `!<iid>`-Karte ist Arbeit **ohne** Ticketnummer — zu ihr gibt es per Definition kein
+    /// Jira-Issue. Ohne diese Ausnahme verlinkte ihre H1 auf `/browse/!49` und liefe ins Leere.
     private static func jiraURL(ticketKey: String?, base: String?) -> String? {
-        guard let key = ticketKey, !key.isEmpty, let base, !base.isEmpty else { return nil }
+        guard let key = ticketKey, !key.isEmpty, !key.hasPrefix("!"),
+              let base, !base.isEmpty else { return nil }
         return "\(trimTrailingSlash(base))/browse/\(key)"
     }
 

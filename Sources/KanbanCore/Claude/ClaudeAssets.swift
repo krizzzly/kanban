@@ -2,9 +2,12 @@ import Foundation
 
 /// Art eines Claude-Assets; der Rohwert ist der Unterordner im kanonischen Bestand.
 public enum ClaudeAssetKind: String, CaseIterable, Sendable {
+    /// **Altbestand.** Kanban liefert nichts mehr als Command aus (siehe `ClaudeAssetMigration`) —
+    /// die Gattung bleibt, damit ein von Hand angelegter Command sichtbar und editierbar bleibt.
+    /// Codex kennt sie nicht.
     case command = "commands"   // einzelne .md-Datei
-    case skill   = "skills"     // Ordner (SKILL.md + Beiwerk)
-    case rule    = "rules"      // einzelne .md-Datei; kein nativer Claude-Mechanismus, nur referenziert
+    case skill   = "skills"     // Ordner (SKILL.md + Beiwerk) — die Gattung, die beide Agents lesen
+    case rule    = "rules"      // einzelne .md-Datei; kein nativer Mechanismus, nur referenziert
 }
 
 /// Ein Asset im kanonischen Bestand (`~/Library/Application Support/Kanban/claude/…`).
@@ -22,7 +25,7 @@ public struct ClaudeAsset: Sendable, Hashable, Identifiable {
     }
 }
 
-/// Zustand des Symlinks in der Claude-User-Ebene (`~/.claude/commands|skills`).
+/// Zustand des Symlinks in der User-Ebene eines Agents (`~/.claude/skills`, `~/.codex/skills`).
 public enum ClaudeSymlinkState: Sendable, Equatable {
     /// Symlink existiert und zeigt auf unseren kanonischen Bestand.
     case linked
@@ -40,13 +43,17 @@ public struct ClaudeAssetError: LocalizedError {
 /// Der kanonische Bestand an Commands/Skills/Rules, den Kanban besitzt und bereitstellt.
 ///
 /// Drei Orte spielen zusammen: der **Auslieferungsstand** (App-Bundle, read-only), der **kanonische
-/// Bestand** (Application Support — editierbar, überlebt Updates) und die **Claude-User-Ebene**
-/// (`~/.claude/…` — Symlinks auf den Bestand, gelten damit in jedem Projekt). Rules bekommen keinen
-/// Symlink: Claude kennt keinen Rules-Mechanismus, sie werden aus den Commands per absolutem Pfad
-/// referenziert.
+/// Bestand** (Application Support — editierbar, überlebt Updates) und die **User-Ebene der Agents**
+/// (`~/.claude/skills` und `~/.codex/skills` — Symlinks auf denselben Bestand, gelten damit in jedem
+/// Projekt). Ein Skill wird in **beide** Homes verlinkt: dieselbe Datei bedient Claude und Codex, es
+/// gibt keinen zweiten Bestand, der auseinanderlaufen könnte.
+///
+/// Rules bekommen keinen Symlink: keiner der beiden Agents hat einen Rules-Mechanismus, sie werden
+/// aus den Skills per absolutem Pfad referenziert.
 public struct ClaudeAssetStore: Sendable {
     public let canonicalRoot: URL
     public let userClaudeDir: URL
+    public let userCodexDir: URL
 
     /// `~/Library/Application Support/Kanban/claude`
     public static var defaultRoot: URL {
@@ -56,10 +63,19 @@ public struct ClaudeAssetStore: Sendable {
     }
 
     public init(canonicalRoot: URL = ClaudeAssetStore.defaultRoot,
-                userClaudeDir: URL = FileManager.default.homeDirectoryForCurrentUser
-                    .appendingPathComponent(".claude", isDirectory: true)) {
+                userClaudeDir: URL = AgentKind.claude.homeDir,
+                userCodexDir: URL = AgentKind.codex.homeDir) {
         self.canonicalRoot = canonicalRoot
         self.userClaudeDir = userClaudeDir
+        self.userCodexDir = userCodexDir
+    }
+
+    /// Home des Agents — in Tests umgebogen, im Betrieb `~/.claude` bzw. `~/.codex`.
+    public func homeDir(_ agent: AgentKind) -> URL {
+        switch agent {
+        case .claude: return userClaudeDir
+        case .codex:  return userCodexDir
+        }
     }
 
     // MARK: - Inventar
@@ -135,17 +151,27 @@ public struct ClaudeAssetStore: Sendable {
 
     // MARK: - Symlinks in die Claude-User-Ebene
 
-    /// Wohin der Symlink für dieses Asset gehört — nil für Rules (kein nativer Mechanismus).
-    public func symlinkTarget(for asset: ClaudeAsset) -> URL? {
+    /// Wohin der Symlink für dieses Asset bei diesem Agent gehört — nil, wo es keinen Ort gibt:
+    /// Rules (kein Mechanismus) und Commands unter Codex (kennt die Gattung nicht).
+    public func symlinkTarget(for asset: ClaudeAsset, agent: AgentKind = .claude) -> URL? {
         switch asset.kind {
-        case .command: return userClaudeDir.appendingPathComponent("commands/\(asset.name).md")
-        case .skill:   return userClaudeDir.appendingPathComponent("skills/\(asset.name)", isDirectory: true)
-        case .rule:    return nil
+        case .command:
+            return agent.userCommandsDir == nil ? nil
+                : homeDir(agent).appendingPathComponent("commands/\(asset.name).md")
+        case .skill:
+            return homeDir(agent).appendingPathComponent("skills/\(asset.name)", isDirectory: true)
+        case .rule:
+            return nil
         }
     }
 
-    public func symlinkState(for asset: ClaudeAsset) -> ClaudeSymlinkState {
-        guard let target = symlinkTarget(for: asset) else { return .notInstalled }
+    /// Die Agents, für die dieses Asset überhaupt einen Zielort hat.
+    public func linkableAgents(for asset: ClaudeAsset) -> [AgentKind] {
+        AgentKind.allCases.filter { symlinkTarget(for: asset, agent: $0) != nil }
+    }
+
+    public func symlinkState(for asset: ClaudeAsset, agent: AgentKind = .claude) -> ClaudeSymlinkState {
+        guard let target = symlinkTarget(for: asset, agent: agent) else { return .notInstalled }
         guard let dest = try? FileManager.default.destinationOfSymbolicLink(atPath: target.path) else {
             // Kein Symlink: entweder nichts, oder eine echte Datei/Ordner (fremd).
             return FileManager.default.fileExists(atPath: target.path)
@@ -160,11 +186,13 @@ public struct ClaudeAssetStore: Sendable {
     }
 
     /// Legt den Symlink an. Fremde Dateien am Zielort werden nie überschrieben, sondern gemeldet.
-    public func installSymlink(for asset: ClaudeAsset) throws {
-        guard let target = symlinkTarget(for: asset) else {
-            throw ClaudeAssetError(message: "Rules werden nicht verlinkt — sie werden per Pfad referenziert.")
+    public func installSymlink(for asset: ClaudeAsset, agent: AgentKind = .claude) throws {
+        guard let target = symlinkTarget(for: asset, agent: agent) else {
+            throw ClaudeAssetError(message: asset.kind == .rule
+                ? "Rules werden nicht verlinkt — sie werden per Pfad referenziert."
+                : "\(agent.displayName) kennt keine Commands — nur Skills werden dorthin verlinkt.")
         }
-        switch symlinkState(for: asset) {
+        switch symlinkState(for: asset, agent: agent) {
         case .linked:
             return
         case .foreign(let what):
@@ -177,18 +205,28 @@ public struct ClaudeAssetStore: Sendable {
     }
 
     /// Entfernt unseren Symlink; Fremdes bleibt liegen.
-    public func removeSymlink(for asset: ClaudeAsset) throws {
-        guard let target = symlinkTarget(for: asset), symlinkState(for: asset) == .linked else { return }
+    public func removeSymlink(for asset: ClaudeAsset, agent: AgentKind = .claude) throws {
+        guard let target = symlinkTarget(for: asset, agent: agent),
+              symlinkState(for: asset, agent: agent) == .linked else { return }
         try FileManager.default.removeItem(at: target)
     }
 
-    /// Verlinkt alle Commands + Skills; fremde Zielorte werden übersprungen. Liefert den Zustand danach.
+    /// Zustand je Agent, für den es einen Zielort gibt — die Grundlage der Anzeige im Editor.
+    public func symlinkStates(for asset: ClaudeAsset) -> [AgentKind: ClaudeSymlinkState] {
+        Dictionary(uniqueKeysWithValues: linkableAgents(for: asset)
+            .map { ($0, symlinkState(for: asset, agent: $0)) })
+    }
+
+    /// Verlinkt alles Verlinkbare in **jedes** Agent-Home; fremde Zielorte werden übersprungen.
+    /// Liefert den Zustand danach, je Asset und Agent.
     @discardableResult
-    public func installAllSymlinks() -> [ClaudeAsset: ClaudeSymlinkState] {
-        var result: [ClaudeAsset: ClaudeSymlinkState] = [:]
+    public func installAllSymlinks() -> [ClaudeAsset: [AgentKind: ClaudeSymlinkState]] {
+        var result: [ClaudeAsset: [AgentKind: ClaudeSymlinkState]] = [:]
         for asset in allAssets() where asset.kind != .rule {
-            try? installSymlink(for: asset)
-            result[asset] = symlinkState(for: asset)
+            for agent in linkableAgents(for: asset) {
+                try? installSymlink(for: asset, agent: agent)
+            }
+            result[asset] = symlinkStates(for: asset)
         }
         return result
     }

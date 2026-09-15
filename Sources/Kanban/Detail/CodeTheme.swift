@@ -92,18 +92,17 @@ enum CodeTheme {
         return color(palette[index])
     }
 
-    /// Kommando-Ausgabe mit ANSI-Farben, im Terminal-Theme.
-    static func ansiText(_ raw: String) -> AttributedString {
-        var result = AttributedString()
-        for span in ANSIParser.parse(raw) {
-            var piece = AttributedString(span.text)
-            piece.foregroundColor = span.foreground.map(ansi) ?? foreground
-            if let background = span.background { piece.backgroundColor = ansi(background) }
-            if span.bold { piece.font = .system(size: nsFont.pointSize, weight: .bold, design: .monospaced) }
-            result.append(piece)
-        }
-        return result
+    /// Dasselbe für AppKit — die Log-Ansicht (`LogTextView`) färbt `NSAttributedString`s.
+    static func ansiNS(_ index: Int) -> NSColor {
+        let palette = KanbanTerminalView.theme.ansi
+        guard index >= 0, index < palette.count else { return foregroundNS }
+        return nsColor(palette[index])
     }
+
+    // Ein `ansiText(_:) -> AttributedString` stand hier und ist bewusst weg: es baute die farbige
+    // Fassung stückweise mit `AttributedString.append` und kostete bei vollem Puffer 40 ms — pro
+    // Body-Durchlauf, weil es mitten im SwiftUI-Body stand. Die Log-Ansicht hängt statt dessen an
+    // (`LogTextView`); den langsamen Weg stehen zu lassen hiesse, ihn wieder zu benutzen.
 
     /// Builds a coloured `AttributedString` for one source line — used by the SwiftUI diff rows.
     /// Assembled from segments rather than by mutating ranges: `AttributedString` indices are

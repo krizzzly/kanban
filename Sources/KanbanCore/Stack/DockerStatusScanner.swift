@@ -15,8 +15,11 @@ public struct DockerStatusScanner: Sendable {
     public func scan(worktreePath: String, projectName: String,
                      dbInitDir: String = WorktreeDbSeed.defaultInitSubdir) -> WorktreeStackStatus {
         let name = (worktreePath as NSString).lastPathComponent
+        // Das Compose-Label muss mit: über den Namen allein ist `even` (Haupt-Repo) ein Präfix
+        // jedes Worktree-Stacks `even-<nummer>` — siehe StackStatusParser.services.
         let services = StackStatusParser.services(
-            from: run(["ps", "-a", "--format", "{{.Names}}\t{{.State}}\t{{.Status}}"]),
+            from: run(["ps", "-a", "--format",
+                       "{{.Names}}\t{{.State}}\t{{.Status}}\t{{.Label \"com.docker.compose.project\"}}"]),
             stackName: name)
 
         var phases: [StackPhase] = []
@@ -37,6 +40,36 @@ public struct DockerStatusScanner: Sendable {
         phases.append(routerPhase())
 
         return WorktreeStackStatus(name: name, phases: phases, services: services)
+    }
+
+    /// Namen aller **laufenden** Container, ein Aufruf für die ganze Maschine.
+    ///
+    /// Der Sweep über mehrere Stacks fragt bewusst einmal statt je Stack: `docker ps` ist der
+    /// billige Teil von Docker (`docker system df` dagegen braucht auf einer vollen Maschine
+    /// Minuten), aber ein Aufruf je Worktree wären bei 43 Worktrees 43 Prozesse.
+    public func runningContainerNames() -> [String] {
+        lines(run(["ps", "--format", "{{.Names}}"]))
+    }
+
+    /// Namen aller Volumes — für den tiefen Sweep, der die Volumes eines Stacks löscht. Gelöscht
+    /// wird nur, was **existiert**: die Namen zu erraten (`<stack>_dbdata`) würde die zweite Hälfte
+    /// verpassen, denn ein Stack hat hier zwei (`_dbdata` **und** `_appcache`, letzteres das grössere).
+    public func volumeNames() -> [String] {
+        lines(run(["volume", "ls", "--format", "{{.Name}}"]))
+    }
+
+    /// Alle Image-Tags (`local/even-3675:latest`). Ebenfalls beobachtet statt geraten: neben
+    /// `local/<name>:latest` gibt es ein `local/<name>-base:latest`, das iwfs eigenes
+    /// `worktree destroy` stehen lässt.
+    public func imageTags() -> [String] {
+        lines(run(["images", "--format", "{{.Repository}}:{{.Tag}}"]))
+            .filter { !$0.contains("<none>") }
+    }
+
+    private func lines(_ output: String) -> [String] {
+        output.components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
     }
 
     /// The domain: mkcert leaves `<name>.crt` + `<name>.key` in Traefik's cert folder, and a
@@ -109,7 +142,10 @@ public struct DockerStatusScanner: Sendable {
             // not build; only `iwf stack build` (or a recreate) does.
             return StackPhase(title: "Image", state: .missing("nicht gebaut"), repair: .build)
         }
-        if let main = imageInfo("local/\(projectName):latest"), main.id == info.id {
+        // Nur für Worktrees: im Haupt-Repo sind `name` und `projectName` derselbe Ordner, der
+        // Vergleich prüfte das Image gegen sich selbst und meldete zwangsläufig „kein eigener
+        // Build" — samt eines `iwf stack build`, das daran nichts ändern kann.
+        if name != projectName, let main = imageInfo("local/\(projectName):latest"), main.id == info.id {
             // Code und Assets kommen aus dem Mount (`../../:/app`), nicht aus dem Image — ein
             // fremdes Image heisst also nicht "falsche Assets", sondern: die Tooling-/PHP-Stände
             // stammen aus dem Haupt-Repo. Relevant, sobald die Branch das Dockerfile anfasst.

@@ -117,16 +117,10 @@ public struct KanbanSettings: Sendable {
     public let optionAsMeta: Bool
 }
 
-/// Reads (and, on first launch, seeds) `~/Library/Application Support/Kanban/config.json` — Kanban's
-/// **own** config, separate from the read-only `~/.hermes/config.json`.
+/// Reads (and, on first launch, seeds) the terminal part of Kanban's config. Same file as
+/// `KanbanConfig` — the modules live next to `terminal` in it, hence the shared `fileURL`.
 public enum KanbanSettingsStore {
-    public static var fileURL: URL {
-        let base = FileManager.default
-            .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("Kanban", isDirectory: true)
-        try? FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
-        return base.appendingPathComponent("config.json")
-    }
+    public static var fileURL: URL { KanbanConfig.fileURL }
 
     /// Loads the settings, seeding a default config file on first launch. Never throws: on any error
     /// it falls back to the built-in Solarized Dark theme.

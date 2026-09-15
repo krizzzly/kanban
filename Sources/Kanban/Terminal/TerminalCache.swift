@@ -16,8 +16,13 @@ final class TerminalCache {
     /// Resolved once; reused for every attach command.
     private let tmuxPath = TmuxController().resolvedTmuxPath
 
+    /// Called when the user clicks inside a terminal. The click is **not** consumed — the terminal
+    /// still takes it (focus, selection); this only lets the UI react, e.g. close the prompt overlay.
+    var onTerminalClick: (() -> Void)?
+
     private var scrollMonitor: Any?
     private var keyMonitor: Any?
+    private var clickMonitor: Any?
     private var copyModeSessions: Set<String> = []
     private var copyModeExitTime: [String: ContinuousClock.Instant] = [:]
 
@@ -87,6 +92,17 @@ final class TerminalCache {
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
             MainActor.assumeIsolated { TerminalCache.shared.handleKeyDown(event) }
         }
+        clickMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { event in
+            MainActor.assumeIsolated { TerminalCache.shared.handleClick(event) }
+        }
+    }
+
+    /// Passes every click through untouched and only reports the ones that landed in a terminal.
+    private func handleClick(_ event: NSEvent) -> NSEvent? {
+        if let window = event.window, sessionUnderPoint(event.locationInWindow, in: window) != nil {
+            onTerminalClick?()
+        }
+        return event
     }
 
     private func setCaretHidden(_ hidden: Bool, session: String) {
@@ -131,20 +147,63 @@ final class TerminalCache {
         return nil   // consume — never let SwiftTerm turn this into arrow keys
     }
 
+    // MARK: - Jump to a prompt
+
+    /// Scrolls the session's pane so the prompt of `turnIndex` sits in the top row.
+    ///
+    /// The scrollback is re-scanned here rather than reused from the timeline: at `history-limit` the
+    /// pane drops a line off the top for every line Claude appends, so an index taken a minute ago
+    /// points somewhere else by now.
+    ///
+    /// Returns false when the prompt has scrolled out of the history — the caller then falls back to
+    /// reading the turn out of the transcript.
+    func jump(session: String, prompts: [String], turnIndex: Int) async -> Bool {
+        installScrollMonitors()
+        // Register the state the wheel/key monitors work from *before* the scroll, so the user can
+        // keep scrolling with the wheel from where they land and any keypress leaves copy-mode.
+        copyModeSessions.insert(session)
+        setCaretHidden(true, session: session)
+
+        let jumped = await Task.detached(priority: .userInitiated) {
+            PromptScrollback.jump(session: session, prompts: prompts, turnIndex: turnIndex)
+        }.value
+
+        if !jumped { exitCopyMode(session, viaTmux: TmuxController()) }
+        return jumped
+    }
+
+    /// Which of the session's prompts are still in the scrollback (for greying out the timeline).
+    func reachablePrompts(session: String, prompts: [String]) async -> Set<Int> {
+        let tmux = TmuxController()
+        let scan = await Task.detached(priority: .utility) {
+            PromptScrollback.scan(session: session, prompts: prompts, tmux: tmux)
+        }.value
+        guard let scan else { return [] }
+        return Set(scan.locations.keys)
+    }
+
     private func handleKeyDown(_ event: NSEvent) -> NSEvent? {
         guard let responder = event.window?.firstResponder as? NSView,
-              let session = session(forResponder: responder),
-              copyModeSessions.contains(session) else { return event }
-        guard event.modifierFlags.intersection([.command, .option, .control]).isEmpty else { return event }
+              let session = session(forResponder: responder) else { return event }
 
-        let chars = event.keyCode == 53 ? "" : (event.characters ?? "")   // Esc only dismisses
-        let tmux = TmuxController()
-        exitCopyMode(session, viaTmux: nil)
-        Task.detached {
-            tmux.cancelCopyMode(session)
-            if !chars.isEmpty { tmux.sendKeys(session, chars) }
+        if copyModeSessions.contains(session) {
+            guard event.modifierFlags.intersection([.command, .option, .control]).isEmpty else { return event }
+
+            let chars = event.keyCode == 53 ? "" : (event.characters ?? "")   // Esc only dismisses
+            let tmux = TmuxController()
+            exitCopyMode(session, viaTmux: nil)
+            Task.detached {
+                tmux.cancelCopyMode(session)
+                if !chars.isEmpty { tmux.sendKeys(session, chars) }
+            }
+            return nil   // consume — the key is re-sent via tmux after leaving copy-mode
         }
-        return nil   // consume — the key is re-sent via tmux after leaving copy-mode
+
+        // Wortweises Bearbeiten (⌥← / ⌥→ / ⌥⌫) — hier statt in `KanbanTerminalView.keyDown`, weil
+        // SwiftTerms `keyDown` `public` und nicht `open` ist (wie `scrollWheel`). Nur im Normalfall:
+        // in copy-mode gilt weiter die Regel oben, dass ⌥/⌘/⌃-Kombinationen durchgereicht werden.
+        if let terminal = terminals[session], terminal.handleWordEditingKey(event) { return nil }
+        return event
     }
 
     /// Leave copy-mode: clear state, restore the caret, and (optionally) tell tmux to cancel.
@@ -155,12 +214,13 @@ final class TerminalCache {
         if let tmux { Task.detached { tmux.cancelCopyMode(session) } }
     }
 
+    /// The session whose terminal is actually under the pointer — `hitTest`, not a bounds check:
+    /// anything drawn *over* the terminal (the prompt timeline) must keep its own scrolling. A bounds
+    /// check would hand every wheel event inside the terminal's rectangle to tmux copy-mode, and the
+    /// panel on top of it could not be scrolled at all.
     private func sessionUnderPoint(_ windowPoint: NSPoint, in window: NSWindow) -> String? {
-        for (name, terminal) in terminals {
-            guard terminal.window === window, !terminal.isHidden else { continue }
-            if terminal.bounds.contains(terminal.convert(windowPoint, from: nil)) { return name }
-        }
-        return nil
+        guard let hit = window.contentView?.hitTest(windowPoint) else { return nil }
+        return session(forResponder: hit)
     }
 
     private func session(forResponder responder: NSView) -> String? {

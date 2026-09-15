@@ -23,11 +23,16 @@ public struct ClaudeTurn: Identifiable, Sendable, Hashable {
     public let estimatedSeconds: TimeInterval
     /// Short, single-line rendering of the prompt (slash commands collapse to `/name args`).
     public let prompt: String
+    /// The prompt as typed: full length, line breaks kept. Slash commands still collapse to
+    /// `/name args` — their expanded instruction body is not what the user wrote. Capped at
+    /// `ClaudeTurnAccumulator.fullPromptLimit` so a pasted blob cannot bloat a long session.
+    public let promptFull: String
 
     public var id: Int { index }
 
     public init(index: Int, promptId: String, start: Date, end: Date,
-                reportedSeconds: TimeInterval?, estimatedSeconds: TimeInterval, prompt: String) {
+                reportedSeconds: TimeInterval?, estimatedSeconds: TimeInterval, prompt: String,
+                promptFull: String? = nil) {
         self.index = index
         self.promptId = promptId
         self.start = start
@@ -35,6 +40,7 @@ public struct ClaudeTurn: Identifiable, Sendable, Hashable {
         self.reportedSeconds = reportedSeconds
         self.estimatedSeconds = estimatedSeconds
         self.prompt = prompt
+        self.promptFull = promptFull ?? prompt
     }
 
     /// Wall-clock span from the prompt to the last entry of its response — including any time the

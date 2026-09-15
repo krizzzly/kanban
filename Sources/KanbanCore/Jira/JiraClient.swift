@@ -14,45 +14,106 @@ public struct JiraSprint: Sendable, Identifiable, Hashable {
     public let endDate: String?
 }
 
-/// Read-only Jira Agile/REST client. Auth = Basic base64(email:apiToken), host-guarded.
+/// Kanbans Jira-Modul (Gegenstück zu Hermes' `modules/jira`). Transport, Auth und Host-Guard
+/// kommen von `ModuleHTTPClient`; hier stehen nur die Endpunkte und ihre Übersetzung in Domain-Typen.
 public struct JiraClient: Sendable {
-    private let email: String
-    private let apiToken: String
+    /// Modul-intern sichtbar, damit die Endpunkte in `JiraFetch.swift` denselben Transport nutzen.
+    let http: ModuleHTTPClient
 
-    public init(email: String, apiToken: String) {
-        self.email = email
-        self.apiToken = apiToken
+    /// Aus der App-Config: Basic-Auth über den Default-Host **und** jeden Projekt-Host, der ihn
+    /// überschreibt — sonst verweigerte der Host-Guard das Projekt auf der fremden Instanz.
+    public init(config: AppConfig) {
+        self.init(email: config.jiraEmail, apiToken: config.jiraApiToken,
+                  baseUrls: [config.jiraDefaultBaseUrl] + config.projects.map(\.jiraBaseUrl))
     }
 
-    private var headers: [String: String] {
-        let creds = Data("\(email):\(apiToken)".utf8).base64EncodedString()
-        return ["Authorization": "Basic \(creds)", "Accept": "application/json"]
+    public init(email: String, apiToken: String, baseUrls: [String]) {
+        http = .jira(email: email, apiToken: apiToken, baseUrls: baseUrls)
     }
 
     /// Resolves the board for a project prefix, preferring a scrum board.
     public func board(prefix: String, baseUrl: String) async throws -> JiraBoard? {
         let url = "\(baseUrl)/rest/agile/1.0/board?projectKeyOrId=\(prefix.uppercased())&maxResults=50"
-        let list: BoardList = try await HTTPHelper.getJSON(url, headers: headers)
+        let list: BoardList = try await http.getJSON(url)
         let boards = list.values.map { JiraBoard(id: $0.id, name: $0.name, type: $0.type) }
         return boards.first { $0.type == "scrum" } ?? boards.first
     }
 
     /// Lists sprints of a board for the given states (comma-separated, e.g. "active,future,closed").
+    ///
+    /// **Paginiert, und das ist keine Vorsichtsmassnahme.** Jira gibt höchstens 50 Sprints pro Seite
+    /// heraus und ordnet sie **alt → neu**: ab dem 51. Sprint fällt damit ausgerechnet der *aktive*
+    /// hinten runter. Beobachtet an Board 71 (CORETEST, 69 Sprints) — die App sah „0 aktiv“, wählte
+    /// das ganze Board und zeigte 365 Backlog-Tickets statt der 21 des laufenden Sprints.
     public func sprints(boardId: Int, baseUrl: String, states: String) async throws -> [JiraSprint] {
-        let url = "\(baseUrl)/rest/agile/1.0/board/\(boardId)/sprint?state=\(states)&maxResults=50"
-        let list: SprintList = try await HTTPHelper.getJSON(url, headers: headers)
-        return list.values.map {
-            JiraSprint(id: $0.id, name: $0.name, state: $0.state, startDate: $0.startDate, endDate: $0.endDate)
+        var sprints: [JiraSprint] = []
+        for page in 0..<Self.sprintPageLimit {
+            let url = "\(baseUrl)/rest/agile/1.0/board/\(boardId)/sprint"
+                + "?state=\(states)&maxResults=\(Self.sprintPageSize)&startAt=\(page * Self.sprintPageSize)"
+            let list: SprintList = try await http.getJSON(url)
+            sprints += list.values.map {
+                JiraSprint(id: $0.id, name: $0.name, state: $0.state,
+                           startDate: $0.startDate, endDate: $0.endDate)
+            }
+            if list.isLast ?? (list.values.count < Self.sprintPageSize) { return sprints }
         }
+        throw APIError.tooManyPages(module: "jira", pages: Self.sprintPageLimit)
     }
+
+    /// Jiras Obergrenze für diesen Endpunkt — ein grösserer Wert wird still auf 50 gekappt.
+    static let sprintPageSize = 50
+    static let sprintPageLimit = 20
 
     /// Issues of a sprint, mapped to lightweight `Ticket`s. `epic` is an Agile-API-only field and
     /// carries the epic's colour; `parent` lets a sub-task inherit it (see `EpicResolution`).
+    /// Paginiert aus demselben Grund wie `sprints`: ein Sprint mit mehr als 100 Issues gäbe sonst
+    /// ein stillschweigend halbes Board.
     public func sprintIssues(sprintId: Int, baseUrl: String) async throws -> [Ticket] {
-        let fields = "summary,status,assignee,issuetype,priority,storyPoints,customfield_10016,epic,parent"
-        let url = "\(baseUrl)/rest/agile/1.0/sprint/\(sprintId)/issue?maxResults=100&fields=\(fields)"
-        let list: IssueList = try await HTTPHelper.getJSON(url, headers: headers)
-        return list.issues.map { issue in
+        var tickets: [Ticket] = []
+        for page in 0..<Self.boardIssuePageLimit {
+            let url = "\(baseUrl)/rest/agile/1.0/sprint/\(sprintId)/issue"
+                + "?maxResults=100&startAt=\(page * 100)&fields=\(Self.issueFields)"
+            let list: IssueList = try await http.getJSON(url)
+            tickets += Self.tickets(from: list)
+            if list.issues.count < 100 { return tickets }
+        }
+        throw APIError.tooManyPages(module: "jira", pages: Self.boardIssuePageLimit)
+    }
+
+    /// Was „das Board“ zeigt, wenn kein Sprint es eingrenzt: alles **Offene** — plus, was in den
+    /// letzten zwei Wochen fertig wurde.
+    ///
+    /// Das Nachlauf-Fenster ist nötig, nicht kosmetisch: ohne es verschwindet eine Karte in der
+    /// Sekunde, in der Jira sie auf „Erledigt“ setzt — samt ⏱-Zeit, Task-File-Tabs und
+    /// Commit-Knopf, also genau dann, wenn noch der Merge und die Lösung anstehen. Ein Sprint
+    /// behält seine fertigen Tickets ja auch bis zum Sprint-Ende.
+    public static let openBoardJQL = "statusCategory != Done OR resolutiondate >= -14d"
+
+    /// Höchstens so viele Seiten à 100 — ein Board ohne Sprint kann Jahre an Tickets führen.
+    /// Lieber ein sichtbarer Abbruch als eine stillschweigend halbe Liste.
+    static let boardIssuePageLimit = 5
+
+    /// Issues eines ganzen Boards (statt eines Sprints), gefiltert über `jql` — der Parameter wird
+    /// mit dem Board-Filter **und**-verknüpft, das Board bleibt also die Grenze.
+    public func boardIssues(boardId: Int, baseUrl: String,
+                            jql: String = JiraClient.openBoardJQL) async throws -> [Ticket] {
+        let encoded = jql.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? jql
+        var tickets: [Ticket] = []
+        for page in 0..<Self.boardIssuePageLimit {
+            let url = "\(baseUrl)/rest/agile/1.0/board/\(boardId)/issue"
+                + "?maxResults=100&startAt=\(page * 100)&jql=\(encoded)&fields=\(Self.issueFields)"
+            let list: IssueList = try await http.getJSON(url)
+            tickets += Self.tickets(from: list)
+            if list.issues.count < 100 { return tickets }
+        }
+        throw APIError.tooManyPages(module: "jira", pages: Self.boardIssuePageLimit)
+    }
+
+    private static let issueFields =
+        "summary,status,assignee,issuetype,priority,storyPoints,customfield_10016,epic,parent"
+
+    private static func tickets(from list: IssueList) -> [Ticket] {
+        list.issues.map { issue in
             let fields = issue.fields
             let points: Double? = fields.customfield_10016 ?? fields.storyPoints
             return Ticket(
@@ -62,7 +123,9 @@ public struct JiraClient: Sendable {
                 statusCategory: fields.status?.statusCategory?.key,
                 assignee: fields.assignee?.displayName,
                 assigneeAvatarUrl: fields.assignee?.bestAvatarUrl,
+                assigneeAccountId: fields.assignee?.accountId,
                 type: fields.issuetype?.name,
+                typeIconUrl: fields.issuetype?.iconUrl,
                 priority: fields.priority?.name,
                 storyPoints: points,
                 epic: fields.epic?.asEpicRef,
@@ -74,7 +137,7 @@ public struct JiraClient: Sendable {
 
     /// Books a worklog on `issueKey`. `started` is when the work is logged (Jira keys the day off it);
     /// `comment` is optional and wrapped into the ADF shape the v3 API requires. Throws on rejection
-    /// (`APIError.jira` carries Jira's own message), so the caller only records a booking that stuck.
+    /// (`APIError.api` trägt Jiras eigene Meldung), so the caller only records a booking that stuck.
     public func addWorklog(issueKey: String, timeSpentSeconds: Int,
                            started: Date, comment: String?, baseUrl: String) async throws {
         let url = "\(baseUrl)/rest/api/3/issue/\(issueKey)/worklog"
@@ -89,7 +152,7 @@ public struct JiraClient: Sendable {
                              "content": [["type": "text", "text": comment]]]],
             ]
         }
-        try await HTTPHelper.postJSON(url, headers: headers, body: body)
+        try await http.postJSON(url, body: body)
     }
 
     /// The `started` format Jira Cloud insists on: milliseconds and a `+hhmm` offset, no colon.
@@ -100,17 +163,12 @@ public struct JiraClient: Sendable {
         return formatter.string(from: date)
     }
 
-    /// Minimal description fallback (when no task file exists): fetches the issue's ADF
-    /// description and flattens it to plain markdown-ish text.
+    /// Description fallback when no task file exists — jetzt über `ADFToMarkdown`, also mit
+    /// Überschriften, Listen und Links statt aneinandergehängtem Text.
     public func issueDescription(key: String, baseUrl: String) async throws -> String {
-        let url = "\(baseUrl)/rest/api/3/issue/\(key)?fields=description"
-        let data = try await HTTPHelper.getData(url, headers: headers)
-        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let fields = json["fields"] as? [String: Any],
-              let adf = fields["description"] as? [String: Any] else {
-            return ""
-        }
-        return ADFFlattener.flatten(adf)
+        let raw: JSONValue = try await http.getJSON("\(baseUrl)/rest/api/3/issue/\(key)?fields=description")
+        guard let adf = raw.value(at: ["fields", "description"]), adf != .null else { return "" }
+        return ADFToMarkdown.convert(adf).markdown
     }
 
     // MARK: - Raw decoding
@@ -118,7 +176,10 @@ public struct JiraClient: Sendable {
     private struct BoardList: Decodable { let values: [RawBoard] }
     private struct RawBoard: Decodable { let id: Int; let name: String; let type: String? }
 
-    private struct SprintList: Decodable { let values: [RawSprint] }
+    private struct SprintList: Decodable {
+        let values: [RawSprint]
+        let isLast: Bool?      // Jiras eigenes Ende-Signal; fehlt es, zählt die Seitengrösse
+    }
     private struct RawSprint: Decodable {
         let id: Int; let name: String; let state: String?
         let startDate: String?; let endDate: String?
@@ -137,7 +198,8 @@ public struct JiraClient: Sendable {
         let epic: RawEpic?
         let parent: RawParent?
     }
-    private struct Named: Decodable { let name: String?; let subtask: Bool? }
+    /// `issuetype` and `priority` — `iconUrl` is only ever set on the issue type (an SVG on the Jira host).
+    private struct Named: Decodable { let name: String?; let subtask: Bool?; let iconUrl: String? }
     private struct RawParent: Decodable { let key: String? }
     private struct RawEpic: Decodable {
         let key: String?
@@ -161,39 +223,13 @@ public struct JiraClient: Sendable {
     }
     private struct RawStatusCategory: Decodable { let key: String? }   // new / indeterminate / done
     private struct RawUser: Decodable {
+        let accountId: String?
         let displayName: String?
         let avatarUrls: [String: String]?
 
         /// Largest available avatar (Jira offers 16/24/32/48px keyed as "48x48" etc.).
         var bestAvatarUrl: String? {
             avatarUrls?["48x48"] ?? avatarUrls?["32x32"] ?? avatarUrls?["24x24"] ?? avatarUrls?.values.first
-        }
-    }
-}
-
-/// A tiny ADF → text flattener — just enough to show a description when no task file exists.
-enum ADFFlattener {
-    static func flatten(_ node: [String: Any]) -> String {
-        var out = ""
-        walk(node, into: &out)
-        return out.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    private static func walk(_ node: [String: Any], into out: inout String) {
-        let type = node["type"] as? String
-        if type == "text", let text = node["text"] as? String {
-            out += text
-        }
-        if let content = node["content"] as? [[String: Any]] {
-            for (i, child) in content.enumerated() {
-                if child["type"] as? String == "listItem" { out += "- " }
-                walk(child, into: &out)
-                let childType = child["type"] as? String
-                if childType == "paragraph" || childType == "listItem" || childType == "heading" {
-                    out += "\n"
-                    if i < content.count - 1 { out += "\n" }
-                }
-            }
         }
     }
 }

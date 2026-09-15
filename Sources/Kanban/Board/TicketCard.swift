@@ -13,12 +13,17 @@ struct TicketCard: View {
         HStack(alignment: .center, spacing: 8) {
             if let epic = ticket.epic { EpicColorStripe(epic: epic) }
             VStack(alignment: .leading, spacing: 3) {
-                // Row 1: title + (key over Claude's status dot)
+                // Row 1: type icon + title + (key over Claude's status dot)
                 HStack(alignment: .top, spacing: 8) {
-                    Text(ticket.summary)
-                        .font(.app(.subheadline))
-                        .foregroundStyle(.primary)
-                        .lineLimit(1)
+                    // Own HStack so the icon centres on the title line instead of hanging from the
+                    // row's top edge (the key/dot stack next to it is what needs `.top`).
+                    HStack(spacing: 6) {
+                        IssueTypeIcon(type: ticket.type, urlString: ticket.typeIconUrl)
+                        Text(ticket.summary)
+                            .font(.app(.subheadline))
+                            .foregroundStyle(.primary)
+                            .lineLimit(1)
+                    }
 
                     Spacer(minLength: 4)
 
@@ -49,7 +54,8 @@ struct TicketCard: View {
                     }
                     // Right after the MR badge (last in `badges`), so the count reads as its detail.
                     if card.unresolvedMRComments > 0 {
-                        OpenCommentsBadge(count: card.unresolvedMRComments,
+                        OpenCommentsBadge(resolved: card.resolvedMRComments,
+                                          total: card.totalMRComments,
                                           mergeRequestURL: card.commentsURL ?? card.mergeRequestURL)
                     }
                     if card.claudeSeconds > 0 || card.claudeRunningSince != nil {
@@ -64,6 +70,10 @@ struct TicketCard: View {
                             .font(.app(.caption2))
                             .foregroundStyle(.tertiary)
                     }
+                    // Flush right, directly under the ticket key: the MR's review verdict.
+                    MRReviewBadge(state: card.mrReviewState,
+                                  approvedBy: card.approvedBy,
+                                  mergeRequestURL: card.commentsURL ?? card.mergeRequestURL)
                 }
             }
         }
@@ -146,30 +156,84 @@ struct AttentionBadge: View {
     }
 }
 
-/// Open (unresolved) review comments on the card's MR — the `AttentionBadge`'s visual language
-/// (white on red, same size), but with the count and without the pulse: it asks for review work,
-/// not for an immediate answer.
+/// Review threads on the card's MR, in GitLab's own MR-list notation: a grey pill with the comments
+/// icon and "‹resolved› of ‹total›". Shown only while something is still open — once every thread is
+/// resolved, GitLab (and this card, via `MRReviewBadge`) switches to the green "Resolved" pill.
 struct OpenCommentsBadge: View {
-    let count: Int
+    let resolved: Int
+    let total: Int
     /// Click target: the MR whose discussions these are (nil → the badge stays inert).
     var mergeRequestURL: String?
 
     private var hint: String {
-        let subject = count == 1
-            ? "1 offener Kommentar im Merge Request"
-            : "\(count) offene Kommentare im Merge Request"
+        let open = total - resolved
+        let subject = open == 1
+            ? "1 offener Thread im Merge Request (\(resolved) von \(total) erledigt)"
+            : "\(open) offene Threads im Merge Request (\(resolved) von \(total) erledigt)"
         return mergeRequestURL == nil ? subject : "\(subject) — klicken zum Öffnen im Browser"
     }
 
     var body: some View {
-        Text("\(count)")
-            .font(.system(size: 10, weight: .bold))
-            .foregroundStyle(.white)
-            .padding(.horizontal, 4)
-            .frame(minWidth: 15, minHeight: 15)
-            .background(Capsule().fill(.red))
-            .accessibilityLabel("\(count) offene MR-Kommentare")
+        GitLabPill(icon: "bubble.left.and.bubble.right.fill",
+                   text: "\(resolved) of \(total)",
+                   foreground: GitLabColors.neutralText,
+                   fill: GitLabColors.neutralFill)
+            .accessibilityLabel("\(total - resolved) offene MR-Threads")
             .modifier(BrowserLink(urlString: mergeRequestURL, hint: hint))
+    }
+}
+
+/// The MR's review verdict, flush right under the ticket key — GitLab's green badges: **Approved**
+/// once someone approved, otherwise **Resolved** when every review thread is settled. Approved wins,
+/// so only one pill is ever on the card (see `MRReviewState`); `.none` renders nothing at all.
+struct MRReviewBadge: View {
+    let state: MRReviewState
+    var approvedBy: [String] = []
+    var mergeRequestURL: String?
+
+    var body: some View {
+        switch state {
+        case .approved:
+            pill("checkmark.circle.fill", "Approved", hint: approvedHint)
+        case .resolved:
+            pill("bubble.left.and.bubble.right.fill", "Resolved",
+                 hint: "Alle Review-Threads im Merge Request sind erledigt")
+        case .none:
+            EmptyView()
+        }
+    }
+
+    private var approvedHint: String {
+        approvedBy.isEmpty ? "Merge Request ist approved"
+                           : "Approved von \(approvedBy.joined(separator: ", "))"
+    }
+
+    private func pill(_ icon: String, _ text: String, hint: String) -> some View {
+        GitLabPill(icon: icon, text: text,
+                   foreground: GitLabColors.successText, fill: GitLabColors.successFill)
+            .accessibilityLabel(text)
+            .modifier(BrowserLink(urlString: mergeRequestURL,
+                                  hint: mergeRequestURL == nil ? hint : "\(hint) — klicken zum Öffnen im Browser"))
+    }
+}
+
+/// GitLab's badge shape: icon + label in a tinted capsule.
+private struct GitLabPill: View {
+    let icon: String
+    let text: String
+    let foreground: Color
+    let fill: Color
+
+    var body: some View {
+        HStack(spacing: 3) {
+            Image(systemName: icon).font(.app(size: 9))
+            Text(text).font(.app(size: 10, weight: .medium))
+        }
+        .foregroundStyle(foreground)
+        .padding(.horizontal, 6)
+        .padding(.vertical, 2)
+        .background(Capsule().fill(fill))
+        .fixedSize()
     }
 }
 

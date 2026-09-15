@@ -2,8 +2,12 @@ import SwiftUI
 import KanbanCore
 
 /// End-of-day batch booking: lists every ticket with open (unbooked) ⏱ time, the amount each would
-/// book (rounded up to 15 min), and the total — then books them all on confirm. Shown from the
-/// toolbar's "Zeit buchen" button. Nothing is written until the user confirms here.
+/// book (je Arbeitstag auf 15 min aufgerundet), den Zeitraum und die Summe — then books them all on
+/// confirm. Shown from the toolbar's "Zeit buchen" button. Nothing is written until the user confirms
+/// here.
+///
+/// Gebucht wird **je Tag ein eigener Worklog** auf den Tag, an dem gearbeitet wurde: eine vergessene
+/// Woche verteilt sich also auf ihre Tage, statt komplett auf heute zu landen.
 struct BookingSheet: View {
     @Bindable var model: AppModel
     @Environment(\.dismiss) private var dismiss
@@ -60,6 +64,12 @@ struct BookingSheet: View {
                         Text(booking.summary)
                             .font(.app(.callout)).foregroundStyle(.secondary).lineLimit(1)
                         Spacer(minLength: 8)
+                        // Auf welche Tage gebucht wird — bei mehreren Tagen entstehen mehrere
+                        // Worklog-Einträge, einer je Tag.
+                        Text(booking.days.count > 1
+                             ? "\(booking.dayLabel) · \(booking.days.count) Tage"
+                             : booking.dayLabel)
+                            .font(.app(.caption)).foregroundStyle(.tertiary)
                         Text(TimeFormatting.compact(booking.seconds))
                             .font(.app(.callout, weight: .semibold)).monospacedDigit()
                     }

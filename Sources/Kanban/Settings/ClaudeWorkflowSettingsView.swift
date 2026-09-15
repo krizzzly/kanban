@@ -2,7 +2,7 @@ import SwiftUI
 import KanbanCore
 
 /// Einstellungs-Bereich „Claude-Workflow": Markdown-Editor über den kanonischen Bestand an
-/// Commands/Skills/Rules (Application Support), mit Symlink-Verwaltung in `~/.claude` und
+/// Skills/Rules (Application Support), mit Symlink-Verwaltung in `~/.claude` **und** `~/.codex` und
 /// „Auf Auslieferungsstand zurücksetzen" aus den Bundle-Resources.
 @Observable
 final class ClaudeWorkflowModel {
@@ -21,7 +21,9 @@ final class ClaudeWorkflowModel {
     private(set) var savedText: String = ""
     private(set) var reloadToken = 0
     private(set) var message: String?
-    private(set) var linkStates: [String: ClaudeSymlinkState] = [:]   // ClaudeAsset.id → Zustand
+    /// ClaudeAsset.id → Zustand je Agent. Ein Skill liegt in beiden Homes, also gibt es zwei
+    /// Zustände; die Anzeige fasst sie zusammen (siehe `linkSummary`).
+    private(set) var linkStates: [String: [AgentKind: ClaudeSymlinkState]] = [:]
 
     var dirty: Bool { text != savedText }
 
@@ -83,19 +85,37 @@ final class ClaudeWorkflowModel {
 
     // MARK: Symlinks
 
-    func linkState(for asset: ClaudeAsset) -> ClaudeSymlinkState? {
-        asset.kind == .rule ? nil : linkStates[asset.id]
+    /// Zusammenfassung für das Badge: verlinkt nur, wenn **jeder** mögliche Zielort verlinkt ist —
+    /// ein Skill, der nur in `~/.claude` hängt, ist für ein Codex-Projekt nicht da.
+    func linkSummary(for asset: ClaudeAsset) -> ClaudeSymlinkState? {
+        guard let states = linkStates[asset.id], !states.isEmpty else { return nil }
+        if let foreign = states.values.first(where: { if case .foreign = $0 { return true }; return false }) {
+            return foreign
+        }
+        return states.values.allSatisfy { $0 == .linked } ? .linked : .notInstalled
+    }
+
+    /// Welche Agents dieses Asset erreicht (für den Tooltip: „~/.claude, ~/.codex").
+    func linkedAgents(for asset: ClaudeAsset) -> [AgentKind] {
+        (linkStates[asset.id] ?? [:]).filter { $0.value == .linked }.keys.sorted { $0.rawValue < $1.rawValue }
+    }
+
+    /// Dieselbe Liste als Text — Swift erlaubt keine mehrzeilige Interpolation im Tooltip.
+    func linkedHomes(for asset: ClaudeAsset) -> String {
+        linkedAgents(for: asset).map { "~/.\($0.rawValue)" }.joined(separator: ", ")
     }
 
     func toggleLink(for asset: ClaudeAsset) {
-        do {
-            switch linkStates[asset.id] {
-            case .linked: try store.removeSymlink(for: asset)
-            default:      try store.installSymlink(for: asset)
+        let agents = store.linkableAgents(for: asset)
+        let allLinked = linkSummary(for: asset) == .linked
+        for agent in agents {
+            do {
+                if allLinked { try store.removeSymlink(for: asset, agent: agent) }
+                else { try store.installSymlink(for: asset, agent: agent) }
+                message = nil
+            } catch {
+                message = error.localizedDescription
             }
-            message = nil
-        } catch {
-            message = error.localizedDescription
         }
         refreshLinkStates()
     }
@@ -103,19 +123,20 @@ final class ClaudeWorkflowModel {
     func installAllLinks() {
         store.installAllSymlinks()
         refreshLinkStates()
-        let foreign = linkStates.values.filter { if case .foreign = $0 { return true }; return false }
+        let foreign = linkStates.values.flatMap(\.values)
+            .filter { if case .foreign = $0 { return true }; return false }
         message = foreign.isEmpty
-            ? "Alle Commands + Skills nach ~/.claude verlinkt."
+            ? "Alle Skills nach ~/.claude und ~/.codex verlinkt."
             : "Verlinkt — \(foreign.count) Zielort(e) übersprungen (fremde Datei liegt dort)."
     }
 
     private func refreshLinkStates() {
         linkStates = Dictionary(uniqueKeysWithValues: store.allAssets()
             .filter { $0.kind != .rule }
-            .map { ($0.id, store.symlinkState(for: $0)) })
+            .map { ($0.id, store.symlinkStates(for: $0)) })
     }
 
-    /// Commands/Rules sind die Datei selbst; ein Skill zeigt seine .md-Dateien einzeln.
+    /// Alt-Commands/Rules sind die Datei selbst; ein Skill zeigt seine .md-Dateien einzeln.
     private func files(for asset: ClaudeAsset) -> [FileEntry] {
         switch asset.kind {
         case .command, .rule:
@@ -175,16 +196,19 @@ struct ClaudeWorkflowSettingsView: View {
         .frame(width: 230)
     }
 
-    /// Kettenglied = verlinkt, offenes Glied = nicht verlinkt, ⚠ = fremde Datei am Zielort.
+    /// Kettenglied = in allen möglichen Homes verlinkt, offenes Glied = (noch) nicht überall,
+    /// ⚠ = fremde Datei an einem Zielort.
     @ViewBuilder
     private func linkBadge(for asset: ClaudeAsset) -> some View {
-        switch model.linkState(for: asset) {
+        switch model.linkSummary(for: asset) {
         case .linked:
             Image(systemName: "link").font(.system(size: 9)).foregroundStyle(.green)
-                .help("In ~/.claude verlinkt — gilt in jedem Projekt")
+                .help("Verlinkt in \(model.linkedHomes(for: asset)) — gilt in jedem Projekt")
         case .notInstalled:
             Image(systemName: "link").font(.system(size: 9)).foregroundStyle(.quaternary)
-                .help("Nicht verlinkt")
+                .help(model.linkedAgents(for: asset).isEmpty
+                      ? "Nicht verlinkt"
+                      : "Nur in \(model.linkedHomes(for: asset)) verlinkt")
         case .foreign(let what):
             Image(systemName: "exclamationmark.triangle").font(.system(size: 9)).foregroundStyle(.orange)
                 .help("Zielort belegt: \(what)")
@@ -226,9 +250,10 @@ struct ClaudeWorkflowSettingsView: View {
                 }
                 Spacer()
                 Button("Alle verlinken") { model.installAllLinks() }
-                    .help("Symlinkt alle Commands + Skills nach ~/.claude — Rules werden per Pfad referenziert")
+                    .help("Symlinkt alle Skills nach ~/.claude und ~/.codex — Rules werden per Pfad "
+                        + "referenziert")
                 if let asset = model.selected?.asset, asset.kind != .rule {
-                    Button(model.linkState(for: asset) == .linked ? "Link entfernen" : "Verlinken") {
+                    Button(model.linkSummary(for: asset) == .linked ? "Link entfernen" : "Verlinken") {
                         model.toggleLink(for: asset)
                     }
                 }
@@ -244,7 +269,7 @@ struct ClaudeWorkflowSettingsView: View {
 
     private func sectionTitle(_ kind: ClaudeAssetKind) -> String {
         switch kind {
-        case .command: return "Commands"
+        case .command: return "Commands (Altbestand)"
         case .skill:   return "Skills"
         case .rule:    return "Rules"
         }

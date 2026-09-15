@@ -218,7 +218,7 @@ final class ProjectRegistryTests: XCTestCase {
     /// Dieselbe Zusage gegen die **echte** Config dieser Maschine — die Fixture kann nur, was ihr
     /// Autor bedacht hat. Übersprungen, wo keine Config liegt (CI, frische Checkouts).
     func testImportThenApplyIsIdentityOnTheRealConfig() throws {
-        let path = HermesConfigLoader.defaultPath
+        let path = HermesImport.defaultPath
         try XCTSkipUnless(FileManager.default.fileExists(atPath: path),
                           "keine ~/.hermes/config.json auf dieser Maschine")
 

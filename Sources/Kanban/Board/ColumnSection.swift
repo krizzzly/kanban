@@ -14,8 +14,12 @@ struct ColumnSection: View {
     // Right-click menu: the ticket workflow commands; Review cards additionally offer
     // `/review-merge !<iid>` (the card's opened MR).
     let commands: [ClaudeCommand]
+    /// `/` bei Claude, `$` bei Codex — die Karte zeigt, was sie tatsächlich tippt.
+    let commandPrefix: String
     let onCommand: (CardVM, ClaudeCommand) -> Void
     let onReviewMerge: (CardVM, Int) -> Void
+    /// Karte ohne Ticketnummer → „Task erstellen" mit Titel und Branch vorbelegt.
+    let onCreateTask: (CardVM) -> Void
 
     var body: some View {
         VStack(spacing: 0) {
@@ -44,23 +48,36 @@ struct ColumnSection: View {
     }
 
     /// Same entries as the detail header's Commands menu — selecting one types
-    /// `/command <TICKET>` into the card's Claude console (Enter is left to the user).
+    /// `<präfix>command <TICKET>` into the card's console (Enter is left to the user).
     @ViewBuilder
     private func contextMenu(for card: CardVM) -> some View {
-        ForEach(commands) { command in
+        // Eine Karte ohne Nummer hat kein Ticket, auf das ein Workflow-Command zeigen könnte —
+        // `/solve-task !139` gäbe es nirgends. Das eine, was hier zu tun ist, steht deshalb oben und
+        // allein: aus dieser Arbeit einen richtigen Task machen.
+        if card.ticket.isBranchOnly {
             Button {
-                onCommand(card, command)
+                onCreateTask(card)
             } label: {
-                Text("/\(command.name)")
-                if let description = command.description { Text(description) }
+                Text("Task erstellen …")
+                Text("Titel und Branch dieses Merge-Requests sind vorbelegt")
+            }
+            if card.openMergeRequestIid != nil { Divider() }
+        } else {
+            ForEach(commands) { command in
+                Button {
+                    onCommand(card, command)
+                } label: {
+                    Text("\(commandPrefix)\(command.name)")
+                    if let description = command.description { Text(description) }
+                }
             }
         }
         if let iid = card.openMergeRequestIid {
-            if !commands.isEmpty { Divider() }
+            if !commands.isEmpty && !card.ticket.isBranchOnly { Divider() }
             Button {
                 onReviewMerge(card, iid)
             } label: {
-                Text("/review-merge !\(iid)")
+                Text("\(commandPrefix)review-merge !\(iid)")
                 Text("Code-Review des Merge-Requests — Nummer wird eingetragen")
             }
         }

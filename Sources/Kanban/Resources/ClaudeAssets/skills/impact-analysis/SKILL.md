@@ -80,7 +80,7 @@ fi
 **Offen (nur Lösungsplan):**
 - Lies `## Lösungsplan` aus dem Task-File
 - Nutze die geplanten Dateien/Klassen als Ausgangspunkt
-- Entspricht dem `/start-task`-Modus
+- Entspricht dem `start-task`-Modus
 
 **In Bearbeitung (Branch existiert):**
 ```bash
@@ -99,7 +99,7 @@ git log --name-only --pretty=format: develop --grep="<TICKET-NUMMER>" | sort -u 
 ### Schritt 3: Impact-Analyse durchführen
 
 ⚠️ **PFLICHT:** Lies und befolge die vollständige, projekt-neutrale Anleitung in der gebündelten
-[methodology.md](methodology.md) (`${CLAUDE_SKILL_DIR}/methodology.md`)
+[methodology.md](methodology.md) — sie liegt neben dieser Datei im Skill-Verzeichnis
 
 **Zuerst — Projekt-Profil bestimmen:** Die Auto-Detektions-Greps aus der Anleitung (Abschnitt
 „Projekt-Profil zuerst bestimmen") einmal ausführen und die `‹Profil.X›`-Werte festhalten (FE-Sprache,

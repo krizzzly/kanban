@@ -5,6 +5,7 @@ final class ClaudeAssetsTests: XCTestCase {
     private var root: URL!         // kanonischer Bestand
     private var factory: URL!      // Auslieferungsstand (Bundle-Ersatz)
     private var userDir: URL!      // ~/.claude-Ersatz
+    private var codexDir: URL!     // ~/.codex-Ersatz
 
     override func setUpWithError() throws {
         let base = URL(fileURLWithPath: NSTemporaryDirectory())
@@ -12,6 +13,7 @@ final class ClaudeAssetsTests: XCTestCase {
         root = base.appendingPathComponent("canonical")
         factory = base.appendingPathComponent("factory")
         userDir = base.appendingPathComponent("dotclaude")
+        codexDir = base.appendingPathComponent("dotcodex")
         for kind in ["commands", "rules"] {
             try FileManager.default.createDirectory(
                 at: factory.appendingPathComponent(kind), withIntermediateDirectories: true)
@@ -30,7 +32,9 @@ final class ClaudeAssetsTests: XCTestCase {
         try? FileManager.default.removeItem(at: root.deletingLastPathComponent())
     }
 
-    private var store: ClaudeAssetStore { ClaudeAssetStore(canonicalRoot: root, userClaudeDir: userDir) }
+    private var store: ClaudeAssetStore {
+        ClaudeAssetStore(canonicalRoot: root, userClaudeDir: userDir, userCodexDir: codexDir)
+    }
 
     // MARK: Seeding
 
@@ -98,6 +102,7 @@ final class ClaudeAssetsTests: XCTestCase {
         XCTAssertNil(store.symlinkTarget(for: rule))
         XCTAssertThrowsError(try store.installSymlink(for: rule))
         XCTAssertTrue(store.installAllSymlinks().keys.allSatisfy { $0.kind != .rule })
+        XCTAssertTrue(store.linkableAgents(for: rule).isEmpty)
     }
 
     func testSkillSymlinkPointsAtDirectory() throws {
@@ -106,6 +111,86 @@ final class ClaudeAssetsTests: XCTestCase {
         try store.installSymlink(for: skill)
         let linked = userDir.appendingPathComponent("skills/impact-analysis/SKILL.md")
         XCTAssertEqual(try String(contentsOf: linked, encoding: .utf8), "skill")
+    }
+
+    // MARK: Beide Agents
+
+    /// Derselbe Bestand bedient Claude und Codex — ein Skill hängt in **beiden** Homes.
+    func testSkillIsLinkedIntoBothAgentHomes() throws {
+        try store.seedMissing(from: factory)
+        let skill = store.assets(.skill)[0]
+        XCTAssertEqual(store.linkableAgents(for: skill), AgentKind.allCases)
+
+        store.installAllSymlinks()
+        XCTAssertEqual(store.symlinkStates(for: skill),
+                       [.claude: .linked, .codex: .linked])
+        for home in [userDir!, codexDir!] {
+            let linked = home.appendingPathComponent("skills/impact-analysis/SKILL.md")
+            XCTAssertEqual(try String(contentsOf: linked, encoding: .utf8), "skill")
+        }
+    }
+
+    /// Codex kennt keine Commands — dort gibt es keinen Zielort, und der Versuch scheitert sauber.
+    func testCommandsAreClaudeOnly() throws {
+        try store.seedMissing(from: factory)
+        let command = store.assets(.command)[0]
+        XCTAssertEqual(store.linkableAgents(for: command), [.claude])
+        XCTAssertNil(store.symlinkTarget(for: command, agent: .codex))
+        XCTAssertThrowsError(try store.installSymlink(for: command, agent: .codex))
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: codexDir.appendingPathComponent("commands").path))
+    }
+
+    // MARK: Command → Skill (Einmal-Umzug)
+
+    func testMigrationMovesCommandIntoSkillAndKeepsEdits() throws {
+        try store.seedMissing(from: factory)
+        let command = store.assets(.command)[0]     // commands/get-task.md
+        try """
+        ---
+        description: Lade ein JIRA-Ticket
+        argument-hint: <TICKET-NUMMER>
+        ---
+        Mein editierter Rumpf mit $ARGUMENTS
+        """.write(to: command.url, atomically: true, encoding: .utf8)
+        try store.installSymlink(for: command)
+
+        let done = ClaudeAssetMigration.migrateCommandsToSkills(store: store)
+        XCTAssertEqual(done.map(\.name), ["get-task"])
+
+        // Der Command ist weg, der Skill da — und der Rumpf unverändert.
+        XCTAssertTrue(store.assets(.command).isEmpty)
+        let skill = root.appendingPathComponent("skills/get-task/SKILL.md")
+        let content = try String(contentsOf: skill, encoding: .utf8)
+        XCTAssertTrue(content.contains("Mein editierter Rumpf mit $ARGUMENTS"))
+        // Ergänzt wurde nur, was beide Agents brauchen.
+        XCTAssertTrue(content.contains("name: get-task"))
+        XCTAssertTrue(content.contains("disable-model-invocation: true"))
+        XCTAssertTrue(content.contains("description: Lade ein JIRA-Ticket"))
+
+        // Der ins Leere zeigende Alt-Symlink ist aufgeräumt.
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: userDir.appendingPathComponent("commands/get-task.md").path))
+    }
+
+    func testMigrationIsIdempotentAndNeverOverwritesAnExistingSkill() throws {
+        try store.seedMissing(from: factory)
+        XCTAssertEqual(ClaudeAssetMigration.migrateCommandsToSkills(store: store).map(\.name),
+                       ["get-task"])
+        XCTAssertTrue(ClaudeAssetMigration.migrateCommandsToSkills(store: store).isEmpty)
+
+        // Gibt es den Skill schon, bleibt der Command liegen — nichts wird überschrieben.
+        try "wieder da".write(to: root.appendingPathComponent("commands/get-task.md"),
+                              atomically: true, encoding: .utf8)
+        XCTAssertTrue(ClaudeAssetMigration.migrateCommandsToSkills(store: store).isEmpty)
+        XCTAssertEqual(try String(contentsOf: root.appendingPathComponent("commands/get-task.md"),
+                                  encoding: .utf8), "wieder da")
+    }
+
+    func testMigrationAddsFrontmatterWhenThereIsNone() {
+        let patched = ClaudeAssetMigration.ensuringFrontmatter("# Nur Rumpf\n", name: "get-task")
+        XCTAssertTrue(patched.hasPrefix("---\nname: get-task\ndisable-model-invocation: true\n---"))
+        XCTAssertTrue(patched.contains("# Nur Rumpf"))
     }
 }
 

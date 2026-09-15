@@ -50,6 +50,12 @@ struct ProjectMapEditor: View {
         case .stringList:
             StringListField(label: label(for: field), path: path,
                             placeholder: field.placeholder, settings: settings)
+        case .choice(let options):
+            // Wie beim gleichnamigen Feld auf Modul-Ebene: „Standard" schreibt den Schlüssel nicht.
+            Picker(label(for: field), selection: settings.stringBinding(path)) {
+                Text("Standard").tag("")
+                ForEach(options, id: \.self) { Text($0).tag($0) }
+            }
         }
     }
 

@@ -6,7 +6,9 @@ struct DetailView: View {
     @Bindable var model: AppModel
 
     var body: some View {
-        if model.selectedTicketKey == nil {
+        if let session = model.newTaskConsoleSession, model.selectedTicketKey == nil {
+            NewTaskConsoleView(model: model, session: session)
+        } else if model.selectedTicketKey == nil {
             placeholder
         } else {
             VSplitView {

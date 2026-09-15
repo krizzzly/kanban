@@ -1,15 +1,22 @@
 import Foundation
 
-/// Generiert `<repo>/.claude/project.json` — die Übersetzung der Hermes-Config in die Projektwerte,
-/// die die kanonischen (projektunabhängigen) Commands/Rules/Skills zur Laufzeit nachschlagen.
+/// Generiert `<repo>/.claude/project.json` — die Übersetzung von Kanbans Config in die Projektwerte,
+/// die die kanonischen (projektunabhängigen) Skills/Rules zur Laufzeit nachschlagen.
 ///
-/// Die Datei ist bewusst **generiert, nicht gepflegt**: Quelle der Wahrheit bleibt
-/// `~/.hermes/config.json`; Kanban schreibt sie beim Projektwechsel neu. `.claude/` ist in den
-/// Projekt-Repos gitignored, der Write betrifft also keine Kollegen.
+/// Die Datei ist bewusst **generiert, nicht gepflegt**: Quelle der Wahrheit ist Kanbans Config;
+/// Kanban schreibt sie beim Projektwechsel neu. `.claude/` ist in den Projekt-Repos gitignored, der
+/// Write betrifft also keine Kollegen.
+///
+/// Teilen sich zwei Projekte ein Repo (`support` lebt in `even`), teilen sie sich auch diese Datei —
+/// es gewinnt das zuletzt gewählte. Das war schon so, fällt mit `docsPath` aber mehr auf.
 public enum ClaudeProjectFile {
     public struct Values: Codable, Equatable, Sendable {
         public let prefix: String            // Jira-Präfix, z.B. "EVEN"
         public let tasksPath: String         // absoluter Task-File-Ordner
+        public let docsPath: String          // absoluter Ordner der Projekt-Doku (Confluence-Exporte)
+        /// Absoluter Ordner der Knowledgebase — **fehlt**, wenn keiner konfiguriert ist. Ein Skill
+        /// soll den Unterschied sehen zwischen „hier ist die Knowledgebase" und „es gibt keine".
+        public let kbPath: String?
         public let repoDir: String           // absolutes Haupt-Repo
         public let worktreePrefix: String    // Ordner der Worktrees: <repoDir>-worktree (iwf-Konvention)
         public let stackDomain: String       // TLD des lokalen Stacks; URL = https://<worktree-name>.<stackDomain>
@@ -23,11 +30,13 @@ public enum ClaudeProjectFile {
     public static func values(for project: ProjectConfig) -> Values {
         Values(prefix: project.prefix,
                tasksPath: project.tasksPathAbsolute,
+               docsPath: project.docsPathAbsolute,
+               kbPath: project.kbPathAbsolute,
                repoDir: project.repoDir,
                worktreePrefix: project.repoDir + "-worktree",
                stackDomain: "test",
                gitlabProjectPath: project.gitlabProjectPath,
-               generatedBy: "Kanban — generiert aus ~/.hermes/config.json, nicht von Hand editieren")
+               generatedBy: "Kanban — generiert aus der Kanban-Config, nicht von Hand editieren")
     }
 
     /// Schreibt die Datei nur bei inhaltlicher Änderung (kein mtime-Rauschen für File-Watcher).

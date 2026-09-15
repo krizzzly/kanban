@@ -80,12 +80,22 @@ public struct StackSeeder: Sendable {
         onOutput("\n✅ Seed bereit — beim nächsten Start importiert MySQL ihn automatisch.\n")
     }
 
-    /// Imports straight into the **running** stack instead of staging for the next start.
+    /// Setzt die Datenbank **jetzt** neu auf, statt den Dump für den nächsten Start abzulegen.
     ///
-    /// `iwf` resolves the local project from the working directory, so running this inside the
-    /// worktree targets that worktree's database — not the main repo's. Both paths snapshot the data
-    /// volume first (`db_create_snapshot`), so a botched import is recoverable via
-    /// `iwf db snapshot restore`.
+    /// „Direktimport" heisst nicht „in den laufenden Stack hinein": `iwf db import-dump` legt den
+    /// Dump in den Init-Ordner (vorhandene wandern nach `backup/`), fährt den Stack mit
+    /// `compose down` **herunter**, **löscht das `<projekt>_dbdata`-Volume** und startet neu — MySQL
+    /// importiert dann beim Hochlaufen aus dem Init-Ordner. Nachgelesen in
+    /// `project_compose.db_import_dump`, nicht aus dem Hilfetext geschlossen.
+    ///
+    /// Zwei Folgen, die im Text an den Nutzer gehören müssen:
+    ///  - **Der alte Stand ist weg**, unwiderruflich. Einen Snapshot legt iwf dabei *nicht* an
+    ///    (`iwf db snapshot create` ist ein eigener Befehl, und niemand ruft ihn hier).
+    ///  - **Fertig ist der Import nicht**, wenn der Befehl zurückkommt: er läuft im Container weiter,
+    ///    und nur dessen Log sagt, ob er durchlief.
+    ///
+    /// `iwf` löst das Projekt aus dem Arbeitsverzeichnis auf — im Worktree trifft es also dessen
+    /// Datenbank, nicht die des Haupt-Repos.
     public func importNow(source: Source,
                           worktreePath: String,
                           projectName: String,
@@ -96,7 +106,7 @@ public struct StackSeeder: Sendable {
         let code: Int32
         switch source {
         case .remote(let environment):
-            onOutput("• hole Dump von \(environment) und importiere in den laufenden Stack…\n")
+            onOutput("• hole Dump von \(environment), setze die DB damit neu auf…\n")
             code = runIwf(["server", "dbdump", environment, projectName,
                            "--service", "db", "--import", "--compress", "--yes"],
                           cwd: worktreePath, onOutput: onOutput)
@@ -105,12 +115,24 @@ public struct StackSeeder: Sendable {
             guard FileManager.default.fileExists(atPath: expanded) else {
                 throw SeedError.fileMissing(expanded)
             }
-            onOutput("• importiere \((expanded as NSString).lastPathComponent) in den laufenden Stack…\n")
-            code = runIwf(["db", "import", "-f", expanded, "--service", "db", "-y"],
+            onOutput("• \((expanded as NSString).lastPathComponent) → Stack neu aufsetzen und importieren…\n")
+            // `import-dump`, nicht `import`: der Befehl heisst so, seit es ihn gibt — `iwf db import`
+            // gab es nie, und iwf antwortete mit „No such command 'import'. Did you mean
+            // 'import-dump'?" (Exit 2), also ohne dass irgendetwas passierte.
+            code = runIwf(["db", "import-dump", "-f", expanded, "--service", "db", "-y"],
                           cwd: worktreePath, onOutput: onOutput)
         }
         guard code == 0 else { throw SeedError.importFailed(code) }
-        onOutput("\n✅ Import abgeschlossen (Snapshot des vorherigen Standes wurde vorher angelegt).\n")
+        // Nicht „abgeschlossen": `compose up` kommt zurück, sobald die Container laufen — MySQL liest
+        // den Dump danach ein, und bei mehreren hundert MB dauert das. Ein „✅ fertig" hier hätte
+        // einen halb importierten Stand als fertig ausgegeben.
+        onOutput("""
+
+        ✅ Stack neu aufgesetzt, Dump liegt im Init-Ordner.
+        Der Import läuft **im Container weiter** — Fortschritt im Log der db-Container.
+        Der vorherige Datenbestand wurde dabei gelöscht (iwf legt keinen Snapshot an).
+
+        """)
     }
 
     // MARK: - Steps
