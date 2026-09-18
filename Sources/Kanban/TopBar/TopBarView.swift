@@ -58,12 +58,7 @@ struct TopBarToolbar: ToolbarContent {
             chrome(newWindowButton)
             chrome(refreshButton)
         }
-        // Wieder eine Gruppe statt zwei Einträgen: `ToolbarContent` nimmt nur zehn, und die sind
-        // vergeben. Passt auch inhaltlich — beide drehen an dem, was Claude in den Sessions tut.
-        ToolbarItemGroup(placement: .primaryAction) {
-            watchdogButton
-            chrome(claudeWorkflowButton)
-        }
+        ToolbarItem(placement: .primaryAction) { watchdogButton }
         ToolbarItem(placement: .primaryAction) { chrome(dataFolderButton) }
         ToolbarItem(placement: .primaryAction) { chrome(settingsButton) }
     }
@@ -341,22 +336,11 @@ struct TopBarToolbar: ToolbarContent {
 
     /// Die Befundliste des Session-Watchdogs. Steht immer da, auch wenn der Watchdog aus ist:
     /// er ist der Einstieg, und das Panel sagt selbst, dass geschaltet wird in Einstellungen ›
-    /// Watchdog — ausgeblendet wäre er genau dann weg, wenn man ihn sucht. Er kostet auch keinen
-    /// Platz im Zehner-Budget, weil er sich einen `ToolbarItemGroup`-Eintrag mit dem
-    /// Workflow-Knopf teilt.
+    /// Watchdog — ausgeblendet wäre er genau dann weg, wenn man ihn sucht.
     /// Prozessweit einer, deshalb in jedem Fenster derselbe Stand — er scannt alle Sessions, nicht
     /// die des angezeigten Projekts.
     private var watchdogButton: some View {
         WatchdogToolbarButton(watchdog: .shared)
-    }
-
-    private var claudeWorkflowButton: some View {
-        Button {
-            model.claudeWorkflowPresented = true
-        } label: {
-            Image(systemName: "wand.and.stars")
-        }
-        .help("Skill-Sets: welches Projekt an welchem Set hängt — und Verlinkung herstellen")
     }
 
     /// Öffnet Kanbans Datenordner (tasks/, claude/, config.json) in PhpStorm.

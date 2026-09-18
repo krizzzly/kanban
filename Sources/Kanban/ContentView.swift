@@ -42,11 +42,23 @@ struct ContentView: View {
                 .headerChrome(model.selectedProject?.appearance ?? .none)
             }
         }
-        // Leerer Titel, wie beim früheren `Window("", id: "main")`: welches Projekt ein Fenster
-        // zeigt, steht im Projekt-Menü der Kopfzeile — ein Titel darüber wäre eine zweite Antwort
-        // auf dieselbe Frage. Ihn nur aus der Leiste zu nehmen (`toolbar(removing: .title)`) und im
-        // Fenstermenü zu behalten, ging nicht: mit dem Titel-Element fällt auch der Zwischenraum
-        // weg, der die Knöpfe der `primaryAction` nach rechts drückt — sie klebten links.
+        // Leerer Titel, und er bleibt leer: über dem Board soll kein Text stehen (welches Projekt
+        // ein Fenster zeigt, sagt das Projekt-Menü der Kopfzeile), und das leere Titel-Element
+        // hält zugleich den Zwischenraum, der die Knöpfe der `primaryAction` nach rechts drückt.
+        //
+        // Dass die Fenster im **Fenster-Menü** von macOS trotzdem ihr Projekt tragen, macht
+        // `ProjektFensterMenue` mit eigenen Einträgen — nicht der Fenstertitel. Drei Wege dorthin
+        // wurden gemessen und verworfen, alle drei an echtem AppKit (900-pt-Fenster, Knöpfe in
+        // `.navigation` und `.primaryAction`; der rechteste endet bei sichtbarem Titel bei 894):
+        //
+        // - `toolbar(removing: .title)` — der ursprüngliche Versuch: nimmt das Element samt
+        //   Zwischenraum, die Knöpfe kleben links.
+        // - `titleVisibility = .hidden` — blendet den Text aus, lässt das Element aber auf Breite 0
+        //   schrumpfen: rechtester Knopf bei 207 statt 894, also derselbe Fehler.
+        // - Titel setzen und die Anzeige unterdrücken — geht nicht gegeneinander: SwiftUI schreibt
+        //   `title` **und** `titleVisibility` bei jeder Aktualisierung zurück (gemessen: eine
+        //   Sekunde nach dem eigenen Schreiben stand wieder „Kanban" da, sichtbar in der Mitte).
+        //   Ein eigener Schreiber auf denselben beiden Feldern gewinnt bestenfalls zufällig.
         .navigationTitle("")
         .background(WindowAccessor { ProjectWindows.shared.fensterMerken($0, model: model) })
         .task {
@@ -69,12 +81,6 @@ struct ContentView: View {
         .sheet(isPresented: $model.settingsPresented) {
             // Die Config gehört allen Fenstern, nicht nur dem, in dem gespeichert wurde.
             SettingsSheet { ProjectWindows.shared.configNeuLaden() }
-        }
-        // Eigenes Fenster statt Sheet (wie der Commit-Dialog): der Markdown-Editor über
-        // Commands/Skills/Rules braucht Fläche, die ein Sheet am Board-Fenster nicht hergibt.
-        .onChange(of: model.claudeWorkflowPresented) { _, presented in
-            if presented { ClaudeWorkflowWindow.shared.show(model: model) }
-            else { ClaudeWorkflowWindow.shared.close(model: model) }
         }
         .sheet(isPresented: $model.bookingSheetPresented) {
             BookingSheet(model: model)

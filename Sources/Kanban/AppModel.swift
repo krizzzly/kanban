@@ -236,8 +236,6 @@ final class AppModel {
     /// Vorbelegung für das Sheet. Gesetzt, wenn der Task aus einer **Karte ohne Nummer** entsteht:
     /// dann sind MR-Titel und Branch schon bekannt und niemand soll sie abtippen.
     var newTaskDraft = ""
-    /// Eigenes Fenster (kein Sheet) mit dem Editor über Commands/Skills/Rules.
-    var claudeWorkflowPresented = false
 
     // MARK: Knowledgebase (📚 neben der Modus-Umschaltung)
 
