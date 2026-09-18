@@ -18,11 +18,19 @@ public enum ClaudeProjectFile {
         /// soll den Unterschied sehen zwischen „hier ist die Knowledgebase" und „es gibt keine".
         public let kbPath: String?
         public let repoDir: String           // absolutes Haupt-Repo
-        public let worktreePrefix: String    // Ordner der Worktrees: <repoDir>-worktree (iwf-Konvention)
-        public let stackDomain: String       // TLD des lokalen Stacks; URL = https://<worktree-name>.<stackDomain>
+        /// Ordner der Worktrees: `<repoDir>-worktree`. Steht in **beiden** Fällen in der Datei —
+        /// Worktrees gibt es auch ohne Stack, dann eben als reine Git-Worktrees.
+        public let worktreePrefix: String
+        /// Hat das Projekt einen eigenen Docker-Stack? Der Wert, an dem die Skills verzweigen:
+        /// `false` heisst `git worktree add` statt `iwf worktree create`, kein Netbird-Pre-Flight,
+        /// keine Stack-Zeile im Task-File und Testläufe direkt im Worktree statt über `docker exec`.
+        public let dockerStack: Bool
+        /// TLD des lokalen Stacks; URL = `https://<worktree-name>.<stackDomain>`. **Fehlt** ohne
+        /// Stack: ein Wert, hinter dem keine Domain steht, wäre eine Behauptung.
+        public let stackDomain: String?
         /// Auf welcher Forge das Repo liegt: `gitlab` oder `github`. **Fehlt**, wenn keine
         /// zugeordnet ist — ein Skill soll „liegt auf GitLab" von „liegt nirgends" unterscheiden
-        /// können, und davon hängt ab, ob er `glab`/Hermes oder `gh` benutzt.
+        /// können, und davon hängt ab, ob er Hermes oder `gh` benutzt.
         public let forge: String?
         /// Der Projekt-Pfad auf dieser Forge: `applications/even` bei GitLab, `owner/repo` bei GitHub.
         public let forgeProjectPath: String?
@@ -30,6 +38,12 @@ public enum ClaudeProjectFile {
         /// ihn die Stellen, die vor der zweiten Forge geschrieben wurden; alles Neue nimmt `forge`
         /// und `forgeProjectPath`.
         public let gitlabProjectPath: String?
+        /// Basis-URL der Jira-Instanz dieses Projekts — **fehlt**, wenn keine konfiguriert ist.
+        /// Die Skills bauen daraus die `🎫 **JIRA**`-Zeile des Status-Blocks (`<jiraBaseUrl>/browse/<KEY>`).
+        public let jiraBaseUrl: String?
+        /// Hängt das Projekt an Jira? `false` heisst für die Skills: die JIRA-Zeile **entfällt** — eine
+        /// Zeile auf ein nicht existierendes Ticket ist schlechter als keine.
+        public let usesJira: Bool
         /// Hinweis an menschliche Leser — Kanban überschreibt die Datei beim Projektwechsel.
         public let generatedBy: String
     }
@@ -43,10 +57,13 @@ public enum ClaudeProjectFile {
                kbPath: project.kbPathAbsolute,
                repoDir: project.repoDir,
                worktreePrefix: project.repoDir + "-worktree",
-               stackDomain: "test",
+               dockerStack: project.usesDockerStack,
+               stackDomain: project.usesDockerStack ? "test" : nil,
                forge: project.forge?.kind.rawValue,
                forgeProjectPath: project.forge?.path,
                gitlabProjectPath: project.gitlabProjectPath,
+               jiraBaseUrl: project.jiraBaseUrl.isEmpty ? nil : project.jiraBaseUrl,
+               usesJira: project.usesJira,
                generatedBy: "Kanban — generiert aus der Kanban-Config, nicht von Hand editieren")
     }
 

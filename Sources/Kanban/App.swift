@@ -42,6 +42,9 @@ struct KanbanApp: App {
         if CommandLine.arguments.contains("--selftest") {
             SelfTest.runAndExit()
         }
+        if CommandLine.arguments.contains("--migrate-jira-line") {
+            JiraLineMigrationCLI.runAndExit()
+        }
         ClaudeAssetFactory.seedAtLaunch()
     }
 

@@ -188,7 +188,12 @@ final class SettingsModel {
     func createProject(key: String, record: ProjectRecord) {
         let trimmed = key.trimmingCharacters(in: .whitespaces)
         guard !trimmed.isEmpty, !record.isEmpty else { return }
-        mutate { $0 = ProjectProjection.apply(record, key: trimmed, to: $0) }
+        mutate {
+            $0 = ProjectProjection.apply(record, key: trimmed, to: $0)
+            // Getrennter Aufruf, weil es getrennte Ziele sind: `apply` läuft auch gegen Hermes'
+            // Config, die Kanban-eigenen Sections (`modules.docker`) gehören nur hierher.
+            $0 = ProjectProjection.applyKanbanOnly(record, key: trimmed, to: $0)
+        }
     }
 
     /// Entfernt ein Projekt aus allen Sections auf einmal — samt seinem Kopfzeilen-Bild, das sonst

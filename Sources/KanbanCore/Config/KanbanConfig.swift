@@ -32,6 +32,14 @@ public struct ProjectConfig: Identifiable, Sendable, Hashable {
     /// Branchnamen), nicht die Jira-Anbindung. Beides zu verwechseln hiesse, einem Projekt ohne
     /// Jira auch seine Task-Files zu nehmen.
     public let usesJira: Bool
+    /// Hat dieses Projekt einen eigenen Docker-Stack? `false` heisst: Worktrees sind reine
+    /// Git-Worktrees (`git worktree add`), es gibt kein `iwf`, keine Stack-Oberflaeche, keine
+    /// Snapshots und keinen Stack-Sweep.
+    ///
+    /// Fehlt der Schluessel, gilt `true` — jedes bestehende Projekt bleibt damit unveraendert eine
+    /// Web-Applikation mit Stack. Worktrees und Branches gibt es in **beiden** Faellen; abgeschaltet
+    /// wird nur die Docker-Haelfte.
+    public let usesDockerStack: Bool
 
     public var id: String { key }
 
@@ -46,7 +54,8 @@ public struct ProjectConfig: Identifiable, Sendable, Hashable {
                 repoDir: String, forge: ForgeRef?,
                 agent: AgentKind = .claude,
                 appearance: ProjectAppearance = .none,
-                usesJira: Bool = true) {
+                usesJira: Bool = true,
+                usesDockerStack: Bool = true) {
         self.key = key
         self.prefix = prefix
         self.jiraBaseUrl = jiraBaseUrl
@@ -58,6 +67,7 @@ public struct ProjectConfig: Identifiable, Sendable, Hashable {
         self.agent = agent
         self.appearance = appearance
         self.usesJira = usesJira
+        self.usesDockerStack = usesDockerStack
     }
 }
 
@@ -208,6 +218,7 @@ public enum KanbanConfig {
         let github = raw.modules?.github
         let confluence = raw.modules?.confluence
         let knowledgebase = raw.modules?.knowledgebase
+        let docker = raw.modules?.docker
         let appearance = raw.appearance
 
         // **Vor** dem Aufbau der Projektliste: ein Projekt, das in beiden Forge-Abschnitten steht,
@@ -249,7 +260,10 @@ public enum KanbanConfig {
                 // keine Farben, Kopfzeile wie immer.
                 appearance: appearanceFor(key, appearance),
                 // Fehlt der Schlüssel, ist es ein Jira-Projekt — alles Bestehende bleibt, wie es war.
-                usesJira: p.useJira ?? true
+                usesJira: p.useJira ?? true,
+                // Der Stack steht in der **eigenen** Sektion, nicht im Jira-Eintrag: er hat mit
+                // Jira nichts zu tun. Ohne Eintrag ist es eine Web-Applikation mit Docker-Stack.
+                usesDockerStack: docker?.projects?[key]?.stack ?? true
             ))
         }
         projects.sort { $0.key < $1.key }
@@ -402,6 +416,9 @@ private struct RawModules: Decodable {
     /// Ebenfalls kein Modul: nur der Ort der Knowledgebase je Projekt, den Kanban als `kbPath` in
     /// `.claude/project.json` durchreicht.
     let knowledgebase: RawKnowledgebase?
+    /// Auch kein Modul, und erst recht keins von Hermes: ob ein Projekt lokal einen Docker-Stack
+    /// hat. Kanban wertet das selbst aus und reicht es als `dockerStack` an die Skills durch.
+    let docker: RawDocker?
 }
 
 private struct RawJira: Decodable {
@@ -457,4 +474,14 @@ private struct RawKnowledgebase: Decodable {
 
 private struct RawKnowledgebaseProject: Decodable {
     let path: String?      // absolut, ~ oder relativ zum Basis-Pfad
+}
+
+private struct RawDocker: Decodable {
+    let projects: [String: RawDockerProject]?
+}
+
+private struct RawDockerProject: Decodable {
+    /// `false` = Projekt ohne Docker-Stack. Fehlt der Schlüssel (der Normalfall — geschrieben wird
+    /// nur die Abschaltung), gilt `true`.
+    let stack: Bool?
 }

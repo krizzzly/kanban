@@ -748,11 +748,15 @@ Nischen-Commands wie open-task/get-mr/solve-support.
   **User-Ebene** die Projektkopie — Gegenteil der verbreiteten Doku-Annahme. `ClaudeCommandScanner`
   liest beide Ebenen, überdeckte Projektkopien stehen in `shadowedProjectURL`.
 - **Keine Projektwerte in den Assets**: Platzhalter `<PREFIX>`/`<tasksPath>`/`<docsPath>`/
-  `<kbPath>`/`<worktreePrefix>`/`<stackDomain>` (nur die TLD; Hosts = `<ordnername>.<stackDomain>`)
-  verweisen auf `<repo>/.claude/project.json`, das `ClaudeProjectFile` beim Projektwechsel aus
-  Kanbans Config generiert (schreibt nur bei inhaltlicher Änderung; `.claude/` ist überall
-  gitignored). **`kbPath` fehlt**, wenn kein Knowledgebase-Pfad konfiguriert ist — ein Skill soll
-  „hier ist sie" von „es gibt keine" unterscheiden können; alle anderen Werte stehen immer da.
+  `<kbPath>`/`<worktreePrefix>`/`<dockerStack>`/`<stackDomain>` (nur die TLD; Hosts =
+  `<ordnername>.<stackDomain>`)/`<jiraBaseUrl>` verweisen auf `<repo>/.claude/project.json`, das
+  `ClaudeProjectFile` beim Projektwechsel aus Kanbans Config generiert (schreibt nur bei
+  inhaltlicher Änderung; `.claude/` ist überall gitignored). **Drei Schlüssel fehlen bewusst, wenn
+  es sie nicht gibt**: `kbPath` ohne konfigurierte Knowledgebase, `stackDomain` ohne Docker-Stack
+  und `jiraBaseUrl` ohne konfigurierte Jira-Instanz — ein Skill soll „hier ist sie" von „es gibt
+  keine" unterscheiden können, und eine TLD ohne Stack dahinter wäre eine Behauptung. `dockerStack`
+  und `usesJira` dagegen stehen **immer** drin (`true`/`false`): daran verzweigen die Skills, und
+  ein fehlender Schlüssel würde dort als `true` gelesen. Alle anderen Werte stehen immer da.
 - **Editor**: eigener ✨-Toolbar-Button → `ClaudeWorkflowWindow` (eigenständiges Fenster in
   Commit-Dialog-Grösse; die Hermes-Einstellungen bleiben ein Sheet) — CodeEditorView über den
   Bestand, Symlink-Status/-Verwaltung je Asset, „Auf Auslieferungsstand zurücksetzen" (aus dem Bundle).
@@ -967,6 +971,101 @@ gilt:
 - Zwei Projekte, die sich ein Repo teilen (`support` in `even`), teilen sich auch dessen
   `.claude/project.json` — es gewinnt das zuletzt gewählte. Das war schon vorher so, fällt mit
   `docsPath` aber mehr auf.
+
+## Projekt-Typen: zwei Schalter, zwei Hälften
+
+Kanban ist aus der IWF-Werkzeugkette gewachsen, und dort ist jedes Projekt eine Web-Applikation mit
+Jira-Board und eigenem Docker-Stack. Seit Kanban auch eigene Projekte führt (die App selbst, Hermes,
+Skript-Repos), stimmt das nicht mehr — und zwar in zwei unabhängigen Richtungen. Deshalb zwei
+Schalter, **beide mit Vorgabe „an"**, beide nur geschrieben, wenn sie **aus** sind (ein Schlüssel,
+der nur den Normalfall wiederholt, stünde in jedem Projekt herum):
+
+| Config                                      | Swift             | Aus heisst                                            |
+|---------------------------------------------|-------------------|-------------------------------------------------------|
+| `modules.jira.projects.<key>.useJira`       | `usesJira`        | kein Board, keine Sprints, keine Worklogs — nur freier Modus |
+| `modules.docker.projects.<key>.stack`       | `usesDockerStack` | keine Stack-Oberfläche, kein `iwf` — Worktrees bleiben |
+
+- **Der Stack-Schalter hat eine eigene Sektion**, obwohl er dieselbe *Form* hat wie `useJira`. Er
+  stand zuerst im Jira-Eintrag daneben — gleiche Form, gleiche Reichweite, ein Feld gespart. Das war
+  eine Verwechslung von Form und Sache: mit Jira hat der lokale Docker-Stack nichts zu tun, und in
+  den Einstellungen unter „Jira" sucht ihn niemand. Jetzt: Sektion **Docker** (`shippingbox`),
+  zwischen Knowledgebase und Darstellung.
+- **`modules.docker` ist Kanban-eigen** und steht deshalb in `ProjectProjection.kanbanOnlySections`,
+  nicht in `moduleNames`: `apply(_:key:to:)` läuft über `HermesSync` auch gegen
+  `~/.hermes/config.json`, und dort hätte der Schlüssel nichts zu suchen. Geschrieben wird er über
+  `applyKanbanOnly(_:key:to:)`, das nur `SettingsModel.createProject` gegen Kanbans eigenes Dokument
+  aufruft. Über `kanbanOnlySections` räumt `remove` den Eintrag beim Löschen eines Projekts mit ab.
+  Nicht zu verwechseln mit `modules.dockerhub` — das ist die Registry, in der das Image liegt.
+
+- **Was bei `dockerStack: false` verschwindet:** die Reiter „Maintree" und „Worktree" samt
+  Snapshots (`TerminalTabsView`), der Zähler „N Stacks stoppen" in der Leiste, und jeder Docker-/
+  `iwf`-Aufruf. Der eine Riegel dafür ist `AppModel.hasStack`; er sitzt unter anderem in
+  `directory(for:)`, durch das **jeder** Stack-Weg kommt (Lebenszyklus, Status, Snapshots,
+  Reparaturen, URL). **Ausgeblendet, nicht ausgegraut** — ein Schalter, der nie angeht, ist keine
+  Auskunft, sondern sieht aus wie „gerade nicht verfügbar".
+- **Was bleibt:** Worktrees, Branches, Task-Files, Commits, Merge Requests, Konsolen. Abgeschaltet
+  wird nur die Docker-Hälfte, nicht das halbe Projekt.
+- **Der Schalter wirkt bis in die Skills**, denn `ClaudeProjectFile` schreibt ihn nach
+  `<repo>/.claude/project.json`. Die Assets sind **ein** kanonischer Bestand ohne Projekt-Varianten
+  (`ClaudeAssetFactory`/`ClaudeAssetStore`), die Verzweigung steht deshalb **im Text** der Skills:
+  `create-worktree` ruft ohne Stack `git worktree add` statt `iwf worktree create` (und lehnt
+  `--start` ab), `destroy-worktree` `git worktree remove` statt `iwf worktree destroy --force`,
+  `solve-task` fährt Tests direkt im Worktree statt über `docker exec`. `rules/worktree.md` ist
+  dafür zweigeteilt: „Git-Worktree (gilt immer)" und „Per-Worktree-Stack (nur `dockerStack: true`)".
+- **Der Basis-Branch muss ohne `iwf` ermittelt werden.** `iwf worktree create` zweigt immer von
+  `origin/develop` ab; ohne `iwf` gibt es diese Konvention nicht, und `develop` existiert in vielen
+  Repos gar nicht (im Kanban-Repo selbst z.B.). Die Kette steht in `rules/worktree.md`:
+  `origin/HEAD` → `origin/develop` → `origin/main` → `develop` → `main` → `HEAD`, und der Skill sagt
+  in der Zusammenfassung, welchen er genommen hat.
+- **Vorbelegt, nicht entschieden:** `ProjectSuggestion` sieht beim Anlegen nach, ob im abgeleiteten
+  Repo-Ordner eine `.iwf.yml` liegt — die ist die Stack-Definition selbst. Der Blick auf die Platte
+  ist injizierbar (`fileExists`), damit der Vorschlag testbar bleibt. Geraten wird nur der
+  Vorschlag; entschieden wird im Editor, und ein Projekt **darf** den Schalter aus haben, obwohl
+  eine `.iwf.yml` existiert.
+- **Einen laufenden Stack stoppt das Abschalten nicht.** Die Oberfläche verschwindet, der Container
+  läuft weiter — heimlich zu stoppen wäre die unangenehmere Überraschung. Der Hilfetext des
+  Schalters sagt das und nennt den Weg (`iwf worktree stop <NR>`).
+- **Bestehende Task-Files werden nicht rückwirkend umgeschrieben.** Ein alter Worktree-Block mit
+  `🐳 **STACK**: -` bleibt stehen; neue Blöcke lassen die Zeile ohne Stack einfach weg (nicht auf
+  `-` setzen — eine Zeile, die nichts sagt, ist schlechter als keine).
+
+## Der Status-Block unter der H1
+
+Der Blockquote direkt unter der Überschrift eines Task-Files ist dessen Inhaltsverzeichnis — alles,
+was zum Ticket gehört, steht dort und nur dort:
+
+```markdown
+# EVEN-3530 - Ausführungskontrolle Status
+
+> 🎫 **JIRA**: `https://iwf-web-solutions.atlassian.net/browse/EVEN-3530`\
+> 🌳 **WORKTREE**: `/Users/…/code/even-worktree/EVEN-3530`\
+> 🌿 **BRANCH**: `feature/EVEN-3530_status`\
+> 🐳 **STACK**: `https://even-3530.test`\
+> 📅 **Angelegt**: 2026-09-18
+```
+
+`StatusLinks.linkify` verlinkt beim Rendern des Status-Tabs die Code-Spans: JIRA und STACK auf sich
+selbst, WORKTREE auf `kanban-ide://` (die App fängt das Schema ab und öffnet PhpStorm), BRANCH auf
+den GitLab-Tree. Die **H1 bleibt reiner Text** (KANBAN-003). Sie war bis dahin selbst der Jira-Link:
+unsichtbar — dass eine Überschrift anklickbar ist, sieht man ihr nicht an —, im Rohtext der Datei
+gar nicht vorhanden, und damit für jeden Leser ausserhalb des Status-Tabs (Claude liest die Datei,
+statt sie zu rendern) schlicht nicht da.
+
+- **Fehlende JIRA-Zeile wird abgeleitet** (`StatusLinks.withJiraLine`, aus `ticketKey` +
+  `jiraBaseUrl`) und als **erste** Blockzeile eingesetzt — die Wurzel von allem anderen steht
+  zuoberst. Steht sie in der Datei, gewinnt die Datei. Ohne Block (`--no-worktree`) entsteht ein
+  Blockquote mit nur dieser Zeile.
+- **`usesJira: false` → gar keine Zeile**, auch nicht abgeleitet. `linkify` wusste von `useJira`
+  nichts und verlinkte die H1 des Projekts `kanban` auf ein `/browse/KANBAN-…`, das es nie gab.
+- **`!<iid>`-Karten** haben per Definition kein Jira-Issue und bekommen keine Zeile.
+- **`.claude/project.json` führt `jiraBaseUrl` und `usesJira`** — ohne beides könnte eine Skill die
+  Zeile weder bauen noch korrekt weglassen. `jiraBaseUrl` **fehlt**, wenn keine konfiguriert ist
+  (dieselbe Regel wie bei `kbPath`: „es gibt keine" ist eine eigene Aussage).
+- **Der harte Zeilenumbruch** (`\` am Zeilenende) auf allen Metadaten-Zeilen ausser der letzten ist
+  Pflicht — ohne ihn kollabiert der Blockquote beim Rendern zu einer einzigen Zeile.
+- **Bestandsdateien migrieren**: `JiraLineMigration` trägt die Zeile einmalig in bestehende
+  Task-Files ein (siehe „Build / run"). Die Ableitung beim Rendern rettet die Anzeige, nicht die
+  Datei; wer sie im Editor öffnet oder mit `grep` liest, soll den Weg zum Ticket ebenfalls finden.
 
 ## Kommentare als Diskussion, nicht als JSON
 
@@ -1363,7 +1462,9 @@ links — und derselbe Knopf schaltet zurück; der gefüllte Buchrücken sagt, w
 
 ## Maintree neben Worktree (dasselbe Panel, zwei Ziele)
 
-Die Reiterleiste über dem Terminal beginnt mit **Maintree | Worktree**. Beide zeigen dasselbe
+Die Reiterleiste über dem Terminal beginnt mit **Maintree | Worktree** — beide nur in Projekten
+**mit** Docker-Stack (`dockerStack`, siehe „Projekt-Typen"); ohne Stack fängt die Leiste bei
+„Claude" an. Beide zeigen dasselbe
 Stack-Panel — Statusabzeichen aus `iwf stack ps`, die abgeleiteten Zeilen mit ihren Reparaturen,
 Start/Stop/Neustart und die laufende Ausgabe. Es ist **ein** View mit einem Parameter
 (`StackTarget`), keine Kopie: eine zweite Datei hätte die Regeln unten nur einmal gekannt.
@@ -1466,6 +1567,9 @@ beide: ein `restore` will man genauso mitlesen wie ein `stack build`.
   `/` im Namen darf nie zu einem anderen Ordner führen.
 
 ## Stacks abräumen („N Stacks stoppen" in der Toolbar)
+
+> Nur in Projekten **mit** Docker-Stack: `loadStackSweep` bricht ohne `hasStack` ab, der Zähler
+> bleibt leer und der Knopf erscheint gar nicht (siehe „Projekt-Typen").
 
 Jeder Worktree bringt einen eigenen Docker-Stack mit, und der läuft weiter, wenn das Ticket längst
 in Review oder Done steht. Gemessen auf der Maschine, für die das gebaut wurde: 43 Worktrees, 12
@@ -2027,6 +2131,10 @@ und wer die eine Datei kennt, kennt die andere.
   im Fenster aufschlägt (siehe „Knowledgebase lesen"). Ohne `kbPath` gibt es den Knopf nicht;
   existiert der Ordner nicht, bleibt er sichtbar und die Ansicht nennt den fehlenden Pfad, statt
   sich zu verstecken.
+- `modules.docker.projects.<key>.stack` — **kein Modul und keins von Hermes**: ob das Projekt einen
+  eigenen Docker-Stack hat (siehe „Projekt-Typen"). Fehlt der Schlüssel, gilt `true`; geschrieben
+  wird nur die Abschaltung. Wie `knowledgebase` in `kanbanOnlySections` statt `moduleNames`, damit
+  er nicht nach Hermes wandert, ein gelöschtes Projekt aber keinen verwaisten Eintrag hinterlässt.
 - `modules.confluence.projects.<key>.{space,path}` — **kein Modul, das Kanban betreibt**: nur der
   Space und der Ablageort der exportierten Seiten (`docsPath`, siehe „Task-Files und Doku liegen im
   Kanban-Ordner"). Ohne Eintrag gilt `~/Library/Application Support/Kanban/docs/<key>`. Ein Key ohne
@@ -2042,6 +2150,10 @@ und wer die eine Datei kennt, kennt die andere.
 swift build
 swift run Kanban    # Debug-Build aus .build/ — zum Ausprobieren, NICHT das, was installiert ist
 swift test          # KanbanCore unit tests (WorkflowStatus engine)
+
+swift run Kanban --migrate-jira-line --dry-run          # zeigt, was die Migration schriebe
+swift run Kanban --migrate-jira-line                    # trägt die 🎫-Zeile in Bestands-Task-Files ein
+swift run Kanban --migrate-jira-line --project even     # nur ein Projekt
 
 ./build-app.sh      # ausrollen: Release + Bundle + ad-hoc-Signatur → /Applications/Kanban.app
 ```

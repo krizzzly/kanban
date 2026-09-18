@@ -28,6 +28,18 @@ public struct ProjectRecord: Codable, Sendable, Equatable {
     /// bleibt auch ohne Jira gesetzt. Ein Projekt ohne Präfix wäre eins, das Kanban gar nicht als
     /// Ticketquelle führt — das hier ist eins, dessen Tickets nur nirgends in Jira stehen.
     public var usesJira: Bool?
+    /// `false` = Projekt **ohne Docker-Stack**: der Worktree ist ein reiner Git-Worktree, es gibt
+    /// keine Stack-Oberfläche, keine Snapshots, keinen Sweep und keinen `iwf`-Aufruf. nil oder
+    /// `true` = wie bisher.
+    ///
+    /// Betrifft **nur** die Docker-Hälfte: Worktrees, Branches und Task-Files gibt es weiterhin.
+    /// Kanban selbst ist der Anlass — ein Swift-Paket ohne `.iwf.yml`, das bisher wie eine
+    /// Web-Applikation konfiguriert aussah.
+    ///
+    /// Liegt in einer **eigenen** Section (`modules.docker.projects.<key>.stack`), nicht im
+    /// Jira-Eintrag: gleiche Form wie `usesJira`, andere Sache. Und in `kanbanOnlySections` statt
+    /// `moduleNames` — Hermes kennt keinen Stack-Schalter (siehe `applyKanbanOnly`).
+    public var usesDockerStack: Bool?
 
     public var gitlab: GitlabInfo?
     /// Die zweite Forge. **Entweder** `gitlab` **oder** `github` — beides zusammen ist ein

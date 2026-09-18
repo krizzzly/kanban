@@ -7,9 +7,10 @@ disable-model-invocation: true
 
 # REVIEW MERGE - Code-Review Arbeitsanweisung
 
-> ⚙️ **Projektwerte** (`prefix`, `tasksPath`, `repoDir`, `worktreePrefix`, `stackDomain`, `forge`,
-> `forgeProjectPath`): stehen in `.claude/project.json` im Repo-Root. Lies die Datei, bevor du einen
-> Projektwert brauchst — nie raten.
+> ⚙️ **Projektwerte** (`prefix`, `tasksPath`, `repoDir`, `worktreePrefix`, `dockerStack`,
+> `stackDomain`, `forge`, `forgeProjectPath`): stehen in `.claude/project.json` im Repo-Root. Lies
+> die Datei, bevor du einen Projektwert brauchst — nie raten. `dockerStack: false` heisst: kein
+> Docker-Stack — dann gibt es weder `stackDomain` noch `iwf`, und Befehle laufen direkt im Worktree.
 
 Du bist ein erfahrener Code-Reviewer, der Merge Requests (GitLab) bzw. Pull Requests (GitHub)
 systematisch analysiert und konstruktives Feedback gibt.
@@ -235,7 +236,8 @@ Prüfe folgende Aspekte und dokumentiere Findings:
 - [ ] Keine hardcodierten Strings - Übersetzungen verwenden (`{{ '...'|trans }}`)
 - [ ] Twig-Escaping korrekt (`|raw` nur bewusst und geprüft)
 - [ ] Neuer JS/SCSS-Code unter `assets/js/` bzw. `assets/scss/`, über Encore eingebunden
-- [ ] Build läuft ohne Fehler durch (projektüblicher Aufruf, z.B. `iwf yarn build`)
+- [ ] Build läuft ohne Fehler durch (projektüblicher Aufruf — mit Stack z.B. `iwf yarn build`, ohne Stack
+      der Build-Befehl aus der `CLAUDE.md`)
 
 **Berechtigungen:**
 - [ ] Neue Permissions im Permission-System des Projekts definiert (z.B. `coala_permissions.yaml`) bzw.
@@ -363,8 +365,11 @@ Erstelle einen strukturierten Review-Report:
 
 ### Test-Status
 - [ ] Controller-Tests vorhanden
-- [ ] Tests ausgeführt: projektüblicher Runner (siehe `.claude/rules/testing.md`), z.B. `iwf run "vendor/bin/phpunit tests/..."`
-- [ ] PHPStan: projektüblicher Aufruf (siehe `CLAUDE.md`), z.B. `iwf run phpstan`
+- [ ] Tests ausgeführt: projektüblicher Runner (siehe `.claude/rules/testing.md`) — mit Stack z.B.
+      `iwf run "vendor/bin/phpunit tests/..."`, ohne Stack (`dockerStack: false`) direkt im Worktree,
+      z.B. `cd <WORKTREE_PATH> && swift test`
+- [ ] Statische Analyse: projektüblicher Aufruf (siehe `CLAUDE.md`) — mit Stack z.B. `iwf run phpstan`,
+      ohne Stack z.B. `cd <WORKTREE_PATH> && swift build`
 
 ### Test-Hinweise (aus Impact-Analyse)
 - [Betroffene Endpunkte/Frontend-Bereiche und Verzweigungs-Varianten für den Test-Ingenieur]
@@ -440,11 +445,14 @@ git diff <BASE>..<branch> -- "*.twig" "*.js" "*.scss"   # klassischer Symfony-St
 # Statistik
 git diff --stat <BASE>..<branch>
 
-# Tests ausführen (Runner siehe .claude/rules/testing.md), z.B.:
+# Tests ausführen (Runner siehe .claude/rules/testing.md) — Projekt MIT Docker-Stack, z.B.:
 iwf run "vendor/bin/phpunit tests/Controller/..."
 
-# PHPStan (projektüblicher Aufruf — siehe CLAUDE.md), z.B.:
+# Statische Analyse (projektüblicher Aufruf — siehe CLAUDE.md) — Projekt MIT Docker-Stack, z.B.:
 iwf run phpstan
+
+# Projekt OHNE Docker-Stack (dockerStack: false): kein iwf, kein Container — direkt im Worktree, z.B.:
+cd <WORKTREE_PATH> && swift test
 
 # Geänderte Test-Dateien finden
 git diff --name-only <BASE>..<branch> | grep -E "Test\.php$"

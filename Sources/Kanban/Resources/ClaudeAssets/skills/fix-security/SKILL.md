@@ -7,12 +7,20 @@ disable-model-invocation: true
 
 # FIX SECURITY - Trivy-Scan aus Jenkins holen und Vulnerabilities fixen
 
-> ⚙️ **Projektwerte** (`prefix`, `tasksPath`, `repoDir`, `worktreePrefix`, `stackDomain`, `gitlabProjectPath`):
-> stehen in `.claude/project.json` im Repo-Root. Lies die Datei, bevor du einen Projektwert brauchst — nie raten.
+> ⚙️ **Projektwerte** (`prefix`, `tasksPath`, `repoDir`, `worktreePrefix`, `dockerStack`, `stackDomain`,
+> `gitlabProjectPath`): stehen in `.claude/project.json` im Repo-Root. Lies die Datei, bevor du einen
+> Projektwert brauchst — nie raten. `dockerStack: false` heisst: kein Docker-Stack — dann gibt es weder
+> `stackDomain` noch `iwf`, und Befehle laufen direkt im Worktree.
 
 Du holst den **Trivy-Security-Scan** des Jenkins-Jobs `<repo-ordnername> - DEV - Security`, parst die gefundenen
 Vulnerabilities und fixt — falls es **blockierende** (HIGH/CRITICAL) Findings gibt — die Dependency-Bumps in
-einem dedizierten **`sec<Datum>`-Worktree** (mit eigenem iwf-Stack).
+einem dedizierten **`sec<Datum>`-Worktree**.
+
+> **Zuschnitt:** Dieser Skill ist auf Projekte **mit** Docker-Stack und Jenkins-Security-Job gemünzt — dort
+> hat der `sec<Datum>`-Worktree einen eigenen iwf-Stack, in dem Lockfiles regeneriert und Tests gefahren
+> werden. Bei **`dockerStack: false`** gibt es weder `iwf` noch Container: dann ist der SEC-Worktree ein
+> reiner Git-Worktree (Phase 3B) und das Tooling läuft direkt darin (Phase 4/5). Existiert für das Projekt
+> gar kein Jenkins-Security-Job, sag das und brich ab, statt einen Scan zu erfinden.
 
 Platzhalter in spitzen Klammern (`<PREFIX>`, `<repoDir>`, `<worktreePrefix>`, `<stackDomain>`) stehen im
 Folgenden für die Werte aus `.claude/project.json`. **`<repo-ordnername>`** ist der letzte Pfadbestandteil
@@ -144,7 +152,7 @@ Gib nach der Triage eine **Findings-Tabelle** aus (Library, CVE, Severity, Insta
 
 ---
 
-### Phase 3: SEC-Worktree anlegen (via iwf)
+### Phase 3A: SEC-Worktree anlegen mit Stack (via iwf, `dockerStack: true`)
 
 > iwf akzeptiert seit Kurzem **lowercase-alphanumerische** Worktree-IDs (Regex `[a-z0-9](?:[a-z0-9-]*[a-z0-9])?`),
 > nicht mehr nur Zahlen. Uppercase ist verboten (die ID wird Docker-Compose-Projektname + DNS-Label unter
@@ -175,14 +183,46 @@ weil Phase 4/5 die **worktree-eigenen Container** zum Lockfile-Regen + Testen br
 Ab hier gilt **Worktree-Routing** (wie `solve-task` Phase 0a-3): Code-Edits/Greps/Git mit absolutem Worktree-Pfad
 bzw. `git -C "$WT" …`; Lesen von Doku/`.claude/`/Task-Files aus dem Haupt-Repo.
 
+### Phase 3B: SEC-Worktree anlegen ohne Stack (`dockerStack: false`)
+
+Kein `iwf`, kein Stack, keine URL — nur Worktree und Branch. Die ID bleibt `sec<YYYYMMDD>` (die
+Lowercase-Regel von iwf gilt hier zwar nicht, aber ein einheitlicher Name über beide Wege ist mehr wert als
+eine Ausnahme):
+
+```bash
+MAIN="<repoDir>"
+SEC_ID="sec$(date +%Y%m%d)"
+WT="<worktreePrefix>/$SEC_ID"
+
+if [ -d "$WT" ]; then
+  echo "Worktree von heute existiert schon — wird wiederverwendet: $WT"
+else
+  BASE=$(git -C "$MAIN" symbolic-ref --quiet --short refs/remotes/origin/HEAD)
+  if [ -z "$BASE" ]; then
+    for kandidat in origin/develop origin/main develop main; do
+      git -C "$MAIN" rev-parse --verify --quiet "$kandidat" >/dev/null && { BASE="$kandidat"; break; }
+    done
+  fi
+  [ -z "$BASE" ] && BASE=HEAD
+  git -C "$MAIN" worktree add "$WT" -b "feature/<PREFIX>-${SEC_ID}_security_fixes" --no-track "$BASE"
+fi
+```
+
+Danach gilt dasselbe Worktree-Routing wie oben.
+
 ---
 
-### Phase 4: Fixes anwenden (im worktree-eigenen Stack)
+### Phase 4: Fixes anwenden
 
-Der `sec<Datum>`-Worktree hat **eigene** Container, die seinen Code sehen — also Tooling **dort** ausführen
-(`docker exec <repo-ordnername>-<SEC_ID>-fpm …` bzw. `cd "$WT" && iwf …`; `iwf` liest `PROJECT_NAME` aus der
-Worktree-`.env.local`, funktioniert also nur mit cwd im Worktree). **Niemals** die Haupt-Repo-Container
-(`<repo-ordnername>-fpm`) nehmen.
+**Mit Stack (`dockerStack: true`):** Der `sec<Datum>`-Worktree hat **eigene** Container, die seinen Code sehen —
+also Tooling **dort** ausführen (`docker exec <repo-ordnername>-<SEC_ID>-fpm …` bzw. `cd "$WT" && iwf …`;
+`iwf` liest `PROJECT_NAME` aus der Worktree-`.env.local`, funktioniert also nur mit cwd im Worktree).
+**Niemals** die Haupt-Repo-Container (`<repo-ordnername>-fpm`) nehmen.
+
+**Ohne Stack (`dockerStack: false`):** kein Container dazwischen — die Paketmanager-Befehle laufen direkt im
+Worktree (`cd "$WT" && yarn install`, `cd "$WT" && composer update …`, bzw. was das Projekt sonst benutzt:
+`swift package update`, `npm install`, `go get -u …`). Überall unten, wo `iwf <x>` steht, ist das dann
+schlicht `<x>`.
 
 **A) yarn-Findings (`yarn`/`node-pkg`):**
 
@@ -213,7 +253,8 @@ cd "$WT" && iwf composer update <pkg> [weitere…] --with-dependencies
    grep -nE "form-data@|\bws@|vite@|<library>@" "$WT/yarn.lock" | head
    ```
    Für composer analog in `$WT/composer.lock` (`grep "<pkg>" -A2`).
-2. **Funktional (im worktree-eigenen Stack):**
+2. **Funktional** (mit Stack im worktree-eigenen Stack, ohne Stack direkt im Worktree — dann jeweils ohne
+   das `iwf`-Präfix bzw. mit dem projektüblichen Befehl aus der `CLAUDE.md`):
    - Frontend-Build: `cd "$WT" && iwf yarn build` (bzw. `iwf yarn tsc --noEmit` für den reinen Typecheck).
    - Tests/PHPStan **nur bei composer-Änderungen** nötig: bei Metadata-Änderungen vorher Cache leeren
      `docker exec <repo-ordnername>-<SEC_ID>-fpm sh -lc 'rm -rf var/cache/*'`, dann
@@ -235,7 +276,7 @@ cd "$WT" && iwf composer update <pkg> [weitere…] --with-dependencies
 Quelle:   <repo-ordnername> - DEV - Security #<NR> (FAILURE, <Datum>)
 Worktree: <WT-Pfad>
 Branch:   feature/<PREFIX>-sec<Datum>_security_fixes
-Stack:    https://<repo-ordnername>-sec<Datum>.<stackDomain>
+Stack:    https://<repo-ordnername>-sec<Datum>.<stackDomain>   [entfällt bei dockerStack: false]
 
 ## Gefixte Vulnerabilities (HIGH/CRITICAL)
 | Library | CVE | Installed → Ziel | Scan | Fixweg |
@@ -272,7 +313,9 @@ SEC | Bump vite to 7.3.5 (CVE-2026-53571)
 2. **Nur HIGH/CRITICAL** (Default) — exakt die Schwelle des Jobs; `--all-severities` erweitert bewusst.
 3. **Dedup FS↔Image:** gleiche Library+CVE = ein Fix.
 4. **Same-Major-Fix bevorzugen:** niedrigste Fixed Version im selben Major; kein unnötiger Major-Sprung.
-5. **Worktree-ID lowercase:** `sec<YYYYMMDD>` (iwf-Regex `[a-z0-9-]`, Uppercase verboten). Eigener Stack via `--start`.
+5. **Worktree-ID lowercase:** `sec<YYYYMMDD>` (iwf-Regex `[a-z0-9-]`, Uppercase verboten). Mit Stack eigener
+   Stack via `--start`; ohne Stack (`dockerStack: false`) reiner `git worktree add` vom ermittelten
+   Basis-Branch.
 6. **Worktree-eigene Container nutzen** (`<repo-ordnername>-<SEC_ID>-fpm`), NIE die Haupt-Repo-Container
    (`<repo-ordnername>-fpm`).
 7. **NIEMALS committen** — Änderungen unstaged lassen, Commit-Message nur vorschlagen (`SEC | …`, keine AI-Erwähnung).
