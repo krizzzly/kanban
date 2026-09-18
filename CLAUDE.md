@@ -889,13 +889,27 @@ fehlte: nicht jedes Projekt will dieselben Skills.
 ### Die Übersicht (✨-Toolbar-Button, eigenes Fenster)
 
 Das Fenster **zeigt und stellt her**, mehr nicht: je Set Name, Beschreibung, Ordner, Anzahl
-Skills/Rules und die Markierung „Standard"; darunter **alle Projekte als Haken** — dort wird die
-Zuordnung getroffen, für alle auf einmal, statt Projekt für Projekt in den Einstellungen. Darunter
-die schon zugeordneten Projekte mit dem Zustand ihrer Verlinkung (verlinkt / nicht verlinkt / zeigt
-noch auf ein anderes Set / fremd belegt) und einem Knopf „Verlinkung herstellen"; im Fuss „Set
-anlegen…" und „Alle verlinken", das zugleich das Standard-Set in die Agent-Homes legt. Das
-⋯-Menü je Set führt in den Finder, lässt einen anderen Ordner wählen und nimmt das Set wieder aus
-der Liste — **ohne** den Ordner anzufassen: entfernt wird die Zuordnung, nicht die Arbeit.
+Skills/Rules und die Markierung „Standard"; darunter **alle Projekte als Chips**. Ein Klick legt
+das Projekt auf dieses Set — und verlinkt es sofort.
+
+- **Chips statt Ankreuzfelder**, weil die Frage nicht „welche Häkchen sind gesetzt" lautet, sondern
+  **„welche Projekte gehören zu diesem Set"**: eine Menge, keine Liste von Schaltern. Gesetzte Chips
+  sind gefüllt und lesen sich als Aufzählung, die übrigen stehen blass daneben. Dieselbe
+  Kapsel-Optik wie die Epic-Chips auf den Karten. Eine fertige SwiftUI-Komponente dafür gibt es
+  nicht — `NSTokenField` aus AppKit ist fürs *Eintippen* freier Tokens gedacht, hier ist die Menge
+  fest und bekannt. Den Umbruch macht `Fluss`, ein `Layout` (macOS 13+): es misst jeden Chip einzeln
+  und bricht um, wenn die Zeile voll ist. Ein `LazyVGrid` mit fester Spaltenbreite gäbe ein Raster,
+  in dem zwischen `tp1` und `iwf-local-dev` überall Luft stünde.
+- **Keinen „Verlinken"-Knopf mehr.** Ein Projekt, das an einem Set hängt, *ist* verlinkt — sonst
+  wäre die Zuordnung eine Behauptung. Hergestellt wird beim Zuordnen, beim App-Start, beim
+  Projektwechsel und beim Öffnen dieses Fensters; der Aufruf ist idempotent, steht alles, passiert
+  nichts. Damit zieht auch ein von Hand aufgelöster Zielort ohne Knopfdruck nach.
+- **Zeilen nur für Projekte, an denen etwas nicht stimmt.** Im Normalfall sagt der Chip schon alles;
+  eine zweite Liste, die dieselben Projekte noch einmal aufzählt, wäre Lärm.
+
+Das ⋯-Menü je Set führt in den Finder, lässt einen anderen Ordner wählen und nimmt das Set wieder
+aus der Liste — **ohne** den Ordner anzufassen: entfernt wird die Zuordnung, nicht die Arbeit. Im
+Fuss steht „Set anlegen…".
 
 Drei Fälle stehen als Hinweis an der Zeile, statt still zu wirken:
 
