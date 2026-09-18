@@ -12,6 +12,7 @@ enum SelectionStore {
     private static let openProjectsDefaultsKey = "openProjectKeys"
     private static let sprintDefaultsKey = "selectedSprintByProject"
     private static let boardModeDefaultsKey = "boardModeByProject"
+    private static let setsRootDefaultsKey = "claudeSetsRootSeen"
 
     /// The project key selected when the app last quit (nil on first run).
     ///
@@ -30,6 +31,17 @@ enum SelectionStore {
     static var openProjectKeys: [String]? {
         get { UserDefaults.standard.stringArray(forKey: openProjectsDefaultsKey) }
         set { UserDefaults.standard.set(newValue, forKey: openProjectsDefaultsKey) }
+    }
+
+    /// Der Sammelordner der Skill-Sets, wie ihn die Übersicht zuletzt gesehen hat.
+    ///
+    /// Nur dafür da, einen **Wechsel** zu bemerken: zeigt ein Symlink noch in den alten Ordner, ist
+    /// er einer von uns und wird umgehängt statt als fremd liegengelassen (`formerRoots`). Das kann
+    /// die Config selbst nicht sagen — sie kennt nur den Wert von jetzt. Hier richtig aufgehoben und
+    /// nicht in der Config: ein Beobachtungsposten, keine Einstellung.
+    static var claudeSetsRootSeen: String? {
+        get { UserDefaults.standard.string(forKey: setsRootDefaultsKey) }
+        set { UserDefaults.standard.set(newValue, forKey: setsRootDefaultsKey) }
     }
 
     /// Die zuletzt gewählte Jira-Quelle als `SprintChoice.id` — eine Sprint-Id oder `"board"`.

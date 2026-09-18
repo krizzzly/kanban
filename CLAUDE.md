@@ -882,7 +882,12 @@ fehlte: nicht jedes Projekt will dieselben Skills.
   im Ordner des *anderen* Agents (ein Projekt hat genau einen). Erkannt werden sie daran, dass sie
   auf etwas zeigen, das **uns** gehört: ein bekannter Set-Ordner, der Sammelordner, ein früher
   gewählter (`formerRoots` — wer den Ordner wechselt, soll die alten Links umgehängt bekommen statt
-  sie als fremd stehen zu lassen) oder der alte flache Bestand. **Fremdes wird nie angefasst**: eine
+  sie als fremd stehen zu lassen) oder der alte flache Bestand. Den Wechsel bemerkt die Übersicht
+  **selbst**, indem sie den zuletzt gesehenen Sammelordner in `SelectionStore` mitführt und beim
+  Laden vergleicht: so zieht auch ein Pfad nach, der in den Einstellungen, im Roh-JSON-Editor oder
+  von Hand in der Datei geändert wurde. Vorher hing das an einem eigenen „Ordner wählen…"-Knopf in
+  der Übersicht — und damit an dem einen Weg, den ausgerechnet niemand mehr nimmt, seit der Pfad als
+  Feld in den Einstellungen steht (siehe unten). **Fremdes wird nie angefasst**: eine
   echte Datei oder ein Symlink irgendwo anders hin wird gemeldet, nicht überschrieben
   (`ClaudeSymlinkState.foreign`) — und ein belegter Zielort blockiert den Rest des Sets nicht.
 - **Pfade werden in beiden Schreibweisen verglichen** (`ClaudeAssetStore.schreibweisen`): macOS legt
@@ -965,6 +970,13 @@ das Projekt auf dieses Set — und verlinkt es sofort.
 Das ⋯-Menü je Set führt in den Finder, lässt einen anderen Ordner wählen und nimmt das Set wieder
 aus der Liste — **ohne** den Ordner anzufassen: entfernt wird die Zuordnung, nicht die Arbeit. Im
 Fuss steht „Set anlegen…".
+
+**Den Sammelordner wählt man hier nicht**, obwohl die Übersicht ihn anzeigt (und ein Klick ihn im
+Finder öffnet): er ist `claude.setsPath` und steht als Feld in derselben Seitenleiste unter
+„Allgemein". Zwei Bedienelemente für einen Wert im selben Fenster wären schon deshalb verkehrt, weil
+sie verschieden wirken — das Feld auf „Speichern", der Knopf sofort. Die beiden übrigen
+Ordner-Dialoge bleiben: der Ordner **eines** Sets (`claude.sets.<name>.path`) und der eines neuen,
+und für die gibt es kein Feld.
 
 Drei Fälle stehen als Hinweis an der Zeile, statt still zu wirken:
 

@@ -73,8 +73,16 @@ final class ClaudeWorkflowModel {
         let config = try? KanbanConfig.load()
         // Frühere Wurzeln nur behalten, solange sie noch gebraucht werden: nach dem Aufräumen zeigt
         // kein Symlink mehr dorthin, und ein alter Pfad im Store wäre ab da nur noch irreführend.
-        store = .configured(formerRoots: store.formerRoots.filter(zeigtNochEtwasDorthin))
+        //
+        // Dazu der Ordner, den wir beim letzten Mal gesehen haben, falls er sich geändert hat: die
+        // Symlinks zeigen dann noch dorthin, und ohne diesen Hinweis gälten sie als **fremd** und
+        // blieben liegen. Der Wechsel wird hier bemerkt und nicht an einem Knopf festgemacht —
+        // gesetzt wird der Pfad in den Einstellungen unter „Allgemein“ (`claude.setsPath`), und
+        // auch ein Griff in den Roh-JSON-Editor oder in die Datei selbst soll nachziehen.
+        store = .configured(formerRoots: (store.formerRoots + vorherigeWurzel())
+            .filter(zeigtNochEtwasDorthin))
         setsRoot = store.setsRoot.path
+        SelectionStore.claudeSetsRootSeen = store.setsRoot.standardizedFileURL.path
         setsRootMissing = !store.setsRootExists
 
         sets = store.sets()
@@ -131,6 +139,17 @@ final class ClaudeWorkflowModel {
         }
         if melden { message = melde(reports, titel: "Verlinkt") }
         return reports
+    }
+
+    /// Der Sammelordner von vorhin, falls inzwischen ein anderer konfiguriert ist.
+    ///
+    /// Gemerkt wird er in `SelectionStore` und nicht in der Config: die Config sagt, wo die Sets
+    /// **jetzt** liegen: woher sie kamen, ist Beobachtung. Leere Liste heisst „unverändert“ — und
+    /// beim allerersten Lauf gibt es nichts zu vergleichen.
+    private func vorherigeWurzel() -> [URL] {
+        guard let gesehen = SelectionStore.claudeSetsRootSeen, !gesehen.isEmpty else { return [] }
+        let alt = URL(fileURLWithPath: gesehen).standardizedFileURL
+        return alt == ClaudeAssetStore.configured().setsRoot.standardizedFileURL ? [] : [alt]
     }
 
     /// Hängt irgendwo noch ein Symlink an dieser früheren Wurzel? Geprüft wird an den Agent-Homes
@@ -281,27 +300,6 @@ final class ClaudeWorkflowModel {
         return panel.runModal() == .OK ? panel.url : nil
     }
 
-    /// Wählt den Sammelordner, aus dem nicht registrierte Sets kommen.
-    ///
-    /// Der alte Ordner wird dabei als `formerRoots` mitgegeben: die Symlinks, die noch dorthin
-    /// zeigen, sind **unsere** und werden umgehängt statt als fremd liegengelassen. Die Zuordnungen
-    /// selbst stehen als Name in der Config und überleben den Wechsel ohnehin — ein Name, den der
-    /// neue Ordner nicht führt, fällt sichtbar aufs Standard-Set zurück, statt still zu verschwinden.
-    func waehleSetsOrdner() {
-        guard let neu = ordnerDialog(titel: "Sammelordner für Skill-Sets wählen",
-                                     start: store.setsRoot.deletingLastPathComponent()) else { return }
-        let alt = store.setsRoot
-        guard neu.standardizedFileURL != alt.standardizedFileURL else { return }
-        do {
-            try schreibeConfig { $0.set(.string(neu.path), at: ["claude", "setsPath"]) }
-        } catch {
-            message = "Ordner nicht gespeichert: \(error.localizedDescription)"
-            return
-        }
-        store = .configured(formerRoots: [alt])
-        herstellenUndAuffrischen()
-    }
-
     private func schreibeConfig(_ aendern: (inout JSONValue) -> Void) throws {
         let datei = ConfigStore()
         var dokument = try datei.load()
@@ -357,12 +355,8 @@ struct ClaudeWorkflowSettingsView: View {
                 }
                 .buttonStyle(.link)
                 .lineLimit(1).truncationMode(.middle)
-                .help("Im Finder zeigen — hier werden die Sets gepflegt")
-                Button("Ordner wählen…") { model.waehleSetsOrdner() }
-                    .controlSize(.small)
-                    .help("Einen anderen Ordner als Quelle der Skill-Sets wählen. Bestehende "
-                          + "Zuordnungen bleiben: sie stehen als Set-Name in der Config. Die "
-                          + "Symlinks der Projekte werden auf den neuen Ordner umgehängt.")
+                .help("Im Finder zeigen — hier werden die Sets gepflegt. Der Ordner selbst steht "
+                      + "in den Einstellungen unter „Allgemein\u{201C} (claude.setsPath).")
                 if model.setsRootMissing {
                     Label("gibt es nicht", systemImage: "exclamationmark.triangle")
                         .font(.body).foregroundStyle(.orange)
@@ -378,8 +372,8 @@ struct ClaudeWorkflowSettingsView: View {
             Text(model.setsRootMissing ? "Den Sets-Ordner gibt es nicht" : "Kein Skill-Set gefunden")
                 .foregroundStyle(.secondary)
             Text(model.setsRootMissing
-                 ? "Erwartet unter \(model.abbreviateHome(model.setsRoot)) — der Pfad steht in den "
-                   + "Einstellungen unter „Allgemein\u{201C} (claude.setsPath)."
+                 ? "Erwartet unter \(model.abbreviateHome(model.setsRoot)) — zu ändern eine Sektion "
+                   + "weiter oben unter „Allgemein\u{201C} (claude.setsPath)."
                  : "Ein Set ist ein Unterordner mit skills/ oder rules/ und kebab-case-Namen.")
                 .font(.body).foregroundStyle(.tertiary)
                 .multilineTextAlignment(.center)
