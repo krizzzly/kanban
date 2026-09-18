@@ -40,6 +40,9 @@ public struct ProjectRecord: Codable, Sendable, Equatable {
     /// Jira-Eintrag: gleiche Form wie `usesJira`, andere Sache. Und in `kanbanOnlySections` statt
     /// `moduleNames` — Hermes kennt keinen Stack-Schalter (siehe `applyKanbanOnly`).
     public var usesDockerStack: Bool?
+    /// Welches Skill-Set das Projekt sieht. Nil = Standard-Set — genau wie ein fehlendes `agent`
+    /// den Default-Agent meint.
+    public var skillSet: String?
 
     public var gitlab: GitlabInfo?
     /// Die zweite Forge. **Entweder** `gitlab` **oder** `github` — beides zusammen ist ein
@@ -102,6 +105,7 @@ public struct ProjectRecord: Codable, Sendable, Equatable {
                 tasksPath: String? = nil,
                 repoDir: String? = nil,
                 jiraBaseUrl: String? = nil,
+                skillSet: String? = nil,
                 gitlab: GitlabInfo? = nil,
                 github: GithubInfo? = nil,
                 confluence: ConfluenceInfo? = nil,
@@ -112,6 +116,7 @@ public struct ProjectRecord: Codable, Sendable, Equatable {
         self.tasksPath = tasksPath
         self.repoDir = repoDir
         self.jiraBaseUrl = jiraBaseUrl
+        self.skillSet = skillSet
         self.gitlab = gitlab
         self.github = github
         self.confluence = confluence
@@ -124,6 +129,7 @@ public struct ProjectRecord: Codable, Sendable, Equatable {
     /// überspringt solche Einträge.
     public var isEmpty: Bool {
         prefix == nil && tasksPath == nil && repoDir == nil && jiraBaseUrl == nil
+            && skillSet == nil
             && gitlab == nil && github == nil && confluence == nil && vertec == nil
             && jenkins == nil && dockerhub == nil
     }

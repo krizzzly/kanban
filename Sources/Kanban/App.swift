@@ -45,7 +45,9 @@ struct KanbanApp: App {
         if CommandLine.arguments.contains("--migrate-jira-line") {
             JiraLineMigrationCLI.runAndExit()
         }
-        ClaudeAssetFactory.seedAtLaunch()
+        // Das Standard-Set in die Agent-Homes; die Projekte bekommen ihres beim Config-Load und
+        // bei jedem Projektwechsel (AppModel.linkSkillSet).
+        ClaudeAssetFactory.linkAtLaunch()
     }
 
     var body: some Scene {

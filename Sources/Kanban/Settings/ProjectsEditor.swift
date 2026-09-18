@@ -170,6 +170,7 @@ struct ProjectsEditor: View {
                               prompt: Text("leer = erstes Segment des Tasks-Pfads"))
                     TextField("Jira-Host (nur bei Abweichung)", text: binding(\.jiraBaseUrl),
                               prompt: Text("https://andere-instanz.atlassian.net"))
+                    skillSetPicker
                 }
 
                 // Genau **eine** Forge je Projekt: den jeweils anderen Block gibt es nur, solange
@@ -260,6 +261,24 @@ struct ProjectsEditor: View {
                     }
                     .disabled(draft.strippingEmptyModules().isEmpty)
                 }
+            }
+        }
+    }
+
+    /// Welchen Satz Skills das neue Projekt sehen soll. Die Liste kommt aus dem Sets-Ordner, nicht
+    /// aus dem Code — ein Set, das im Repo dazukommt, steht ohne Codeänderung hier.
+    ///
+    /// „Standard-Set" ist die Vorgabe und bleibt es für fast jedes Projekt; der Eintrag wird dann
+    /// gar nicht erst geschrieben.
+    @ViewBuilder
+    private var skillSetPicker: some View {
+        let namen = ClaudeAssetStore.configured().sets().map(\.name)
+        if !namen.isEmpty {
+            Picker("Skill-Set", selection: Binding(
+                get: { draft.skillSet ?? "" },
+                set: { draft.skillSet = $0.isEmpty ? nil : $0 })) {
+                Text("Standard-Set").tag("")
+                ForEach(namen, id: \.self) { Text($0).tag($0) }
             }
         }
     }

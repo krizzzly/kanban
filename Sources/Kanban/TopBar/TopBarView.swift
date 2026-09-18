@@ -325,7 +325,7 @@ struct TopBarToolbar: ToolbarContent {
         } label: {
             Image(systemName: "wand.and.stars")
         }
-        .help("Claude-Workflow: Commands, Skills und Rules bearbeiten + verlinken")
+        .help("Skill-Sets: welches Projekt an welchem Set hängt — und Verlinkung herstellen")
     }
 
     /// Öffnet Kanbans Datenordner (tasks/, claude/, config.json) in PhpStorm.

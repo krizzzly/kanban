@@ -68,6 +68,20 @@ final class ClaudeProjectFileTests: XCTestCase {
         XCTAssertEqual(ClaudeProjectFile.read(repoDir: repoDir.path)?.kbPath, "/wissen/even")
     }
 
+    /// Das **aufgelöste** Set steht in der Datei — ein Skill soll wissen, mit welchem Satz er
+    /// gerade läuft, nicht, was jemand einmal in die Config geschrieben hat.
+    func testSkillSetIsWrittenWhenResolved() throws {
+        try ClaudeProjectFile.write(for: project, skillSet: "iwf")
+        XCTAssertEqual(ClaudeProjectFile.read(repoDir: repoDir.path)?.skillSet, "iwf")
+
+        // Gibt es gar kein Set, fehlt der Schlüssel — wie bei `kbPath`.
+        try FileManager.default.removeItem(at: repoDir.appendingPathComponent(".claude/project.json"))
+        try ClaudeProjectFile.write(for: project)
+        let text = try String(contentsOf: repoDir.appendingPathComponent(".claude/project.json"),
+                              encoding: .utf8)
+        XCTAssertFalse(text.contains("skillSet"), text)
+    }
+
     /// Und ohne: kein leerer Schlüssel, sondern gar keiner.
     func testKbPathIsOmittedWhenUnset() throws {
         try ClaudeProjectFile.write(for: project)
