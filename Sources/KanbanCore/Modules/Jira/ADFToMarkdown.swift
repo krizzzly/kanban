@@ -12,6 +12,18 @@ public struct ADFImage: Sendable, Equatable {
     public let index: Int
 }
 
+/// Ein aufgelöster Smart-Link: das, was Jira und Confluence auf ihrer Karte zeigen.
+/// `chip` ist der nachgestellte Zusatz (Ticket-Status, „Kommentar"), soweit es einen gibt.
+public struct SmartLinkTarget: Sendable, Equatable {
+    public let label: String
+    public let chip: String?
+
+    public init(label: String, chip: String? = nil) {
+        self.label = label
+        self.chip = chip
+    }
+}
+
 /// ADF (Atlassian Document Format) → Markdown, ported from Hermes' `lib/adf-to-markdown.js`.
 ///
 /// Replaces the earlier `ADFFlattener`, which only concatenated text nodes: it lost every heading,
@@ -24,29 +36,38 @@ public enum ADFToMarkdown {
 
     /// `imageCounter` continues the numbering across several documents of one issue (description,
     /// then each comment), exactly like Hermes threads its counter through.
-    public static func convert(_ adf: JSONValue, imageCounter: Int = 0) -> Result {
+    ///
+    /// `smartLinks` ist vorab aufgelöst (`SmartLinks.resolve`), damit der Konverter synchron bleibt.
+    /// **Der Default `nil` ist die wichtige Hälfte dieser Signatur:** wer nichts übergibt, bekommt
+    /// exakt das Verhalten ohne Smart-Links. Das schützt die Aufrufer, die nur lesen wollen — und
+    /// vor allem `JiraSolutionField`, das sein Ergebnis über `MarkdownToADF` nach Jira zurück
+    /// schreibt: dort würde eine gerenderte Karte die lebende Karte durch eingefrorenen Text ersetzen.
+    public static func convert(_ adf: JSONValue, imageCounter: Int = 0,
+                               smartLinks: [String: SmartLinkTarget]? = nil) -> Result {
         guard adf.value(at: ["content"]) != nil else {
             return Result(markdown: "", images: [])
         }
-        var converter = Converter(counter: imageCounter)
+        var converter = Converter(counter: imageCounter, smartLinks: smartLinks)
         let text = converter.process(adf)
         return Result(markdown: text.trimmingCharacters(in: .whitespacesAndNewlines),
                       images: converter.images)
     }
 
     /// Convenience for a raw JSON object (what `JSONSerialization` hands back).
-    public static func convert(object: [String: Any], imageCounter: Int = 0) -> Result {
+    public static func convert(object: [String: Any], imageCounter: Int = 0,
+                               smartLinks: [String: SmartLinkTarget]? = nil) -> Result {
         guard let data = try? JSONSerialization.data(withJSONObject: object),
               let value = try? JSONDecoder().decode(JSONValue.self, from: data) else {
             return Result(markdown: "", images: [])
         }
-        return convert(value, imageCounter: imageCounter)
+        return convert(value, imageCounter: imageCounter, smartLinks: smartLinks)
     }
 
     // MARK: - Walker
 
     private struct Converter {
         var counter: Int
+        let smartLinks: [String: SmartLinkTarget]?
         var images: [ADFImage] = []
 
         mutating func process(_ node: JSONValue, ordinal: Int? = nil,
@@ -85,6 +106,23 @@ public enum ADFToMarkdown {
 
             case "listItem":
                 return listItem(children, ordinal: ordinal, parentIndent: parentIndent)
+
+            // Confluence-Checkboxen. Eine verschachtelte Liste kommt als **Geschwister** im
+            // Eltern-`taskList` an, nicht als Kind eines `taskItem` — deshalb wird die Einrückung
+            // hier vergeben und nicht beim Punkt.
+            case "taskList":
+                let items = children.map { child -> String in
+                    let nested = child.value(at: ["type"])?.stringValue == "taskList"
+                    return process(child, parentIndent: nested ? parentIndent + "  " : parentIndent)
+                }.joined()
+                // Die oberste Liste schliesst mit einer Leerzeile, sonst klebt die nächste
+                // Überschrift an der letzten Checkbox.
+                return parentIndent.isEmpty ? items + "\n" : items
+
+            case "taskItem":
+                let box = node.value(at: ["attrs", "state"])?.stringValue == "DONE" ? "[x]" : "[ ]"
+                let label = joined(children).trimmingCharacters(in: .whitespacesAndNewlines)
+                return "\(parentIndent)- \(box) \(label)\n"
 
             case "heading":
                 let level = node.value(at: ["attrs", "level"])?.intValue ?? 1
@@ -142,7 +180,18 @@ public enum ADFToMarkdown {
                 case "strike": text = "~~\(text)~~"
                 case "code": text = "`\(text)`"
                 case "underline": text = "<u>\(text)</u>"
-                case "link": text = "[\(text)](\(mark.value(at: ["attrs", "href"])?.stringValue ?? ""))"
+                case "link":
+                    let href = mark.value(at: ["attrs", "href"])?.stringValue ?? ""
+                    // Ein Link, dessen sichtbarer Text die URL selbst ist, ist derselbe Fall wie
+                    // eine Karte. Ein Link mit eigenem Text bleibt, wie er ist — den hat jemand
+                    // bewusst so beschriftet.
+                    if !href.isEmpty,
+                       text.trimmingCharacters(in: .whitespaces) == href.trimmingCharacters(in: .whitespaces),
+                       smartLinks?[href] != nil {
+                        text = renderCard(href)
+                    } else {
+                        text = "[\(text)](\(href))"
+                    }
                 case "subsup":
                     let kind = mark.value(at: ["attrs", "type"])?.stringValue
                     if kind == "sub" { text = "<sub>\(text)</sub>" }
@@ -306,9 +355,24 @@ public enum ADFToMarkdown {
         }
 
         private func card(_ node: JSONValue) -> String {
-            let url = node.value(at: ["attrs", "url"])?.stringValue ?? ""
-            return "[\(ADFToMarkdown.cardLabel(url))](\(url))"
+            renderCard(node.value(at: ["attrs", "url"])?.stringValue ?? "")
         }
+
+        /// So, wie Jira und Confluence die Karte zeigen: Titel statt URL, Status bzw. Typ als
+        /// nachgestellter Chip. Ohne aufgelösten Eintrag bleibt es beim Key/Slug aus der URL.
+        private func renderCard(_ url: String) -> String {
+            let resolved = smartLinks?[url]
+            let label = resolved?.label ?? ADFToMarkdown.cardLabel(url)
+            let link = "[\(ADFToMarkdown.escapeLinkText(label))](\(url))"
+            guard let chip = resolved?.chip else { return link }
+            return "\(link) `\(chip)`"
+        }
+    }
+
+    /// Eckige Klammern im Label zerlegen das Markdown-Link-Konstrukt — ein Seitentitel wie
+    /// „[Entwurf] Konzept" bringt sie mit.
+    static func escapeLinkText(_ label: String) -> String {
+        label.replacingOccurrences(of: #"([\[\]])"#, with: #"\\$1"#, options: .regularExpression)
     }
 
     /// A readable label for a smart link: the ticket key for Jira, the page title for Confluence,

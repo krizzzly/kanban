@@ -128,6 +128,84 @@ final class ADFToMarkdownTests: XCTestCase {
         XCTAssertEqual(ADFToMarkdown.cardLabel(""), "")
     }
 
+    // MARK: - Confluence-Checkboxen (taskList/taskItem)
+
+    /// Erwartungswert erzeugt mit Hermes' `lib/adf-to-markdown.js` für dieselbe Eingabe.
+    /// Der Fall, auf den es ankommt: die **verschachtelte** Liste steht als Geschwister im
+    /// Eltern-`taskList`, nicht als Kind eines `taskItem` — nur deshalb wird sie eingerückt.
+    func testTaskListMatchesTheJavaScriptOriginal() throws {
+        let source = doc("""
+        {"type":"taskList","content":[
+          {"type":"taskItem","attrs":{"state":"DONE"},"content":[{"type":"text","text":"erledigt"}]},
+          {"type":"taskItem","attrs":{"state":"TODO"},"content":[{"type":"text","text":"offen"}]},
+          {"type":"taskList","content":[
+            {"type":"taskItem","attrs":{"state":"TODO"},"content":[{"type":"text","text":"unterpunkt"}]}
+          ]}
+        ]},
+        {"type":"heading","attrs":{"level":2},"content":[{"type":"text","text":"Danach"}]}
+        """)
+        XCTAssertEqual(try markdown(source),
+                       "- [x] erledigt\n- [ ] offen\n  - [ ] unterpunkt\n\n## Danach")
+    }
+
+    // MARK: - Smart Links
+
+    /// `escapeLinkText` gilt **auch ohne** aufgelöste Smart-Links: ein Seitentitel mit eckigen
+    /// Klammern zerlegte sonst das Link-Konstrukt. Erwartungswert aus Hermes.
+    func testCardLabelEscapesBrackets() throws {
+        let source = doc("""
+        {"type":"paragraph","content":[
+          {"type":"inlineCard","attrs":{"url":"https://c.test/pages/12/%5BEntwurf%5D+Konzept"}}
+        ]}
+        """)
+        XCTAssertEqual(try markdown(source),
+                       #"[\[Entwurf\] Konzept](https://c.test/pages/12/%5BEntwurf%5D+Konzept)"#)
+    }
+
+    /// Mit aufgelöstem Ziel zeigt die Karte Titel und Status — so, wie Jira sie selbst rendert.
+    func testResolvedCardShowsLabelAndChip() throws {
+        let url = "https://x.atlassian.net/browse/EVEN-1"
+        let source = doc(#"{"type":"paragraph","content":[{"type":"inlineCard","attrs":{"url":"\#(url)"}}]}"#)
+        let links = [url: SmartLinkTarget(label: "EVEN-1: Titel [v2]", chip: "In Arbeit")]
+        XCTAssertEqual(ADFToMarkdown.convert(try adf(source), smartLinks: links).markdown,
+                       #"[EVEN-1: Titel \[v2\]](https://x.atlassian.net/browse/EVEN-1) `In Arbeit`"#)
+    }
+
+    /// Der `link`-Mark wird nur dann zur Karte, wenn der sichtbare Text die URL selbst ist. Ein
+    /// Link, den jemand beschriftet hat, behält seine Beschriftung.
+    func testLinkMarkBecomesCardOnlyWhenTextIsTheURL() throws {
+        let url = "https://x.atlassian.net/browse/EVEN-1"
+        let source = doc("""
+        {"type":"paragraph","content":[
+          {"type":"text","text":"\(url)","marks":[{"type":"link","attrs":{"href":"\(url)"}}]},
+          {"type":"text","text":" und "},
+          {"type":"text","text":"eigener Text","marks":[{"type":"link","attrs":{"href":"\(url)"}}]}
+        ]}
+        """)
+        let links = [url: SmartLinkTarget(label: "EVEN-1: Titel [v2]", chip: "In Arbeit")]
+        XCTAssertEqual(ADFToMarkdown.convert(try adf(source), smartLinks: links).markdown,
+                       #"[EVEN-1: Titel \[v2\]](https://x.atlassian.net/browse/EVEN-1) `In Arbeit` und [eigener Text](https://x.atlassian.net/browse/EVEN-1)"#)
+    }
+
+    /// **INV-1/INV-2** — ohne übergebene Smart-Links rendert der Konverter wie vorher. Das ist die
+    /// Zusicherung, an der `JiraSolutionField` hängt: es liest das Jira-Feld „Lösung" in einen
+    /// Editor, dessen Inhalt über `MarkdownToADF` wieder **nach Jira geschrieben** wird. Käme dort
+    /// eine aufgelöste Karte an, ersetzte der Rückweg die lebende Karte durch eingefrorenen Text
+    /// samt Status von heute.
+    func testConverterWithoutSmartLinksKeepsThePlainCard() throws {
+        let url = "https://x.atlassian.net/browse/EVEN-1"
+        let source = doc(#"{"type":"paragraph","content":[{"type":"inlineCard","attrs":{"url":"\#(url)"}}]}"#)
+        XCTAssertEqual(try markdown(source), "[EVEN-1](\(url))")
+
+        // Auch ein Link-Mark bleibt unangetastet, selbst wenn sein Text die URL ist.
+        let linkDoc = doc("""
+        {"type":"paragraph","content":[
+          {"type":"text","text":"\(url)","marks":[{"type":"link","attrs":{"href":"\(url)"}}]}
+        ]}
+        """)
+        XCTAssertEqual(try markdown(linkDoc), "[\(url)](\(url))")
+    }
+
     func testEmptyDocument() throws {
         XCTAssertEqual(ADFToMarkdown.convert(try adf(#"{"type":"doc"}"#)).markdown, "")
         XCTAssertEqual(try markdown(doc("")), "")

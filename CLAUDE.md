@@ -969,9 +969,13 @@ sie hergibt. Jetzt wird je Beitrag eine Karte gerendert (Autor, Zeitpunkt, Text)
 - **Der Text bleibt Markdown.** Die Karte ist rohes HTML im Markdown, und der Body steht **mit
   Leerzeilen** darin — sonst liest cmark den ganzen Block als HTML und `**fett**` bliebe stehen.
   Betrifft real 13 Kommentare mit Links und 5 mit Listen (von 216).
-- **Keine Einrückung für „Antworten".** Geprüft an allen 78 Dateien dieser Maschine: die Form ist
-  ausnahmslos flach (`{author, created, body}`). Jiras API kennt keine Antwort-Bäume — eine Antwort
-  ist der nächste Kommentar. Eine Verschachtelung würde eine Struktur behaupten, die es nicht gibt.
+- **Antworten stehen eingerückt unter ihrem Bezug.** Das war einmal anders: die damals geprüften
+  78 Dateien dieser Maschine trugen ausnahmslos die flache Form `{author, created, body}`, und ohne
+  Daten wäre eine Verschachtelung eine behauptete Struktur gewesen. Die Daten gibt es inzwischen —
+  Jira führt `parentId` sehr wohl, nur liefert die Feld-Projektion `?fields=comment` es nicht mit;
+  erst die eigene Kommentar-Ressource tut das. `CommentThread.ordered` baut daraus den Baum
+  (Tiefe gedeckelt, eine Antwort ohne auffindbaren Bezug wird zur Wurzel statt zu verschwinden),
+  und der native Export schreibt `id`/`parentId` mit.
 - **Fremdes JSON bleibt roh.** Nur was sich als Kommentar-Liste lesen lässt, wird zur Diskussion
   (`CommentThread.parse` → nil sonst); eine beliebige `.json` zu interpretieren, weil sie so heisst,
   ginge daneben.
@@ -1113,8 +1117,9 @@ Sprung wechselt den Tab mit. ⏎ weiter, ⇧⏎ zurück, esc leert; daneben steh
 
 ## Der Task-Ordner (📎 links in der Tableiste)
 
-Neben dem Task-File liegt ein Ordner je Ticket (`<tasksPath>/<TICKET>/`) mit dem, was `get-task`
-mitgeholt hat: die Bilder der Jira-Beschreibung, `comments.json` samt `avatars/`, dazu Anhänge, die
+Neben dem Task-File liegt ein Ordner je Ticket (`<tasksPath>/<TICKET>/`) mit dem, was der Export
+mitgeholt hat — seit dem nativen Weg (`Tasks/JiraTaskGenerator`) erzeugt ihn Kanban selbst, ohne
+laufenden Hermes-Daemon; die Skill `get-task` bleibt der zweite Einstieg: die Bilder der Jira-Beschreibung, `comments.json` samt `avatars/`, dazu Anhänge, die
 das Task-File nie verlinkt. Der 📎-Knopf **links neben dem Kopier-Knopf** schiebt ihn als Dateibaum
 ein; ein Klick auf eine Datei zeigt die Vorschau rechts daneben — an der Stelle, an der sonst der
 gewählte Task-Tab steht.
@@ -1839,6 +1844,22 @@ laufenden Daemon.
     eigenen Abschnitt (`customFields`), alles flach Darstellbare bleibt in der vollständigen Liste
     „Weitere Felder" (`extraFields`). Ohne diese Trennung stand dasselbe Feld doppelt da.
   - `JiraDuration`: Jiras Rechnung, **1d = 8h**, 1w = 5d; eine blosse Zahl sind Dezimalstunden.
+  - `SmartLinks` löst auf, was eine Karte in Jira/Confluence zeigt: Ticket-Key **plus Summary plus
+    Status**, Seitentitel statt Slug (`/pages/…/NonEHS+ab+2025+Verf+gung+…` hat den Umlaut nicht
+    mehr). Aufgelöst wird **vor** dem Konverter, damit der synchron bleibt; das Ergebnis geht als
+    `smartLinks`-Map in `ADFToMarkdown.convert`. Der Default dieser Option ist `nil`, und das ist
+    die wichtige Hälfte: `JiraSolutionField` liest das Feld „Lösung" in einen Editor, dessen Inhalt
+    über `MarkdownToADF` **zurück nach Jira** geht — käme dort eine gerenderte Karte an, ersetzte
+    der Rückweg die lebende Karte durch eingefrorenen Text samt Status von heute. Confluence läuft
+    über denselben Client wie Jira (gleiche Site, gleicher Host in der Allowlist, kontogebundenes
+    Token); ein Confluence-Modul betreibt Kanban weiterhin nicht. Fail-open an jeder Stelle: ein
+    fremder Host, ein fehlendes Recht, eine gelöschte Seite führen auf das alte Label zurück.
+  - **Profilbilder** laufen über `ModuleHTTPClient.avatars()` — dieselbe Klasse, nur ohne
+    `authHeaders` und mit den Hosts aus `AvatarHosts`. Ein eigener, handgeschriebener Abruf wäre
+    eine zweite Stelle, an der eine Host-Allowlist gepflegt werden müsste. Ohne Zugangsdaten gibt
+    es beim Umleiten auch nichts zu entziehen — und umgeleitet **wird**: Gravatar schickt auf
+    `i1.wp.com` weiter, einen Host ausserhalb der Liste. Deshalb prüft die Allowlist den Einstieg,
+    und begrenzt wird die Kette stattdessen über Länge (5) und Grösse (2 MB).
 - **GitLab**: MR-Liste, Thread-Zähler und Approval bleiben in `GitLabClient` (das braucht das Board),
   der Rest in `Modules/GitLab` — einzelner MR inkl. `diff_refs`, Notes, Threads, Changes, Diffs,
   Aktivität, Projekt-Auflösung und die Schreibwege (Kommentar, Inline-Discussion, Antwort).
@@ -1847,9 +1868,21 @@ laufenden Daemon.
     nicht kommentierbar (GitLab: 400), das scheitert deshalb **vor** dem POST und nennt die
     kommentierbaren Bereiche. Auch dieser Port wurde gegen `position.js` auf einem echten MR-Diff
     verglichen (5 Dateien, 19 Hunks, identisch).
-- **Nicht portiert**, mit Absicht: der Anonymizer (Hermes redigiert, weil Daten an ein LLM gehen —
-  Kanbans Daten bleiben im lokalen UI), `format.js` (MCP-Markdown; das macht bei uns die View) und
-  `index.js` (Tool-Registrierung).
+- **`format.js` und `index.js` sind inzwischen portiert** — die frühere Entscheidung dagegen
+  („MCP-Markdown; das macht bei uns die View") galt, solange Kanban Task-Files nur **las**. Mit dem
+  nativen Export (`Tasks/JiraTaskGenerator` + `JiraTaskMarkdown`) schreibt Kanban sie selbst, und
+  dafür braucht es genau diese beiden Stücke. **Hermes' `format.js` bleibt die Referenz**, Kanban
+  folgt ihr: eine Änderung am Task-File-Format gehört auf **beide** Seiten, genauso wie bei
+  `ADFToMarkdown` (siehe der Zellen-Fix vom 2026-09-01). Gehalten wird die Gleichheit von
+  `JiraTaskMarkdownTests.testMatchesTheJavaScriptFormatter`, dessen Erwartungswert aus Hermes'
+  Formatter selbst stammt — ohne ihn driften die Fassungen unsichtbar, weil jede Seite nur gegen
+  sich selbst prüft und beide dabei grün bleiben.
+- **Nicht portiert**, mit Absicht: der Anonymizer. Die ursprüngliche Begründung („Kanbans Daten
+  bleiben im lokalen UI") **trägt seit dem nativen Export nicht mehr** — ein von Kanban erzeugtes
+  Task-File liest anschliessend eine Claude-Session. Gebaut ist deshalb die **Naht**
+  (`Tasks/TextScrubber`, ein Closure-Struct mit Pass-through-Default) an genau den Stellen, an denen
+  Hermes `rescrub` anwendet; gefüllt wird sie im Folge-Task, der den Anonymizer nach Swift portiert.
+  Bis dahin schreibt der native Weg Klartext — wie Hermes auch, solange dort `anonymize` aus ist.
 - Ein Teil dieser Fläche hat vorerst **nur Tests als Aufrufer** (Kommentare, Worklog-Historie,
   MR-Threads, Diffs, Activity). Das ist so entschieden — die UI-Anbindung kommt pro Feature; es ist
   kein toter Code zum Aufräumen.

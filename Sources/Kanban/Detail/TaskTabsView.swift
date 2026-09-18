@@ -84,6 +84,8 @@ struct TaskTabsView: View {
             // The epic written out, right after the task file / feature branch.
             if let epic = model.selectedEpic { EpicPill(epic: epic) }
             Spacer()
+            // Ganz links in der Knopfgruppe: das Ticket überhaupt erst herunterladen.
+            generateTaskButton
             // Links vom Commit: das Jira-Feld „Lösung". Rot umrandet, wenn das Ticket in Review oder
             // Done steht und das Feld leer ist — dann fehlt genau das, was die Reviewer lesen wollen.
             if model.canEditSolution { solutionButton }
@@ -96,6 +98,51 @@ struct TaskTabsView: View {
             if model.canEditStatus { statusMenu }
         }
         .padding(.horizontal, 14).padding(.vertical, 8)
+    }
+
+    /// Holt das Jira-Ticket als Task-Ordner — Beschreibung, Bilder, Anhänge, Kommentare.
+    ///
+    /// **Sichtbar, sobald ein Ticket gewählt ist — auch wenn er gerade nicht geht.** Die erste
+    /// Fassung versteckte ihn, solange ein Task-File existierte, mit dem Argument, der Export bräche
+    /// dort ohnehin ab. Das war falsch gedacht: auf einem eingerichteten Board hat *jedes* Ticket
+    /// ein Task-File, und damit war der Knopf nirgends zu sehen. Ein abgeblendeter Knopf, der im
+    /// Tooltip sagt warum, ist die ehrlichere Auskunft als gar keiner.
+    ///
+    /// Eine `!<iid>`-Karte bleibt aussen vor: Arbeit **ohne** Ticketnummer hat per Definition kein
+    /// Jira-Issue, das man holen könnte.
+    @ViewBuilder
+    private var generateTaskButton: some View {
+        if let key = model.selectedTicketKey, !key.isEmpty, !key.hasPrefix("!") {
+            let vorhanden = model.taskFile != nil
+            Button {
+                Task { await model.generateTaskFile(for: key) }
+            } label: {
+                Group {
+                    if model.isGeneratingTaskFile {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Image(systemName: "square.and.arrow.down")
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(vorhanden ? Color.secondary.opacity(0.35) : Color.secondary)
+                    }
+                }
+                .frame(width: 20, height: 20)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.borderless)
+            .disabled(vorhanden || model.isGeneratingTaskFile)
+            .help(hilfeZumHolen(key: key, vorhanden: vorhanden))
+        }
+    }
+
+    private func hilfeZumHolen(key: String, vorhanden: Bool) -> String {
+        if model.isGeneratingTaskFile { return "Task-File wird erzeugt …" }
+        if vorhanden {
+            return "Für \(key) existiert bereits ein Task-File — es wird nie überschrieben. "
+                 + "Zum Neu-Holen die Datei erst löschen oder umbenennen."
+        }
+        return "Task-File aus dem Jira-Ticket erzeugen (\(key)) — Beschreibung, Bilder, Anhänge "
+             + "und Kommentare. Der Export ist unanonymisiert."
     }
 
     // MARK: - Suche im Task-File

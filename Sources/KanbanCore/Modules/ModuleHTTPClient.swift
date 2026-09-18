@@ -11,6 +11,14 @@ import Foundation
 /// Modul konfiguriert ist, und das wird **vor** der Anfrage geprüft — nicht erst beim Redirect. Ein
 /// Redirect, der die Hosts verlässt, verliert ihn (`HostGuardDelegate`, z. B. Jira-Attachment → S3).
 /// Mehrere Hosts sind erlaubt, weil ein Jira-Projekt eine eigene `baseUrl` haben darf (`zvmsupport`).
+/// Eine Binärantwort samt dem **Ende** der Umleitungskette. Nur an `finalURL` lässt sich erkennen,
+/// ob Gravatar ein echtes Bild geliefert oder auf Atlassians Initialen-PNG weitergeschickt hat.
+public struct BinaryResponse: Sendable {
+    public let data: Data
+    public let contentType: String?
+    public let finalURL: String?
+}
+
 public struct ModuleHTTPClient: Sendable {
     /// Nur für Fehlermeldungen („jira: …") — nie Teil einer Anfrage.
     public let module: String
@@ -39,10 +47,26 @@ public struct ModuleHTTPClient: Sendable {
         String(decoding: try await getData(url), as: UTF8.self)
     }
 
-    /// Binary payloads (Jira attachments).
-    public func getBinary(_ url: String) async throws -> (data: Data, contentType: String?) {
-        let (data, response) = try await perform(url, method: "GET", body: nil, accept: "*/*")
-        return (data, response.value(forHTTPHeaderField: "Content-Type"))
+    /// Binary payloads (Jira attachments, Profilbilder).
+    ///
+    /// `maxBytes` und `maxRedirects` sind **optional und ohne Wirkung, wenn sie fehlen** — die
+    /// bestehenden Aufrufer (Anhänge, die 40 MB gross sein dürfen) bleiben damit unberührt. Gesetzt
+    /// werden sie nur dort, wo die Gegenstelle ausserhalb der eigenen Instanz liegt.
+    ///
+    /// Zur Reichweite von `maxBytes`: geprüft wird die angekündigte Länge **vor** dem Laden und die
+    /// tatsächliche danach. Ein Server, der eine falsche `Content-Length` meldet und dann endlos
+    /// streamt, wird davon nicht gebremst — dafür bräuchte es einen byteweisen Strom, und der wäre
+    /// bei einer Allowlist aus vier Atlassian-/Gravatar-Hosts mehr Aufwand als Schutz.
+    public func getBinary(_ url: String, maxBytes: Int? = nil,
+                          maxRedirects: Int? = nil) async throws -> BinaryResponse {
+        let (data, response) = try await perform(url, method: "GET", body: nil, accept: "*/*",
+                                                 maxBytes: maxBytes, maxRedirects: maxRedirects)
+        if let maxBytes, data.count > maxBytes {
+            throw APIError.tooLarge(module: module, bytes: data.count, limit: maxBytes)
+        }
+        return BinaryResponse(data: data,
+                              contentType: response.value(forHTTPHeaderField: "Content-Type"),
+                              finalURL: response.url?.absoluteString)
     }
 
     /// Walks a paginated list endpoint (`per_page`/`page`) until a short page arrives — GitLab's
@@ -102,8 +126,9 @@ public struct ModuleHTTPClient: Sendable {
         return url
     }
 
-    private func perform(_ urlString: String, method: String, body: Data?,
-                         accept: String) async throws -> (Data, HTTPURLResponse) {
+    private func perform(_ urlString: String, method: String, body: Data?, accept: String,
+                         maxBytes: Int? = nil,
+                         maxRedirects: Int? = nil) async throws -> (Data, HTTPURLResponse) {
         let url = try guarded(urlString)
 
         var request = URLRequest(url: url)
@@ -113,9 +138,12 @@ public struct ModuleHTTPClient: Sendable {
         for (key, value) in authHeaders { request.setValue(value, forHTTPHeaderField: key) }
         request.httpBody = body
 
-        let delegate = HostGuardDelegate(allowedHosts: allowedHosts)
+        let delegate = HostGuardDelegate(allowedHosts: allowedHosts, maxRedirects: maxRedirects)
         let (data, response) = try await URLSession.shared.data(for: request, delegate: delegate)
         guard let http = response as? HTTPURLResponse else { throw APIError.http(-1) }
+        if let maxBytes, http.expectedContentLength > Int64(maxBytes) {
+            throw APIError.tooLarge(module: module, bytes: Int(http.expectedContentLength), limit: maxBytes)
+        }
         guard (200..<300).contains(http.statusCode) else {
             throw APIError.api(module: module, status: http.statusCode,
                                message: APIErrorBody.message(in: data))
@@ -138,5 +166,14 @@ public extension ModuleHTTPClient {
     static func gitlab(baseUrl: String, apiToken: String) -> ModuleHTTPClient {
         ModuleHTTPClient(module: "gitlab", baseUrls: [baseUrl],
                          authHeaders: ["PRIVATE-TOKEN": apiToken])
+    }
+
+    /// Profilbilder der Kommentar-Autoren. **Ohne Zugangsdaten**, und das ist der Punkt: die Bilder
+    /// liegen auf `atl-paas.net` und `gravatar.com`, nicht auf der Jira-Instanz, und dorthin gehört
+    /// kein Token. Ein eigener, handgeschriebener Abruf wäre die zweite Stelle, an der eine
+    /// Host-Allowlist gepflegt werden müsste — hier ist es dieselbe wie überall, nur mit anderen
+    /// Hosts und leerem Header-Satz. Beim Umleiten gibt es damit auch nichts zu entziehen.
+    static func avatars(hosts: [String] = AvatarHosts.allowed) -> ModuleHTTPClient {
+        ModuleHTTPClient(module: "avatars", baseUrls: hosts.map { "https://\($0)" }, authHeaders: [:])
     }
 }

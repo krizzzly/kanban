@@ -1,7 +1,7 @@
 import Foundation
 
 /// Ein Jira-Kommentar, wie ihn `comments.json` neben dem Task-File führt.
-public struct TaskComment: Sendable, Equatable, Decodable {
+public struct TaskComment: Sendable, Equatable, Codable {
     /// Jiras Kommentar-Id. Optional, weil ältere Exporte sie nicht mitschreiben.
     public let id: String?
     /// Die Id des Kommentars, auf den dieser antwortet — Jiras Antwort-Funktion.
@@ -41,6 +41,19 @@ public struct TaskComment: Sendable, Equatable, Decodable {
         if let text = try? container.decode(String.self, forKey: key) { return text }
         if let number = try? container.decode(Int.self, forKey: key) { return String(number) }
         return nil
+    }
+
+    /// Geschrieben wird dieselbe Form, die oben gelesen wird — damit ist die Datei, die der Export
+    /// erzeugt, per Konstruktion die, die diese Ansicht versteht, und nicht nur zufällig ähnlich.
+    /// Leere Felder fallen weg statt als `null` dazustehen: ein älterer Export hat sie auch nicht.
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encodeIfPresent(id, forKey: .id)
+        try container.encodeIfPresent(parentId, forKey: .parentId)
+        try container.encode(author, forKey: .author)
+        try container.encode(created, forKey: .created)
+        try container.encode(body, forKey: .body)
+        try container.encodeIfPresent(avatar, forKey: .avatar)
     }
 
     private enum CodingKeys: String, CodingKey { case id, parentId, author, created, body, avatar }
