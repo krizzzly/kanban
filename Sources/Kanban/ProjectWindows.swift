@@ -63,10 +63,6 @@ final class ProjectWindows {
     /// Die App beendet sich — ab jetzt wird die gemerkte Liste nicht mehr fortgeschrieben. Sonst
     /// hinge es an der Abbaureihenfolge, ob ⌘Q die offenen Fenster für den nächsten Start behält.
     private var beendetSich = false
-    /// Was wir selbst ins Fenster-Menü gehängt haben — um es beim nächsten Mal wieder zu entfernen.
-    private var eigeneEintraege: [NSMenuItem] = []
-    /// Die Ziele der Einträge. `NSMenuItem.target` hält nicht, also halten wir.
-    private var menueZiele: [MenueZiel] = []
 
     /// Der gemerkte Stand, **bevor** das erste Fenster ihn fortschreibt. Als gespeicherte
     /// Eigenschaft gelesen: sie steht, sobald es die Instanz gibt — und die entsteht beim Start
@@ -153,6 +149,11 @@ final class ProjectWindows {
 
     private func abmelden(_ id: ObjectIdentifier) {
         abmeldenVonBeobachtern(id)
+        // Austragen, bevor der Eintrag weg ist — danach wüsste niemand mehr, welches Fenster gemeint
+        // war. Das anschliessende Nachführen benennt die übrigen um: aus `EVEN (2)` wird `EVEN`.
+        if let window = eintraege.first(where: { $0.id == id })?.window {
+            NSApp.removeWindowsItem(window)
+        }
         eintraege.removeAll { $0.id == id }
         listeSchreiben()
         menueNachfuehren()
@@ -275,32 +276,34 @@ final class ProjectWindows {
 
     /// Die offenen Boards im **Fenster-Menü** von macOS, jedes unter dem Namen seines Projekts.
     ///
-    /// Ohne sie steht dort nichts: macOS listet ein Fenster über seinen Titel, und der ist hier
-    /// leer — mit Absicht (siehe `.navigationTitle("")` in `ContentView`). Seit jedes Projekt sein
-    /// eigenes Fenster hat, ist das eine Lücke: wer vier Boards offen hat, findet das gesuchte nur
-    /// durch Probieren.
+    /// Ohne das steht dort nichts: macOS listet ein Fenster über seinen Titel, und der ist hier leer
+    /// — mit Absicht (siehe `.navigationTitle("")` in `ContentView`). Seit jedes Projekt sein eigenes
+    /// Fenster hat, ist das eine Lücke: wer vier Boards offen hat, findet das gesuchte nur durch
+    /// Probieren.
     ///
-    /// **Über AppKit und nicht über SwiftUIs `.commands`.** `CommandGroup(after: .windowList)` war
-    /// der naheliegende Weg und erzeugte nachweislich **gar keinen** Eintrag: die Menüs werden beim
-    /// Start einmal gebaut, da ist noch kein Fenster angemeldet, und auf die Änderung der
-    /// `@Observable`-Liste hin baut SwiftUI sie nicht neu (gemessen: zehn Sekunden nach dem Start,
-    /// mit zwei angemeldeten Fenstern, war das Menü unverändert leer). Hier dagegen steht die
-    /// Liste, die sich ohnehin bei jedem An- und Abmelden ändert — sie führt die Einträge gleich
-    /// selbst nach.
+    /// **`addWindowsItem` und nicht selbst ins Menü hängen.** Zwei Wege wurden gemessen, und nur
+    /// dieser trägt:
+    ///
+    /// - `NSMenuItem` von Hand in `NSApp.windowsMenu` hängen: steht nach drei Sekunden da und ist
+    ///   nach sechs **weg**. AppKit baut das Fenster-Menü irgendwann selbst neu (aus vier Einträgen
+    ///   werden zwanzig: „Minimize All", „Zoom All", „Fill", die Tab-Befehle) und wirft dabei alles
+    ///   heraus, was nicht aus seiner eigenen Buchführung stammt.
+    /// - `NSApp.addWindowsItem(_:title:filename:)` trägt das Fenster **in genau diese Buchführung**
+    ///   ein. Der Eintrag überlebt den Neuaufbau, weil AppKit ihn danach selbst wieder setzt.
+    ///
+    /// `changeWindowsItem` hinterher, weil `addWindowsItem` ein schon eingetragenes Fenster nicht
+    /// umbenennt — und umbenannt wird oft: ein zweites Fenster desselben Projekts macht aus `EVEN`
+    /// ein `EVEN` und ein `EVEN (2)`, und geht eines davon zu, muss aus dem übrigen wieder `EVEN`
+    /// werden.
+    ///
+    /// **Kein ⌘1…⌘9.** Auch das ist gemessen: ein von Hand gesetztes `keyEquivalent` steht an
+    /// AppKits Eintrag, bis dasselbe Neubauen zuschlägt — danach ist der Eintrag noch da und der
+    /// Kurzbefehl weg. Ein Kurzbefehl, der nach einer Weile verschwindet, ist schlechter als keiner.
     private func menueNachfuehren() {
-        guard let menue = NSApp.windowsMenu else { return }
-        for eintrag in eigeneEintraege where menue.items.contains(eintrag) {
-            menue.removeItem(eintrag)
-        }
-        eigeneEintraege = []
-        menueZiele = []
-
-        // Fenster ohne eigenes `NSWindow` bleiben draussen — ein Eintrag, der nichts nach vorn
-        // holen kann, ist schlimmer als keiner. Die **ohne Projekt** stehen dagegen drin (der
-        // Setup-Schirm, ein Fenster, dessen Projekt aus der Config verschwand): erreichbar sein
-        // müssen sie gerade dann, wenn daneben drei Boards stehen. `WindowTitles` nennt sie
-        // „Kanban", und sie kommen ans Ende — welches Projekt sie einmal zeigen werden, ist noch
-        // nicht entschieden.
+        // Fenster ohne eigenes `NSWindow` bleiben draussen — ein Eintrag, der nichts nach vorn holen
+        // kann, ist schlimmer als keiner. Die **ohne Projekt** stehen dagegen drin (der Setup-Schirm,
+        // ein Fenster, dessen Projekt aus der Config verschwand): erreichbar sein müssen sie gerade
+        // dann, wenn daneben drei Boards stehen. `WindowTitles` nennt sie „Kanban".
         var offene: [(key: String?, window: NSWindow)] = eintraege.compactMap {
             guard let window = $0.window else { return nil }
             return ($0.key, window)
@@ -308,29 +311,9 @@ final class ProjectWindows {
         offene += vorAnmeldung.values.compactMap { schwach in
             schwach.window.map { (nil, $0) }
         }
-        guard !offene.isEmpty else { return }
-        let titel = WindowTitles.titel(fuer: offene.map(\.key))
-
-        let trenner = NSMenuItem.separator()
-        menue.addItem(trenner)
-        eigeneEintraege.append(trenner)
-        for (index, paar) in zip(offene, titel).enumerated() {
-            let (fenster, name) = paar
-            let ziel = MenueZiel { [weak window = fenster.window] in
-                guard let window else { return }
-                window.makeKeyAndOrderFront(nil)
-                NSApp.activate(ignoringOtherApps: true)
-            }
-            // ⌘1…⌘9 in Öffnungsreihenfolge — Kurzbefehle, die die eingebaute Fensterliste von
-            // macOS gar nicht vergibt. Ab dem zehnten Fenster bleibt der Eintrag ohne.
-            let item = NSMenuItem(title: name, action: #selector(MenueZiel.ausloesen),
-                                  keyEquivalent: index < 9 ? "\(index + 1)" : "")
-            item.target = ziel
-            menue.addItem(item)
-            // `NSMenuItem.target` ist **schwach**: ohne diese Liste wäre das Ziel sofort wieder weg
-            // und der Eintrag täte nichts.
-            menueZiele.append(ziel)
-            eigeneEintraege.append(item)
+        for (fenster, name) in zip(offene, WindowTitles.titel(fuer: offene.map(\.key))) {
+            NSApp.addWindowsItem(fenster.window, title: name, filename: false)
+            NSApp.changeWindowsItem(fenster.window, title: name, filename: false)
         }
     }
 
@@ -373,16 +356,6 @@ final class ProjectWindows {
         guard !beendetSich else { return }
         SelectionStore.openProjectKeys = offeneKeys
     }
-}
-
-/// Was ein Eintrag des Fenster-Menüs tut. `NSMenuItem` will ein Ziel mit Selektor; eine Closure
-/// darin zu verpacken ist der kürzeste Weg, der ohne eine zweite Zuordnung „Eintrag → Fenster"
-/// auskommt.
-@MainActor
-private final class MenueZiel: NSObject {
-    private let aktion: () -> Void
-    init(_ aktion: @escaping () -> Void) { self.aktion = aktion; super.init() }
-    @objc func ausloesen() { aktion() }
 }
 
 /// Ein Fenster, das noch keinem Eintrag gehört — ohne es am Leben zu halten.

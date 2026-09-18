@@ -5,8 +5,8 @@ import KanbanCore
 /// Die Skill-Set-Übersicht: welche Sets es gibt, welches Projekt an welchem hängt, und ob die
 /// Verlinkung wirklich steht.
 ///
-/// Die Schriftgrössen sind die der **Einstellungen**, nicht die eines eigenen Fensters: `.callout`
-/// (12 pt) für erklärenden Text, 15 pt für den Set-Namen, 13 pt für die Projekt-Chips. Vorher stand
+/// Die Schriftgrössen sind die der **Einstellungen**, nicht die eines eigenen Fensters: `.body`
+/// (13 pt) für erklärenden Text, 15 pt für den Set-Namen, 13 pt für die Projekt-Chips. Vorher stand
 /// hier durchweg `.caption` — auf macOS **10 pt** —, was in einem Fenster für sich allein noch
 /// durchging, neben den Form-Sektionen der Einstellungen (13 pt) aber winzig wirkt. Pfade bleiben
 /// bei 11 pt: sie sind lang und sollen auf eine Zeile passen.
@@ -336,12 +336,12 @@ struct ClaudeWorkflowSettingsView: View {
             Text("Die Projekte verlinken **direkt** auf diese Ordner — keine Kopie, kein Sync. "
                  + "Eine Änderung an einem SKILL.md wirkt sofort in jedem verlinkten Projekt. "
                  + "Hier steht nur, was womit verbunden ist — hergestellt wird es gleich mit.")
-                .font(.callout).foregroundStyle(.secondary)
+                .font(.body).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             HStack(spacing: 6) {
                 Button { model.zeigeSetsOrdner() } label: {
                     Label(model.abbreviateHome(model.setsRoot), systemImage: "folder")
-                        .font(.callout)
+                        .font(.body)
                 }
                 .buttonStyle(.link)
                 .lineLimit(1).truncationMode(.middle)
@@ -353,7 +353,7 @@ struct ClaudeWorkflowSettingsView: View {
                           + "Symlinks der Projekte werden auf den neuen Ordner umgehängt.")
                 if model.setsRootMissing {
                     Label("gibt es nicht", systemImage: "exclamationmark.triangle")
-                        .font(.callout).foregroundStyle(.orange)
+                        .font(.body).foregroundStyle(.orange)
                 }
             }
         }
@@ -369,7 +369,7 @@ struct ClaudeWorkflowSettingsView: View {
                  ? "Erwartet unter \(model.abbreviateHome(model.setsRoot)) — der Pfad steht in den "
                    + "Einstellungen unter „Allgemein\u{201C} (claude.setsPath)."
                  : "Ein Set ist ein Unterordner mit skills/ oder rules/ und kebab-case-Namen.")
-                .font(.callout).foregroundStyle(.tertiary)
+                .font(.body).foregroundStyle(.tertiary)
                 .multilineTextAlignment(.center)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -394,7 +394,7 @@ struct ClaudeWorkflowSettingsView: View {
                           : "Gilt für jedes Projekt ohne eigene Wahl und in ~/.claude, ~/.codex")
             }
             Text("\(model.assetCount(set, .skill)) Skills · \(model.assetCount(set, .rule)) Rules")
-                .font(.callout).foregroundStyle(.secondary)
+                .font(.body).foregroundStyle(.secondary)
             Spacer(minLength: 0)
             Menu {
                 Button("Im Finder zeigen") { model.zeigeImFinder(set) }
@@ -414,7 +414,7 @@ struct ClaudeWorkflowSettingsView: View {
     @ViewBuilder
     private func setInhalt(_ set: ClaudeAssetSet) -> some View {
         if !set.description.isEmpty {
-            Text(set.description).font(.callout).foregroundStyle(.secondary)
+            Text(set.description).font(.body).foregroundStyle(.secondary)
         }
         Text(model.abbreviateHome(set.url.path))
             .font(.system(size: 11, design: .monospaced)).foregroundStyle(.tertiary)
@@ -453,7 +453,7 @@ struct ClaudeWorkflowSettingsView: View {
             zustand(verlinkung)
             Text(verlinkung.project.key).font(.system(size: 13, design: .monospaced))
             if let hinweis = hinweis(verlinkung) {
-                Text(hinweis).font(.callout).foregroundStyle(.orange)
+                Text(hinweis).font(.body).foregroundStyle(.orange)
                     .fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: 0)
@@ -504,13 +504,13 @@ struct ClaudeWorkflowSettingsView: View {
     private var fuss: some View {
         VStack(alignment: .leading, spacing: 6) {
             if let message = model.message {
-                Text(message).font(.callout).foregroundStyle(.secondary)
+                Text(message).font(.body).foregroundStyle(.secondary)
             }
             HStack(spacing: 10) {
                 Text("Ein Klick auf ein Projekt verlinkt es sofort: Skills nach .claude/skills bzw. "
                      + ".codex/skills, Rules nach .claude/rules — Symlinks auf den Ordner des Sets. "
                      + "Das Standard-Set hängt zusätzlich in ~/.claude und ~/.codex.")
-                    .font(.callout).foregroundStyle(.tertiary)
+                    .font(.body).foregroundStyle(.tertiary)
                     .fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 8)
                 Button("Set anlegen…") { neuesSet = true }
@@ -550,7 +550,7 @@ private struct NeuesSetSheet: View {
                 Text(normalisiert.isEmpty
                      ? "Kleinbuchstaben, Ziffern, Bindestriche — unter diesem Namen wählen ihn die Projekte."
                      : "wird zu `\(normalisiert)`")
-                    .font(.callout).foregroundStyle(.secondary)
+                    .font(.body).foregroundStyle(.secondary)
             }
 
             VStack(alignment: .leading, spacing: 4) {
@@ -573,12 +573,12 @@ private struct NeuesSetSheet: View {
                 }
                 Text("Der Ordner muss `skills/` und/oder `rules/` enthalten. Er bleibt, wo er ist — "
                      + "Kanban verlinkt ihn nur in die Projekte.")
-                    .font(.callout).foregroundStyle(.tertiary)
+                    .font(.body).foregroundStyle(.tertiary)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
             if let fehler {
-                Text(fehler).font(.callout).foregroundStyle(.orange)
+                Text(fehler).font(.body).foregroundStyle(.orange)
                     .fixedSize(horizontal: false, vertical: true)
             }
 

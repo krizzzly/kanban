@@ -777,24 +777,36 @@ bei **894**), alle drei scheitern:
 | `titleVisibility = .hidden` | blendet nur den Text aus, lässt das Element aber auf Breite 0 schrumpfen — **derselbe** Fehler, 207 |
 | Titel setzen, Anzeige unterdrücken | geht nicht gegeneinander: SwiftUI schreibt `title` **und** `titleVisibility` bei jeder Aktualisierung zurück (gemessen: eine Sekunde nach dem eigenen Schreiben stand wieder „Kanban" mitten in der Leiste) |
 
-Also bleibt `.navigationTitle("")` — der leere Titel hält den Zwischenraum, und die Einträge macht
-Kanban selbst: `ProjectWindows.menueNachfuehren` hängt sie bei jedem An- und Abmelden ins
-`NSApp.windowsMenu`, benannt nach `WindowTitles` (Projekt-Key in Grossbuchstaben; ein zweites Fenster
-desselben Projekts bekommt `EVEN (2)`, denn das Projekt-Menü schaltet **im** Fenster um und zwei
-gleiche Einträge wären nicht auseinanderzuhalten). Dazu ⌘1…⌘9 — Kurzbefehle, die die eingebaute
-Fensterliste gar nicht vergibt.
+Also bleibt `.navigationTitle("")` — der leere Titel hält den Zwischenraum —, und den Eintrag meldet
+`ProjectWindows.menueNachfuehren` bei jedem An- und Abmelden über
+**`NSApp.addWindowsItem(_:title:filename:)`** an, benannt nach `WindowTitles` (Projekt-Key in
+Grossbuchstaben; ein zweites Fenster desselben Projekts bekommt `EVEN (2)`, denn das Projekt-Menü
+schaltet **im** Fenster um und zwei gleiche Einträge wären nicht auseinanderzuhalten).
 
-- **Nicht über SwiftUIs `.commands`.** `CommandGroup(after: .windowList)` war der naheliegende Weg
-  und erzeugte nachweislich **keinen einzigen** Eintrag: die Menüs entstehen beim Start, da ist noch
-  kein Fenster angemeldet, und auf die Änderung der `@Observable`-Liste hin baut SwiftUI sie nicht
-  neu (gemessen: zehn Sekunden nach dem Start, mit zwei angemeldeten Fenstern, war das Menü leer).
-- **`NSMenuItem.target` ist schwach** — die Ziele werden deshalb in `ProjectWindows` gehalten, sonst
-  täte der Eintrag nichts.
-- **Fenster ohne Projekt stehen mit drin** („Kanban", am Ende): der Setup-Schirm und ein Fenster,
-  dessen Projekt aus der Config verschwand, müssen gerade dann erreichbar sein, wenn daneben drei
-  Boards stehen.
-- Geht ein Fenster zu, wird neu durchgezählt: aus `EVEN (2)` wird wieder `EVEN` (gemessen, samt
-  nachrückendem ⌘1).
+Der Weg dorthin ging über zwei Sackgassen, beide gemessen:
+
+- **SwiftUIs `.commands`.** `CommandGroup(after: .windowList)` erzeugte **keinen einzigen** Eintrag:
+  die Menüs entstehen beim Start, da ist noch kein Fenster angemeldet, und auf die Änderung der
+  `@Observable`-Liste hin baut SwiftUI sie nicht neu (zehn Sekunden nach dem Start, mit zwei
+  angemeldeten Fenstern, war das Menü unverändert leer).
+- **`NSMenuItem` von Hand in `NSApp.windowsMenu` hängen.** Steht nach drei Sekunden da und ist nach
+  sechs **weg**: AppKit baut das Fenster-Menü irgendwann selbst neu — aus vier Einträgen werden
+  zwanzig („Minimize All", „Zoom All", „Fill", die Tab-Befehle) — und wirft dabei alles heraus, was
+  nicht aus seiner eigenen Buchführung stammt. Genau das war die erste ausgelieferte Fassung, und
+  genau deshalb blieb das Menü leer.
+
+`addWindowsItem` trägt das Fenster **in diese Buchführung** ein, und der Eintrag überlebt den
+Neuaufbau. Weitere Einzelheiten:
+
+- **`changeWindowsItem` hinterher**, weil `addWindowsItem` ein schon eingetragenes Fenster nicht
+  umbenennt — und umbenannt wird oft: geht `EVEN (2)` zu, muss aus dem übrigen wieder `EVEN` werden.
+  Beim Schliessen trägt `removeWindowsItem` aus, **bevor** der Eintrag aus `eintraege` fällt.
+- **Kein ⌘1…⌘9.** Ein von Hand gesetztes `keyEquivalent` steht an AppKits Eintrag, bis dasselbe
+  Neubauen zuschlägt — danach ist der Eintrag noch da und der Kurzbefehl weg (gemessen bei t=9 s).
+  Ein Kurzbefehl, der nach einer Weile verschwindet, ist schlechter als keiner.
+- **Fenster ohne Projekt stehen mit drin** („Kanban"): der Setup-Schirm und ein Fenster, dessen
+  Projekt aus der Config verschwand, müssen gerade dann erreichbar sein, wenn daneben drei Boards
+  stehen.
 
 **Eine lebende Terminal-Ansicht, zwei Fenster.** `TerminalCache` hält je tmux-Session genau eine
 `KanbanTerminalView`, und eine `NSView` hat nur einen Superview. Dasselbe Ticket kann in zwei
@@ -2040,7 +2052,7 @@ Sources/
     ├── App.swift          @main, WindowGroup(for: String.self) — Board-Fenster je Projekt-Key
     ├── ProjectWindows.swift  wer welches Projekt zeigt: Terminal-Klick und Benachrichtigung ins
     │                      richtige Fenster, offene Projekte merken, beim Start wieder aufmachen,
-    │                      die Boards ins Fenster-Menü von macOS hängen (`WindowTitles`, ⌘1…⌘9)
+    │                      die Boards ins Fenster-Menü von macOS melden (`WindowTitles`)
     ├── AppModel.swift     @Observable: config/selection/sprints/issues/MRs/worktrees/columns/refresh
     ├── ContentView.swift  VStack(TopBar, HSplitView(Board, Detail)); nimmt den Projekt-Key der Szene
     ├── TopBar/            project picker + sprint/board picker (nur Sprint-Modus) +

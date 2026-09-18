@@ -69,7 +69,7 @@ struct SettingsSheet: View {
                 Image(systemName: "exclamationmark.triangle")
                     .font(.system(size: 30)).foregroundStyle(.orange)
                 Text(error)
-                    .font(.callout).foregroundStyle(.secondary)
+                    .font(.body).foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
                 Button("Neu laden") { settings.load() }
             }
@@ -90,7 +90,7 @@ struct SettingsSheet: View {
         } else if let section = KanbanConfigSchema.sections.first(where: { $0.id == selection }) {
             Form {
                 if let intro = section.intro {
-                    Text(intro).font(.callout).foregroundStyle(.secondary)
+                    Text(intro).font(.body).foregroundStyle(.secondary)
                 }
                 Section {
                     ForEach(section.fields) { field in
@@ -105,7 +105,7 @@ struct SettingsSheet: View {
                 ForEach(section.groups) { gruppe in
                     Section(gruppe.title) {
                         if let intro = gruppe.intro {
-                            Text(intro).font(.callout).foregroundStyle(.secondary)
+                            Text(intro).font(.body).foregroundStyle(.secondary)
                         }
                         ForEach(gruppe.fields) { field in
                             SchemaFieldView(spec: field, settings: settings)
@@ -151,7 +151,7 @@ struct SettingsSheet: View {
         } icon: {
             Image(systemName: "bolt.circle")
         }
-        .font(.callout)
+        .font(.body)
         .foregroundStyle(settings.dirty ? .orange : .secondary)
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 12)
@@ -163,7 +163,7 @@ struct SettingsSheet: View {
             if let saveError = settings.saveError { errorRow(saveError) }
             if let message = settings.syncMessage {
                 Label(message, systemImage: "checkmark.circle.fill")
-                    .font(.callout).foregroundStyle(.green)
+                    .font(.body).foregroundStyle(.green)
             }
 
             HStack(spacing: 10) {
@@ -189,7 +189,7 @@ struct SettingsSheet: View {
     private func errorRow(_ message: String) -> some View {
         HStack(spacing: 10) {
             Label(message, systemImage: "exclamationmark.triangle.fill")
-                .font(.callout).foregroundStyle(.orange)
+                .font(.body).foregroundStyle(.orange)
             Spacer()
             if settings.conflict {
                 Button("Neu laden") { settings.load() }
