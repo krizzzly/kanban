@@ -383,6 +383,42 @@ Die ⏱-Zeit lässt sich am Tagesende als Jira-Worklog buchen — direkt über d
   Ticket), Sammel-Buchung über den Toolbar-Button „X buchen" → `BookingSheet` (Übersicht mit Zeitraum
   je Ticket + Bestätigung), ✓ am Karten-Badge wenn vollständig gebucht.
 
+## Der Teiler im Detail-Bereich: beim Öffnen die Hälfte (KANBAN-009)
+
+Rechts stehen Task-File-Tabs oben und die Terminal-Zone unten, getrennt von einem `VSplitView`. Beim
+Öffnen bekommt das **Terminal die Hälfte** (`DetailView.terminalAnteil = 0.5`) — dort wird
+gearbeitet, das Task-File wird gelesen. Vorher fiel dem Arbeiten ein knappes Drittel zu und der
+Teiler wurde jedes Mal von Hand nachgezogen.
+
+- **`idealHeight` ist der falsche Hebel** — er tut schlicht nichts. Gegen echtes AppKit gemessen
+  (macOS 15): 220, 380, 600 und gar kein `idealHeight` ergeben dieselbe Position. `VSplitView`
+  verteilt **proportional zu den Mindesthöhen**; 240 oben zu 120 unten sind 2 : 1, also genau das
+  Drittel. (240/240 ergäbe 50 %, 240/480 zwei Drittel — die Regel ist nachgemessen, nicht geraten.)
+- **Die Mindesthöhen anzugleichen wäre der kürzere Weg und der falsche.** Die Hälfte wäre dann ein
+  Nebenprodukt zweier zufällig gleicher Zahlen — wer später die Mindesthöhe des Task-Files anhebt,
+  verschiebt den Teiler, ohne es zu merken. Und eine Mindesthöhe sagt etwas über die *kleinste*
+  erlaubte Grösse, nicht über die Startposition: das Terminal liesse sich nie wieder unter 240 pt
+  ziehen.
+- **Also die Position einmal direkt setzen** (`SplitFractionSetter` in `Detail/DetailSplit.swift`):
+  eine leere Hilfsansicht im unteren Bereich sucht über die Superview-Kette den `NSSplitView`, den
+  SwiftUI darunter führt, und ruft `setPosition`. Bewusst **kein** `autosaveName` — die Position soll
+  das Öffnen gerade *nicht* überleben.
+- **Genau einmal**, nicht bei jeder Aktualisierung: jede Teiler-Verschiebung ändert die Grösse der
+  Terminal-Pane, und das ist ein SIGWINCH — tmux baut Claudes ganze TUI neu auf (derselbe Grund, aus
+  dem die Prompt-Timeline über dem Terminal liegt statt daneben). Danach hat die Hand das letzte
+  Wort.
+- **Der Auslöser ist das Projekt, und er ergibt sich von selbst** — es braucht kein `.id(projektKey)`
+  (das würde nur zusätzlich die Terminal-Ansichten abreissen). Den Split gibt es nur mit gewähltem
+  Ticket; ein Projektwechsel läuft über `clearDetail()`, setzt `selectedTicketKey` auf nil und lässt
+  den Platzhalter stehen, die nächste Karte baut den Split frisch auf. Ein Fenster je Projekt
+  (KANBAN-006) fängt ohnehin frisch an. Ein Wechsel **von Ticket zu Ticket** bleibt dagegen im selben
+  Zweig: der Split lebt weiter, die gezogene Position bleibt, Claudes TUI bleibt stehen.
+- Gemessen mit der ausgelieferten Hilfsansicht: Vorgabefenster (1280 × 748 Inhalt) 374/374, kleinstes
+  Fenster (540 pt hoch, 488 Inhalt) 244/244 — beide über ihren Mindesthöhen. Ein von Hand auf 180 pt
+  gezogener Teiler überlebt zehn Ticketwechsel und den Weg 748 → 1100 → 748 unverändert (der Split
+  hält den **Anteil**, nicht die Pixel). Wäre die Hälfte einmal kleiner als eine Mindesthöhe, klemmt
+  `NSSplitView` selbst.
+
 ## Prompt-Timeline (Bubble-Button rechts in der Terminal-Tableiste)
 
 Slide-in **über** dem Terminal (Overlay, kein Split — ein Split würde die Pane resizen und Claudes
@@ -1938,7 +1974,9 @@ Sources/
     ├── Board/             BoardSidebar / ColumnSection / TicketCard / EpicViews (Stripe + Pill) /
     │                      AvatarView (+ AvatarCache: Jira-Bilder mit Auth) / IssueTypeIcon /
     │                      NewTaskSheet (freier Modus)
-    ├── Detail/            DetailView / TaskTabsView / TerminalTabsView (Maintree|Worktree|Claude…) /
+    ├── Detail/            DetailView (Teiler beim Öffnen auf die Hälfte) + DetailSplit
+    │                      (SplitFractionSetter: setzt den NSSplitView einmal — `idealHeight` wirkt nicht) /
+    │                      TaskTabsView / TerminalTabsView (Maintree|Worktree|Claude…) /
     │                      WorktreeStackView (ein Panel, Ziel via StackTarget) /
     │                      StackSnapshotsView (iwf db snapshot: Liste/Restore/Create) /
     │                      TaskAttachmentsPanel (Task-Ordner: Baum + Quick-Look-Vorschau) /
