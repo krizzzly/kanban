@@ -2128,6 +2128,44 @@ final class AppModel {
     }
 
     /// Neu einlesen auf Knopfdruck (Panel-Kopfzeile) — für Dateien, die *im* Task-Ordner dazukommen.
+    // MARK: - Task-File aus dem Ticket erzeugen
+
+    /// Läuft, während der Export arbeitet — die Aktion braucht eine Weile (Issue, Unteraufgaben,
+    /// Kommentare, jedes Bild ein Download).
+    private(set) var isGeneratingTaskFile = false
+
+    /// Erzeugt den Task-Ordner zum gewählten Ticket nativ, ohne Umweg über Hermes' MCP-Server.
+    ///
+    /// Geschrieben wird `<TICKET>.md`. Die Umbenennung auf `<TICKET>_<english_title>.md` bleibt bei
+    /// `get-task`: sie verlangt einen englischen Kurztitel, und den erzeugt ein Sprachmodell. Was
+    /// die App dagegen nachholen kann und muss, ist der `### Status`-Block — ohne ihn hätte die
+    /// Karte keinen Marker, denn der Generator schreibt bewusst genau Hermes' Bytes.
+    ///
+    /// **Der Export ist unredigiert.** Die Anonymisierung ist noch nicht portiert; bis dahin steht
+    /// im Task-Ordner, was im Ticket steht. Für Hermes gilt mit abgeschalteter Anonymisierung
+    /// dasselbe — der Unterschied entsteht erst, wenn dort jemand einschaltet.
+    func generateTaskFile(for key: String) async {
+        guard let project = selectedProject, let jira, !isGeneratingTaskFile else { return }
+        isGeneratingTaskFile = true
+        defer { isGeneratingTaskFile = false }
+
+        let tasksDirectory = URL(fileURLWithPath: project.tasksPathAbsolute, isDirectory: true)
+        let baseUrl = project.jiraBaseUrl
+        let generator = jira.taskGenerator(baseUrls: [baseUrl])
+
+        do {
+            let output = try await generator.generate(ticketKey: key, baseUrl: baseUrl,
+                                                      tasksDirectory: tasksDirectory)
+            // Der Generator bleibt bei Hermes' Bytes; den Marker setzt der Aufrufer.
+            _ = TaskFileLoader.writeStatus(.offen, url: output.path)
+            errorMessage = nil
+            if selectedTicketKey == key { loadDetail(for: key) }
+            await refresh()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
     func reloadTaskAttachments() {
         guard let key = selectedTicketKey, let project = selectedProject else { return }
         rescanAttachments(for: key, in: project.tasksPathAbsolute)

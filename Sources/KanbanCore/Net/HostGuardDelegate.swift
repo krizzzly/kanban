@@ -5,9 +5,15 @@ import Foundation
 /// Several hosts are allowed because one module can span them (a Jira project with its own `baseUrl`).
 public final class HostGuardDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
     private let allowedHosts: Set<String>
+    /// Obergrenze für die Umleitungskette, oder nil für die Voreinstellung von `URLSession`.
+    /// Gebraucht wird sie dort, wo die Kette die Allowlist bewusst verlässt (Gravatar leitet auf
+    /// `i1.wp.com` weiter): der Host-Guard kann dort nicht mehr begrenzen, die Zähllänge schon.
+    private let maxRedirects: Int?
+    private let count = Counter()
 
-    public init(allowedHosts: Set<String>) {
+    public init(allowedHosts: Set<String>, maxRedirects: Int? = nil) {
         self.allowedHosts = Set(allowedHosts.map { $0.lowercased() })
+        self.maxRedirects = maxRedirects
     }
 
     public convenience init(allowedHost: String) {
@@ -18,6 +24,7 @@ public final class HostGuardDelegate: NSObject, URLSessionTaskDelegate, @uncheck
                            task: URLSessionTask,
                            willPerformHTTPRedirection response: HTTPURLResponse,
                            newRequest request: URLRequest) async -> URLRequest? {
+        if let maxRedirects, count.next() > maxRedirects { return nil }
         guard let host = request.url?.host?.lowercased(), allowedHosts.contains(host) else {
             var stripped = request
             stripped.setValue(nil, forHTTPHeaderField: "Authorization")
@@ -25,6 +32,18 @@ public final class HostGuardDelegate: NSObject, URLSessionTaskDelegate, @uncheck
             return stripped
         }
         return request
+    }
+
+    /// Der Delegate wird von `URLSession` nebenläufig aufgerufen; der Zähler braucht deshalb eine
+    /// eigene Sperre statt einer blossen `var`.
+    private final class Counter: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value = 0
+        func next() -> Int {
+            lock.lock(); defer { lock.unlock() }
+            value += 1
+            return value
+        }
     }
 }
 
@@ -40,6 +59,8 @@ public enum APIError: Error, LocalizedError {
     /// A paginated endpoint kept handing out full pages; better to say so than to return a silently
     /// truncated list.
     case tooManyPages(module: String, pages: Int)
+    /// Die Antwort war grösser als der Aufrufer zugelassen hat.
+    case tooLarge(module: String, bytes: Int, limit: Int)
 
     public var errorDescription: String? {
         switch self {
@@ -52,6 +73,8 @@ public enum APIError: Error, LocalizedError {
             return "\(module): Auth-Header nicht an \(host) gesendet — Host steht nicht in der Config."
         case .tooManyPages(let module, let pages):
             return "\(module): mehr als \(pages) Seiten — Abbruch statt unvollständiger Liste."
+        case .tooLarge(let module, let bytes, let limit):
+            return "\(module): Antwort zu gross (\(bytes) Bytes, erlaubt \(limit))"
         }
     }
 }

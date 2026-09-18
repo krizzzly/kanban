@@ -115,12 +115,59 @@ public struct JiraIssueImage: Sendable, Equatable {
 
 public struct JiraComment: Sendable, Equatable, Identifiable {
     public let id: String
+    /// Die Id des Kommentars, auf den dieser antwortet. Trägt Jiras Antwort-Funktion; ohne sie ist
+    /// der Export eine flache Liste und jeder Leser muss das Gespräch aus „@-Erwähnungen" raten.
+    ///
+    /// Nur die eigene Kommentar-Ressource liefert das Feld — die Feld-Projektion `?fields=comment`
+    /// lässt es weg.
+    public let parentId: String?
     public let author: String
     public let authorAccountId: String?
+    /// Das Profilbild des Autors, noch als **Fernadresse**. Der Export lädt es herunter und ersetzt
+    /// es durch den lokalen Pfad; in der geschriebenen `comments.json` steht dieses Feld nicht mehr.
+    public let avatarUrl: String?
     public let created: String?
     public let updated: String?
     /// ADF, converted to Markdown.
     public let body: String
+
+    public init(id: String, parentId: String? = nil, author: String, authorAccountId: String? = nil,
+                avatarUrl: String? = nil, created: String? = nil, updated: String? = nil, body: String) {
+        self.id = id
+        self.parentId = parentId
+        self.author = author
+        self.authorAccountId = authorAccountId
+        self.avatarUrl = avatarUrl
+        self.created = created
+        self.updated = updated
+        self.body = body
+    }
+}
+
+/// Der Inhalt einer Unteraufgabe für den Export — dasselbe, was Hermes' `fetchSubtaskData` liefert.
+///
+/// `nextImageIndex` ist der Grund, warum das ein eigener Typ ist und kein Tupel: der Bildzähler
+/// läuft über das Haupt-Ticket **und** alle Unteraufgaben durch, sonst zeigen zwei `{{IMG_n}}` aus
+/// verschiedenen Unteraufgaben auf dieselbe Datei.
+public struct JiraSubtaskContent: Sendable, Equatable {
+    public let key: String
+    public let summary: String?
+    public let description: String?
+    public let akzeptanzkriterien: String?
+    public let customFields: [JiraCustomField]
+    public let images: [JiraIssueImage]
+    public let nextImageIndex: Int
+
+    public init(key: String, summary: String?, description: String?, akzeptanzkriterien: String?,
+                customFields: [JiraCustomField], images: [JiraIssueImage], nextImageIndex: Int) {
+        self.key = key
+        self.summary = summary
+        self.description = description
+        self.akzeptanzkriterien = akzeptanzkriterien
+        self.customFields = customFields
+        self.images = images
+        self.nextImageIndex = nextImageIndex
+    }
 }
 
 public struct JiraWorklog: Sendable, Equatable, Identifiable {

@@ -67,15 +67,25 @@ enum JiraFieldExtraction {
         }
     }
 
+    /// Jedes ADF-Dokument unter `fields` — die Grundlage für den Smart-Link-Vorlauf, der **einmal**
+    /// über das ganze Issue läuft statt einmal je Feld.
+    static func adfDocuments(in fields: [String: JSONValue]) -> [JSONValue] {
+        fields.keys.sorted().compactMap { key in
+            guard let value = fields[key], value.value(at: ["type"])?.stringValue == "doc" else { return nil }
+            return value
+        }
+    }
+
     /// Rich values for a custom field's own section: ADF becomes Markdown (and contributes images),
     /// an account reference its display name, an option its label.
     static func render(_ value: JSONValue, imageCounter: inout Int,
-                       images: inout [ADFImage]) -> String? {
+                       images: inout [ADFImage],
+                       smartLinks: [String: SmartLinkTarget]? = nil) -> String? {
         switch value {
         case .null:
             return nil
         case .object(let object) where object["type"]?.stringValue == "doc" && object["content"] != nil:
-            let result = ADFToMarkdown.convert(value, imageCounter: imageCounter)
+            let result = ADFToMarkdown.convert(value, imageCounter: imageCounter, smartLinks: smartLinks)
             images.append(contentsOf: result.images)
             imageCounter += result.images.count
             let text = result.markdown.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -83,7 +93,8 @@ enum JiraFieldExtraction {
         case .array(let items):
             var parts: [String] = []
             for item in items {
-                if let text = render(item, imageCounter: &imageCounter, images: &images) {
+                if let text = render(item, imageCounter: &imageCounter, images: &images,
+                                     smartLinks: smartLinks) {
                     parts.append(text)
                 }
             }
@@ -106,13 +117,15 @@ enum JiraFieldExtraction {
     /// expressed as a flat line (i.e. rich text or an identity) — those get their own section.
     static func customFields(_ fields: [String: JSONValue], names: [String: String],
                              imageCounter: inout Int,
-                             images: inout [ADFImage]) -> [JiraCustomField] {
+                             images: inout [ADFImage],
+                             smartLinks: [String: SmartLinkTarget]? = nil) -> [JiraCustomField] {
         var result: [JiraCustomField] = []
         for key in fields.keys.sorted() {
             guard key.hasPrefix("customfield_"), !knownCustomFieldIDs.contains(key),
                   let value = fields[key], value != .null else { continue }
             guard isIdentityBearing(value) || stringify(value) == nil else { continue }
-            guard let text = render(value, imageCounter: &imageCounter, images: &images) else { continue }
+            guard let text = render(value, imageCounter: &imageCounter, images: &images,
+                                    smartLinks: smartLinks) else { continue }
             result.append(JiraCustomField(id: key, name: names[key] ?? key, value: text))
         }
         return result
