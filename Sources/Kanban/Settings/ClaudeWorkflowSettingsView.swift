@@ -5,11 +5,23 @@ import KanbanCore
 /// Die Skill-Set-Übersicht: welche Sets es gibt, welches Projekt an welchem hängt, und ob die
 /// Verlinkung wirklich steht.
 ///
-/// Die Schriftgrössen sind die der **Einstellungen**, nicht die eines eigenen Fensters: `.body`
-/// (13 pt) für erklärenden Text, 15 pt für den Set-Namen, 13 pt für die Projekt-Chips. Vorher stand
-/// hier durchweg `.caption` — auf macOS **10 pt** —, was in einem Fenster für sich allein noch
-/// durchging, neben den Form-Sektionen der Einstellungen (13 pt) aber winzig wirkt. Pfade bleiben
-/// bei 11 pt: sie sind lang und sollen auf eine Zeile passen.
+/// **Die Schriftgrössen sind die der Einstellungen — 13 pt ist die Obergrenze.**
+///
+/// Nachgemessen, nicht geschätzt: eine Zeile einer `Form(.formStyle(.grouped))` — also das, woraus
+/// jede andere Sektion besteht — rendert wie `.body`, **13 pt** (gemessen 80.00 × 16.00 pt,
+/// zeichengleich mit der Beschriftung eines `Toggle`). Danach richtet sich hier alles:
+///
+/// | Rolle | Grösse |
+/// |---|---|
+/// | Set-Name, Projekt-Chips, Erklärtexte | 13 (`.body`) |
+/// | Pfade | 11 |
+/// | „Standard"-Abzeichen | 10 |
+///
+/// Beide Richtungen waren schon falsch: ursprünglich stand hier durchweg `.caption` (auf macOS
+/// **10 pt**), was in einem eigenen Fenster noch durchging, neben den Form-Sektionen aber winzig
+/// wirkt; der Set-Name stand danach auf 15 pt und war damit grösser als alles andere in den
+/// Einstellungen. Nichts in dieser Ansicht geht über 13 hinaus — wer hier etwas hinzufügt, hat an
+/// dieser Zahl sein Mass.
 ///
 /// Sie zeigt und stellt her — mehr nicht. Bearbeitet werden die Sets in ihrem Ordner
 /// (`claude.setsPath`, per Vorgabe das Kanban-Repo), und **genau dieser Ordner** ist das Ziel der
@@ -378,7 +390,7 @@ struct ClaudeWorkflowSettingsView: View {
 
     private func setKopf(_ set: ClaudeAssetSet) -> some View {
         HStack(spacing: 8) {
-            Text(set.displayName).font(.system(size: 15, weight: .semibold))
+            Text(set.displayName).font(.system(size: 13, weight: .semibold))
             if set.displayName != set.name {
                 Text(set.name).font(.system(size: 12, design: .monospaced))
                     .foregroundStyle(.tertiary)
@@ -545,7 +557,7 @@ private struct NeuesSetSheet: View {
             VStack(alignment: .leading, spacing: 4) {
                 TextField("name-in-kebab-case", text: $name)
                     .textFieldStyle(.roundedBorder)
-                    .font(.system(size: 14, design: .monospaced))
+                    .font(.system(size: 13, design: .monospaced))
                     .onSubmit { if bereit { anlegen() } }
                 Text(normalisiert.isEmpty
                      ? "Kleinbuchstaben, Ziffern, Bindestriche — unter diesem Namen wählen ihn die Projekte."
