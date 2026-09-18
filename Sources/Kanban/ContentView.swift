@@ -2,11 +2,23 @@ import SwiftUI
 import KanbanCore
 
 struct ContentView: View {
+    /// Das Projekt dieses Fensters — der Wert der Szene (`WindowGroup(for: String.self)`).
+    ///
+    /// nil beim Fenster, das der Programmstart bzw. ⌘N aufmacht: dann sagt `ProjectWindows`, welches
+    /// Projekt es zeigt. Bewusst ein Wert und keine Bindung: der Szenenwert wird gelesen, nicht
+    /// zurückgeschrieben — welches Fenster welches Projekt zeigt, führt `ProjectWindows`.
+    let projectKey: String?
+
     @State private var model = AppModel()
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         Group {
-            if let error = model.configError {
+            if let fehlend = model.fehlendesProjekt {
+                ProjectGoneView(key: fehlend,
+                                openSettings: { model.settingsPresented = true },
+                                close: { ProjectWindows.shared.schliessen(model: model) })
+            } else if let error = model.configError {
                 ConfigErrorView(message: error) { model.settingsPresented = true }
             } else if model.needsSetup {
                 SetupView { model.settingsPresented = true }
@@ -30,12 +42,33 @@ struct ContentView: View {
                 .headerChrome(model.selectedProject?.appearance ?? .none)
             }
         }
+        // Leerer Titel, wie beim früheren `Window("", id: "main")`: welches Projekt ein Fenster
+        // zeigt, steht im Projekt-Menü der Kopfzeile — ein Titel darüber wäre eine zweite Antwort
+        // auf dieselbe Frage. Ihn nur aus der Leiste zu nehmen (`toolbar(removing: .title)`) und im
+        // Fenstermenü zu behalten, ging nicht: mit dem Titel-Element fällt auch der Zwischenraum
+        // weg, der die Knöpfe der `primaryAction` nach rechts drückt — sie klebten links.
+        .navigationTitle("")
+        .background(WindowAccessor { ProjectWindows.shared.fensterMerken($0, model: model) })
         .task {
-            model.bootstrap()
-            await model.watchdog.uebernehmen(config: model.config)
+            ProjectWindows.shared.merkeOeffner { openWindow(value: $0) }
+            model.bootstrap(projectKey: projectKey)
+            if let key = model.selectedProject?.key {
+                ProjectWindows.shared.anmelden(model: model, key: key)
+            }
+            // Erst anmelden, dann wiederherstellen: das eigene Projekt steht dann schon in der
+            // Liste der offenen und geht nicht ein zweites Mal auf.
+            ProjectWindows.shared.wiederherstellen(projekte: model.projects)
+            // Prozessweit einer für alle Fenster — der Scan startet `claude -p` und kostet Geld.
+            await WatchdogModel.shared.uebernehmen(config: model.config)
+        }
+        // Das Projekt-Menü schaltet im Fenster um — die Zuordnung zieht mit, sonst liefen
+        // Terminal-Klick und Benachrichtigung ins alte Projekt.
+        .onChange(of: model.selectedProject?.key) { _, key in
+            if let key { ProjectWindows.shared.anmelden(model: model, key: key) }
         }
         .sheet(isPresented: $model.settingsPresented) {
-            SettingsSheet { model.reloadConfig() }
+            // Die Config gehört allen Fenstern, nicht nur dem, in dem gespeichert wurde.
+            SettingsSheet { ProjectWindows.shared.configNeuLaden() }
         }
         // Eigenes Fenster statt Sheet (wie der Commit-Dialog): der Markdown-Editor über
         // Commands/Skills/Rules braucht Fläche, die ein Sheet am Board-Fenster nicht hergibt.
@@ -63,6 +96,40 @@ struct ContentView: View {
             if presented { CommitWindow.shared.show(model: model) }
             else { CommitWindow.shared.close(model: model) }
         }
+    }
+
+}
+
+/// Das Projekt dieses Fensters steht nicht mehr in der Config (in den Einstellungen entfernt,
+/// während das Fenster offen war). Bewusst kein stiller Wechsel auf irgendein anderes Projekt: das
+/// Fenster gehörte diesem einen, und ein Board, das plötzlich etwas anderes zeigt, wäre die
+/// unangenehmere Überraschung.
+struct ProjectGoneView: View {
+    let key: String
+    let openSettings: () -> Void
+    let close: () -> Void
+
+    var body: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "questionmark.square.dashed")
+                .font(.system(size: 38))
+                .foregroundStyle(.secondary)
+            Text("Projekt „\(key.uppercased())“ gibt es nicht mehr")
+                .font(.headline)
+            Text("Es steht nicht mehr in der Config. Dieses Fenster zeigte es — deshalb bleibt es "
+                 + "leer, statt ungefragt ein anderes Projekt anzuzeigen.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 460)
+            HStack(spacing: 10) {
+                Button("Einstellungen öffnen…", action: openSettings)
+                Button("Fenster schliessen", action: close)
+            }
+            .padding(.top, 6)
+        }
+        .padding(40)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 
