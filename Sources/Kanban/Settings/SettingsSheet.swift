@@ -151,7 +151,7 @@ struct SettingsSheet: View {
         } icon: {
             Image(systemName: "bolt.circle")
         }
-        .font(.caption)
+        .font(.callout)
         .foregroundStyle(settings.dirty ? .orange : .secondary)
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 12)
