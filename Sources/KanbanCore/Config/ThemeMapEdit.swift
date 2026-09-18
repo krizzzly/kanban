@@ -99,7 +99,18 @@ public enum ThemeMapEdit {
 /// abgeleitete Wert an derselben Stelle (`#f0f0f0` statt `#f1f1f4`) — und das Feld steht weiterhin
 /// in den Einstellungen.
 public enum GeerbteFlaechenfarbe {
-    static let alteVorgaben = ["#f1f1f4", "#22262d"]
+    public static let alteVorgaben = ["#f1f1f4", "#22262d"]
+
+    /// Gilt dieser Eintrag als geerbt — und damit als „nicht gesetzt"?
+    ///
+    /// Gebraucht **schon beim Lesen** der Config, nicht erst beim Aufräumen in den Einstellungen:
+    /// sonst müsste man erst die Einstellungen öffnen und speichern, damit die Fläche dem Blatt
+    /// folgt. Das ist ein Schritt, von dem niemand weiss, der nur eine andere Hintergrundfarbe
+    /// gewählt hat.
+    public static func istGeerbt(_ hex: String?) -> Bool {
+        guard let hex else { return false }
+        return alteVorgaben.contains(hex.trimmingCharacters(in: .whitespaces).lowercased())
+    }
 
     @discardableResult
     public static func entferne(_ root: inout JSONValue) -> Int {

@@ -1236,9 +1236,13 @@ Feld hat.
 - **`color-scheme` folgt der Helligkeit des Hintergrunds**, sonst blieben die Scrollbalken weiss.
   `underPageBackgroundColor` der WebView wird mitgefärbt — sonst blitzt beim Laden die alte Fläche
   auf, und beim Überziehen am Rand käme sie wieder hervor.
-- **Die Flächen folgen dem Blatt.** Code-Hintergrund, Tabellenkopf, Zebrastreifen und Frontmatter
-  (`--bg2`) sind keine feste Farbe mehr, sondern der Hintergrund um `markdown.shade` Prozent
-  abgesetzt (Vorgabe 6). Wer das Blatt cremefarben stellt, bekommt cremefarbene Flächen statt
+- **Zwei Flächen, nicht eine.** `--flaeche` sind Tabellenkopf, Zebrastreifen und Kommentarkarten
+  (Stärke `markdown.shade`), `--code-bg` ist der Code-Block samt Frontmatter
+  (`markdown.codeBackground`, sonst abgeleitet mit der eingebauten Vorgabestärke). Vorher war beides
+  **eine** Variable `--bg2`: ein Griff an die Abdunklung färbte die Codeblöcke mit, ein Griff an die
+  Code-Farbe die Tabellen — zwei Regler für dasselbe, und keiner tat, was auf ihm stand.
+- **Die Flächen folgen dem Blatt**: sie sind keine feste Farbe mehr, sondern der Hintergrund um
+  `markdown.shade` Prozent abgesetzt (Vorgabe 6). Wer das Blatt cremefarben stellt, bekommt cremefarbene Flächen statt
   kaltgrauer. Auf einem dunklen Blatt geht es um denselben Anteil nach oben — `#16181c` um 6 %
   abzudunkeln wäre ein Zahlenschritt, den kein Schirm zeigt; die Richtung leitet sich wie
   `color-scheme` aus der Helligkeit ab. `codeBackground` bleibt als feste Übersteuerung, ist aber

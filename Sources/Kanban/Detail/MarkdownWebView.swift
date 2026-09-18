@@ -287,9 +287,12 @@ enum HTMLTemplate {
           --bg: \(MarkdownTheme.hex(theme.background));
           --text: \(MarkdownTheme.hex(theme.text));
           --secondary-text: \(MarkdownTheme.hex(theme.secondaryText));
-          /* Code, Tabellenköpfe, Zebrastreifen, Frontmatter: aus dem Blatt abgeleitet
-             (`markdown.shade`), sofern keine feste Farbe gesetzt ist. */
-          --bg2: \(MarkdownTheme.hex(theme.flaeche));
+          /* Zwei Flächen, bewusst getrennt: `--flaeche` sind Tabellenkopf, Zebrastreifen und
+             Kommentarkarten (Stärke: `markdown.shade`), `--code-bg` ist der Code-Block mit seiner
+             eigenen Farbe (`markdown.codeBackground`). Vorher war beides **eine** Variable — ein
+             Griff an den einen Wert färbte immer auch das andere. */
+          --flaeche: \(MarkdownTheme.hex(theme.flaeche));
+          --code-bg: \(MarkdownTheme.hex(theme.codeFlaeche));
           --link: \(MarkdownTheme.hex(theme.link));
           --border: \(MarkdownTheme.hex(theme.border));
           --divider: \(MarkdownTheme.hex(theme.divider));
@@ -332,10 +335,10 @@ enum HTMLTemplate {
         a:hover { text-decoration: underline; }
         code {
           font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 0.85em;
-          background: var(--bg2); padding: 0.2em 0.4em; border-radius: 6px;
+          background: var(--code-bg); padding: 0.2em 0.4em; border-radius: 6px;
         }
         pre {
-          background: var(--bg2); padding: 12px; border-radius: 8px; overflow-x: auto;
+          background: var(--code-bg); padding: 12px; border-radius: 8px; overflow-x: auto;
         }
         pre code { background: none; padding: 0; }
         blockquote {
@@ -344,8 +347,8 @@ enum HTMLTemplate {
         }
         table { border-collapse: collapse; margin: 8px 0; }
         th, td { border: 1px solid var(--border); padding: 6px 13px; text-align: left; }
-        th { background: var(--bg2); font-weight: 600; }
-        tr:nth-child(2n) { background: var(--bg2); }
+        th { background: var(--flaeche); font-weight: 600; }
+        tr:nth-child(2n) { background: var(--flaeche); }
         img { max-width: 100%; height: auto; border-radius: 6px; }
         hr { border: none; border-top: 1px solid var(--divider); margin: 12px 0; }
         sup, sub { font-size: 0.75em; }
@@ -366,7 +369,7 @@ enum HTMLTemplate {
            Einrückung — Jira kennt keine Antwort-Bäume, jede „Antwort" ist der nächste Kommentar. */
         .comment {
           border: 1px solid var(--border); border-radius: 8px;
-          padding: 8px 12px; margin: 8px 0; background: var(--bg2);
+          padding: 8px 12px; margin: 8px 0; background: var(--flaeche);
         }
         /* Antworten stehen eingerückt unter ihrem Bezug — wie in Jira. */
         .comment.reply { margin-left: 28px; }

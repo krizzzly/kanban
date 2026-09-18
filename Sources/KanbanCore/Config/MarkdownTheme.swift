@@ -114,14 +114,14 @@ public struct MarkdownTheme: Sendable, Hashable {
     public let text: TerminalRGB
     /// Zitate, Fussnoten, Hilfszeilen.
     public let secondaryText: TerminalRGB
-    /// Hintergrund von `code`, ```-Blöcken, Tabellenköpfen und Zebrastreifen — hierhin gehört auch
-    /// das Frontmatter, das als Codeblock gerendert wird (siehe `Frontmatter`).
+    /// Hintergrund von `code` und ```-Blöcken — und **nur** davon. Das Frontmatter gehört dazu, es
+    /// wird als Codeblock gerendert (siehe `Frontmatter`).
     ///
-    /// **nil heisst „aus dem Blatt abgeleitet"** (siehe `shade` und `flaeche`). Eine feste Farbe
-    /// hier hiess bisher: wer den Hintergrund ändert, behält graue Codeblöcke auf blauem Blatt.
-    /// Gesetzt gewinnt sie weiterhin — wer eine exakte Farbe will, bekommt sie.
+    /// nil heisst „aus dem Blatt abgeleitet" (mit `shadeVorgabe`, nicht mit `shade`): sonst zöge
+    /// die Abdunklung der Tabellen den Code mit, und man hätte wieder einen Regler für zweierlei.
     public let codeBackground: TerminalRGB?
-    /// Wie stark sich diese Flächen vom Blatt absetzen, in Prozent (0–100). Vorgabe 6.
+    /// Wie stark sich **Tabellenkopf, Zebrastreifen und Kommentarkarten** vom Blatt absetzen, in
+    /// Prozent (0–100). Vorgabe 6. Der Code bleibt davon unberührt, der hat seine eigene Farbe.
     public let link: TerminalRGB
     public let border: TerminalRGB
     /// Fliesstext und die sechs Überschriftenebenen (siehe `MarkdownFontSizes`).
@@ -181,10 +181,18 @@ public struct MarkdownTheme: Sendable, Hashable {
         return "\"\(sauber)\", \(fallback)"
     }
 
-    /// Die tatsächlich gezeichnete Fläche: die gesetzte Farbe, sonst das um `shade` Prozent
-    /// abgesetzte Blatt.
-    public var flaeche: TerminalRGB {
-        codeBackground ?? Self.abgesetzt(background, prozent: shade)
+    /// Die Fläche der **Tabellen** (Kopf, Zebrastreifen) und der Kommentarkarten: das um `shade`
+    /// Prozent abgesetzte Blatt.
+    public var flaeche: TerminalRGB { Self.abgesetzt(background, prozent: shade) }
+
+    /// Die Fläche der **Code-Blöcke**: die gesetzte Farbe, sonst das Blatt um den eingebauten
+    /// Vorgabewert abgesetzt.
+    ///
+    /// Getrennt von `flaeche`, weil beides vorher **eine** Variable war: ein Griff an die
+    /// Abdunklung färbte die Codeblöcke mit, ein Griff an die Code-Farbe die Tabellen. Jeder Regler
+    /// bewegt jetzt genau das, was auf ihm steht.
+    public var codeFlaeche: TerminalRGB {
+        codeBackground ?? Self.abgesetzt(background, prozent: Self.shadeVorgabe)
     }
 
     /// Den Hintergrund um `prozent` **relativ** abdunkeln — die Fläche folgt damit dem Blatt,
