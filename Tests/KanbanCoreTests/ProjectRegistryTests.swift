@@ -203,6 +203,27 @@ final class ProjectRegistryTests: XCTestCase {
         XCTAssertEqual(entry(projected, "jira", "zvmsupport")?["prefix"], .string("ZVMSUPPORT"))
     }
 
+    /// `skillSet` gehört der Registry — es wird gelesen, geschrieben und beim Leeren entfernt.
+    /// Ohne Eintrag steht der Schlüssel gar nicht erst da: das Standard-Set ist die Vorgabe, und
+    /// ein Feld, das nur den Normalfall wiederholt, stünde in jedem Projekt herum.
+    func testSkillSetRoundTrip() throws {
+        var config = try realShapedConfig()
+        config.set(.string("swift"), at: ["modules", "jira", "projects", "reactbp", "skillSet"])
+
+        var registry = ProjectProjection.importing(from: config)
+        XCTAssertEqual(registry["reactbp"]?.skillSet, "swift")
+        XCTAssertNil(registry["even"]?.skillSet)
+
+        var projected = ProjectProjection.apply(registry, to: config)
+        XCTAssertEqual(entry(projected, "jira", "reactbp")?["skillSet"], .string("swift"))
+        XCTAssertNil(entry(projected, "jira", "even")?["skillSet"])
+
+        registry["reactbp"]?.skillSet = nil
+        projected = ProjectProjection.apply(registry, to: projected)
+        XCTAssertNil(entry(projected, "jira", "reactbp")?["skillSet"])
+        XCTAssertEqual(entry(projected, "jira", "reactbp")?["prefix"], .string("REACTBP"))
+    }
+
     /// Ohne Jira-Section in der Config darf die Projektion keine leeren Modul-Objekte erzeugen.
     func testNoEmptySectionsForUnconfiguredModules() throws {
         let config = JSONValue.object([:])

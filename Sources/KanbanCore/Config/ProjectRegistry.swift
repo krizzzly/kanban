@@ -28,6 +28,9 @@ public struct ProjectRecord: Codable, Sendable, Equatable {
     /// bleibt auch ohne Jira gesetzt. Ein Projekt ohne Präfix wäre eins, das Kanban gar nicht als
     /// Ticketquelle führt — das hier ist eins, dessen Tickets nur nirgends in Jira stehen.
     public var usesJira: Bool?
+    /// Welches Skill-Set das Projekt sieht. Nil = Standard-Set — genau wie ein fehlendes `agent`
+    /// den Default-Agent meint.
+    public var skillSet: String?
 
     public var gitlab: GitlabInfo?
     public var confluence: ConfluenceInfo?
@@ -82,6 +85,7 @@ public struct ProjectRecord: Codable, Sendable, Equatable {
                 tasksPath: String? = nil,
                 repoDir: String? = nil,
                 jiraBaseUrl: String? = nil,
+                skillSet: String? = nil,
                 gitlab: GitlabInfo? = nil,
                 confluence: ConfluenceInfo? = nil,
                 vertec: VertecInfo? = nil,
@@ -91,6 +95,7 @@ public struct ProjectRecord: Codable, Sendable, Equatable {
         self.tasksPath = tasksPath
         self.repoDir = repoDir
         self.jiraBaseUrl = jiraBaseUrl
+        self.skillSet = skillSet
         self.gitlab = gitlab
         self.confluence = confluence
         self.vertec = vertec
@@ -102,7 +107,7 @@ public struct ProjectRecord: Codable, Sendable, Equatable {
     /// überspringt solche Einträge.
     public var isEmpty: Bool {
         prefix == nil && tasksPath == nil && repoDir == nil && jiraBaseUrl == nil
-            && gitlab == nil && confluence == nil && vertec == nil
+            && skillSet == nil && gitlab == nil && confluence == nil && vertec == nil
             && jenkins == nil && dockerhub == nil
     }
 

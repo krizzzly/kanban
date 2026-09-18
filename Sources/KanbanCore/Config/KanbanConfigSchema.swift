@@ -8,14 +8,22 @@ import Foundation
 /// sie von Hermes' `generate-confluence-page`, und genau dieser Eintrag sagt ihm, wohin.
 /// Wer weitere Hermes-Module pflegen will, tut das in Hermes.
 public enum KanbanConfigSchema {
-    public static let sections: [ConfigSectionSpec] = [general, jira, gitlab, confluence,
-                                                       knowledgebase, appearance, watchdog, hermes]
+    /// Berechnet statt konstant: die Auswahlliste der Skill-Sets steht nicht im Code, sondern im
+    /// Bestand (`~/Library/Application Support/Kanban/claude/sets/`). Sie wird bei jedem Öffnen der
+    /// Einstellungen neu gelesen — ein Set, das im Repo dazukommt, taucht damit ohne Codeänderung
+    /// im Auswahlfeld auf.
+    public static var sections: [ConfigSectionSpec] {
+        [general, jira, gitlab, confluence, knowledgebase, appearance, watchdog, hermes]
+    }
+
+    /// Die Namen der vorhandenen Sets — leer, solange noch keins synchronisiert ist.
+    static var skillSetNames: [String] { ClaudeAssetStore().sets().map(\.name) }
 
     /// Nur sinnvoll, solange eine `~/.hermes/config.json` existiert — die Einstellungen blenden die
     /// Sektion sonst aus (`HermesSync.isAvailable`).
     public static let hermesSectionID = "hermes"
 
-    static let general = ConfigSectionSpec(
+    static var general: ConfigSectionSpec { ConfigSectionSpec(
         id: "general", title: "Allgemein", icon: "gearshape",
         fields: [
             ConfigFieldSpec(["basePath"], "Basis-Pfad", kind: .path, placeholder: "~/code",
@@ -29,9 +37,18 @@ public enum KanbanConfigSchema {
                                 + "auf; wo nicht, stünde sie sonst in jedem Commit. Der Haken setzt "
                                 + "sie im Commit-Fenster nur **vorab** ab — abwählen lässt sich "
                                 + "dort jede Datei, und dazuwählen auch diese."),
-        ])
+            // Steht hier und nicht bei Jira: das Set gilt für die ganze App, auch für eine
+            // Console ausserhalb eines Projekts (dorthin wird es in die Agent-Homes verlinkt).
+            ConfigFieldSpec(["claude", "defaultSkillSet"], "Standard-Skill-Set",
+                            kind: .choice(skillSetNames),
+                            help: "Das Skill-Set für jedes Projekt, das keins eigenes wählt — und "
+                                + "für Sitzungen ausserhalb eines Projekts (~/.claude/skills, "
+                                + "~/.codex/skills). Leer = das einzige vorhandene Set. Gepflegt "
+                                + "werden die Sets im Kanban-Repo unter "
+                                + "Sources/Kanban/Resources/ClaudeAssets/sets/, nicht hier."),
+        ]) }
 
-    static let jira = ConfigSectionSpec(
+    static var jira: ConfigSectionSpec { ConfigSectionSpec(
         id: "jira", title: "Jira", icon: "checklist",
         intro: "Pflichtteil: ohne Jira-Zugang und mindestens ein Projekt zeigt das Board nichts an.",
         fields: [
@@ -74,7 +91,15 @@ public enum KanbanConfigSchema {
                                  help: "Wer die Console dieses Projekts bedient. Claude tippt "
                                      + "/command, Codex $skill — die Workflow-Assets sind für beide "
                                      + "dieselben. Leer = Claude."),
-            ]))
+                ProjectFieldSpec("skillSet", "Skill-Set",
+                                 kind: .choice(skillSetNames),
+                                 required: false,
+                                 help: "Welchen Satz Skills und Rules dieses Projekt sieht. Kanban "
+                                     + "verlinkt ihn beim Projektwechsel nach <repo>/.claude/ "
+                                     + "(bzw. .codex/ für die Skills eines Codex-Projekts). "
+                                     + "Leer = das Standard-Set aus den allgemeinen "
+                                     + "Einstellungen."),
+            ])) }
 
     static let gitlab = ConfigSectionSpec(
         id: "gitlab", title: "GitLab", icon: "arrow.triangle.branch",

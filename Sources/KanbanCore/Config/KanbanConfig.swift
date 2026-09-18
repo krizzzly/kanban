@@ -20,6 +20,10 @@ public struct ProjectConfig: Identifiable, Sendable, Hashable {
     /// Welcher Coding-Agent dieses Projekt bedient (`agent` in der Config, Default Claude).
     /// Entscheidet über Startbefehl, Asset-Ort und das Präfix, mit dem Kanban Commands tippt.
     public let agent: AgentKind
+    /// Welches Skill-Set dieses Projekt sieht (`skillSet` in der Config) — **nil = Standard-Set**.
+    /// Aufgelöst wird der Name erst gegen den Bestand (`ClaudeAssetStore.resolve`): ein Set, das es
+    /// nicht mehr gibt, darf ein Projekt nicht ohne Skills dastehen lassen.
+    public let skillSet: String?
     /// Bild und Farben der Kopfzeile. Im Regelfall `.none` — dann sieht die Zeile aus wie immer.
     public let appearance: ProjectAppearance
     /// Hängt dieses Projekt an Jira? `false` heisst: es gibt kein Board und keine Sprints, die
@@ -36,6 +40,7 @@ public struct ProjectConfig: Identifiable, Sendable, Hashable {
                 docsPathAbsolute: String = "", kbPathAbsolute: String? = nil,
                 repoDir: String, gitlabProjectPath: String?,
                 agent: AgentKind = .claude,
+                skillSet: String? = nil,
                 appearance: ProjectAppearance = .none,
                 usesJira: Bool = true) {
         self.key = key
@@ -47,6 +52,7 @@ public struct ProjectConfig: Identifiable, Sendable, Hashable {
         self.repoDir = repoDir
         self.gitlabProjectPath = gitlabProjectPath
         self.agent = agent
+        self.skillSet = skillSet
         self.appearance = appearance
         self.usesJira = usesJira
     }
@@ -68,6 +74,11 @@ public struct AppConfig: Sendable {
     /// Der Session-Watchdog (`watchdog.*`) — aus, solange niemand ihn einschaltet.
     public let watchdog: WatchdogSettings
 
+    /// Das Skill-Set für alles, was keins gewählt hat (`claude.defaultSkillSet`). Fehlt der
+    /// Eintrag, gilt das einzige vorhandene Set — bei mehreren entscheidet der Bestand
+    /// (`ClaudeAssetStore.defaultSet`), und die Übersicht sagt, dass hier nichts bestimmt ist.
+    public let defaultSkillSet: String?
+
     /// `.claude/project.json` im Commit-Fenster vorab abwählen (`commit.excludeClaudeProjectFile`).
     /// Vorgabe **an**: die Datei erzeugt Kanban selbst, und wo `.claude/` nicht gitignored ist
     /// (hier: `core`) stünde sie sonst in jedem Commit.
@@ -82,6 +93,7 @@ public struct AppConfig: Sendable {
                                         jiraEmail: "", jiraApiToken: "", jiraDefaultBaseUrl: "",
                                         gitlabBaseUrl: nil, gitlabApiToken: nil, projects: [],
                                         watchdog: WatchdogSettings(),
+                                        defaultSkillSet: nil,
                                         excludeClaudeProjectFileFromCommit: true)
 
     public var hasJira: Bool {
@@ -188,6 +200,9 @@ public enum KanbanConfig {
                 repoDir: repoDir,
                 gitlabProjectPath: gitlab?.projects?[key]?.path,
                 agent: AgentKind(configValue: p.agent) ?? .fallback,
+                // Wie `agent` tolerant gelesen: der Name wird erst gegen den Bestand aufgelöst,
+                // ein Tippfehler macht ein Projekt also nicht unbenutzbar.
+                skillSet: trimmedOrNil(p.skillSet),
                 // Fehlt der Abschnitt ganz (der Normalfall), kommt `.none` heraus — kein Bild,
                 // keine Farben, Kopfzeile wie immer.
                 appearance: appearanceFor(key, appearance),
@@ -206,6 +221,7 @@ public enum KanbanConfig {
             gitlabApiToken: gitlab?.apiToken,
             projects: projects,
             watchdog: watchdogSettings(raw.watchdog),
+            defaultSkillSet: trimmedOrNil(raw.claude?.defaultSkillSet),
             excludeClaudeProjectFileFromCommit: raw.commit?.excludeClaudeProjectFile ?? true
         )
     }
@@ -246,6 +262,13 @@ public enum KanbanConfig {
             timeoutSekunden: zahl(raw.timeoutSeconds, vorgabe.timeoutSekunden, min: 60, max: 3600))
     }
 
+    /// Ein leerer Eintrag ist keiner: in der Config steht ein Feld oft nur deshalb da, weil der
+    /// Einstellungs-Editor es einmal angelegt hat.
+    private static func trimmedOrNil(_ text: String?) -> String? {
+        let wert = text?.trimmingCharacters(in: .whitespaces) ?? ""
+        return wert.isEmpty ? nil : wert
+    }
+
     private static func expand(_ path: String) -> String {
         (path as NSString).expandingTildeInPath
     }
@@ -266,6 +289,8 @@ public enum KanbanConfig {
 private struct RawConfig: Decodable {
     let basePath: String?
     let commit: RawCommit?
+    /// Kanban-eigener Abschnitt wie `commit` und `watchdog` — bisher nur das Standard-Skill-Set.
+    let claude: RawClaude?
     let modules: RawModules?
     /// Wie `commit` ein Kanban-eigener Abschnitt, kein Hermes-Modul — steht deshalb nicht in
     /// `ProjectProjection.moduleNames` und wandert nie in Hermes' Config.
@@ -305,6 +330,11 @@ private struct RawCommit: Decodable {
     let excludeClaudeProjectFile: Bool?
 }
 
+/// `claude` — ebenfalls Kanban-eigen: welches Skill-Set gilt, wo keins gewählt ist.
+private struct RawClaude: Decodable {
+    let defaultSkillSet: String?
+}
+
 private struct RawModules: Decodable {
     let jira: RawJira?
     let gitlab: RawGitlab?
@@ -329,6 +359,7 @@ private struct RawJiraProject: Decodable {
     let baseUrl: String?
     let repoDir: String?   // optionaler Override — sonst erstes Segment von tasksPath
     let agent: String?     // "claude" (Default) oder "codex"
+    let skillSet: String?  // Name eines Sets im Bestand; leer/fehlend = Standard-Set
     /// `false` = Projekt ohne Jira-Anbindung. Fehlt der Schlüssel, gilt `true` — jedes bestehende
     /// Projekt bleibt damit unverändert ein Jira-Projekt.
     let useJira: Bool?

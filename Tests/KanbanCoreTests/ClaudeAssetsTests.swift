@@ -2,195 +2,317 @@ import XCTest
 @testable import KanbanCore
 
 final class ClaudeAssetsTests: XCTestCase {
-    private var root: URL!         // kanonischer Bestand
+    private var root: URL!         // Bestand
     private var factory: URL!      // Auslieferungsstand (Bundle-Ersatz)
     private var userDir: URL!      // ~/.claude-Ersatz
     private var codexDir: URL!     // ~/.codex-Ersatz
+    private var repo: URL!         // Projekt-Repo
 
     override func setUpWithError() throws {
         let base = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("ClaudeAssetsTests-\(UUID().uuidString)")
-        root = base.appendingPathComponent("canonical")
-        factory = base.appendingPathComponent("factory")
+        root = base.appendingPathComponent("bestand")
+        factory = base.appendingPathComponent("werk")
         userDir = base.appendingPathComponent("dotclaude")
         codexDir = base.appendingPathComponent("dotcodex")
-        for kind in ["commands", "rules"] {
-            try FileManager.default.createDirectory(
-                at: factory.appendingPathComponent(kind), withIntermediateDirectories: true)
-        }
-        try FileManager.default.createDirectory(
-            at: factory.appendingPathComponent("skills/impact-analysis"), withIntermediateDirectories: true)
-        try "get".write(to: factory.appendingPathComponent("commands/get-task.md"),
-                        atomically: true, encoding: .utf8)
-        try "db".write(to: factory.appendingPathComponent("rules/db-access.md"),
-                       atomically: true, encoding: .utf8)
-        try "skill".write(to: factory.appendingPathComponent("skills/impact-analysis/SKILL.md"),
-                          atomically: true, encoding: .utf8)
+        repo = base.appendingPathComponent("repo")
+        try FileManager.default.createDirectory(at: repo, withIntermediateDirectories: true)
+
+        try werkSet("iwf", skills: ["get-task", "solve-task"], rules: ["worktree"],
+                    beschreibung: "Der volle iwf-Satz.")
+        try werkSet("swift", skills: ["get-task"], rules: [])
     }
 
     override func tearDownWithError() throws {
         try? FileManager.default.removeItem(at: root.deletingLastPathComponent())
     }
 
+    /// Ein Set im Auslieferungsstand anlegen — so sieht es auch im Repo aus.
+    private func werkSet(_ name: String, skills: [String], rules: [String],
+                         beschreibung: String? = nil) throws {
+        let set = factory.appendingPathComponent("sets/\(name)", isDirectory: true)
+        for skill in skills {
+            let dir = set.appendingPathComponent("skills/\(skill)", isDirectory: true)
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            try "\(name)/\(skill)".write(to: dir.appendingPathComponent("SKILL.md"),
+                                         atomically: true, encoding: .utf8)
+        }
+        for rule in rules {
+            let dir = set.appendingPathComponent("rules", isDirectory: true)
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            try "\(name)/\(rule)".write(to: dir.appendingPathComponent("\(rule).md"),
+                                        atomically: true, encoding: .utf8)
+        }
+        if let beschreibung {
+            try #"{"displayName": "\#(name.uppercased())", "description": "\#(beschreibung)"}"#
+                .write(to: set.appendingPathComponent("set.json"), atomically: true, encoding: .utf8)
+        }
+    }
+
     private var store: ClaudeAssetStore {
         ClaudeAssetStore(canonicalRoot: root, userClaudeDir: userDir, userCodexDir: codexDir)
     }
 
-    // MARK: Seeding
-
-    func testSeedCopiesMissingAssets() throws {
-        let seeded = try store.seedMissing(from: factory)
-        XCTAssertEqual(Set(seeded.map(\.id)),
-                       ["commands/get-task", "rules/db-access", "skills/impact-analysis"])
-        XCTAssertEqual(try String(contentsOf: root.appendingPathComponent("commands/get-task.md"),
-                                  encoding: .utf8), "get")
+    private func set(_ name: String) throws -> ClaudeAssetSet {
+        try XCTUnwrap(store.set(named: name))
     }
 
-    func testSeedLeavesEditedAssetsAlone() throws {
-        try store.seedMissing(from: factory)
-        try "EDITIERT".write(to: root.appendingPathComponent("commands/get-task.md"),
-                             atomically: true, encoding: .utf8)
-        let seeded = try store.seedMissing(from: factory)
-        XCTAssertTrue(seeded.isEmpty)
-        XCTAssertEqual(try String(contentsOf: root.appendingPathComponent("commands/get-task.md"),
-                                  encoding: .utf8), "EDITIERT")
+    // MARK: Inventar
+
+    func testSetInventarAusEinerWurzel() throws {
+        try store.syncSets(from: factory)
+        XCTAssertEqual(store.sets().map(\.name), ["iwf", "swift"])
+
+        let iwf = try set("iwf")
+        XCTAssertEqual(iwf.displayName, "IWF")
+        XCTAssertEqual(iwf.description, "Der volle iwf-Satz.")
+        XCTAssertEqual(store.assets(.skill, in: iwf).map(\.name), ["get-task", "solve-task"])
+        XCTAssertEqual(store.assets(.rule, in: iwf).map(\.name), ["worktree"])
+        // Die Id trägt das Set: zwei Sets dürfen denselben Skill-Namen führen.
+        XCTAssertEqual(store.assets(.skill, in: iwf)[0].id, "iwf/skills/get-task")
+
+        // Ohne set.json heisst das Set wie sein Ordner.
+        XCTAssertEqual(try set("swift").displayName, "swift")
     }
 
-    func testResetOverwritesWithFactoryVersion() throws {
-        try store.seedMissing(from: factory)
-        let asset = store.assets(.command)[0]
-        try "EDITIERT".write(to: asset.url, atomically: true, encoding: .utf8)
-        try store.resetToFactory(asset, from: factory)
-        XCTAssertEqual(try String(contentsOf: asset.url, encoding: .utf8), "get")
+    /// Neben dem Bestand liegt historisch allerlei. Nichts davon ist ein Set, nur weil es ein
+    /// Ordner ist — weder ein Backup-Ordner ohne `skills/` noch eine Datei noch `.versions`.
+    func testFremdeOrdnerSindKeineSets() throws {
+        try store.syncSets(from: factory)
+        let fm = FileManager.default
+        for müll in ["skills-backup-2026-08-20", "projektkopien-backup-2026-08-07", ".versions"] {
+            try fm.createDirectory(at: root.appendingPathComponent("sets/\(müll)"),
+                                   withIntermediateDirectories: true)
+        }
+        try "zip".write(to: root.appendingPathComponent("sets/Christian_RULES_SKILLS_v2.zip"),
+                        atomically: true, encoding: .utf8)
+        XCTAssertEqual(store.sets().map(\.name), ["iwf", "swift"])
     }
 
-    // MARK: Symlinks
+    // MARK: Sync
 
-    func testInstallAndRemoveSymlink() throws {
-        try store.seedMissing(from: factory)
-        let command = store.assets(.command)[0]
-        try store.installSymlink(for: command)
-        XCTAssertEqual(store.symlinkState(for: command), .linked)
+    /// Die bewusste Umkehr von `seedMissing`: gepflegt wird im Repo, der Bestand wird überschrieben.
+    func testSyncUeberschreibtDenBestand() throws {
+        try store.syncSets(from: factory)
+        let datei = root.appendingPathComponent("sets/iwf/skills/get-task/SKILL.md")
+        try "VON HAND EDITIERT".write(to: datei, atomically: true, encoding: .utf8)
 
-        // Der Link funktioniert wirklich: Lesen über den Symlink liefert den Bestand.
-        let link = userDir.appendingPathComponent("commands/get-task.md")
-        XCTAssertEqual(try String(contentsOf: link, encoding: .utf8), "get")
-
-        try store.removeSymlink(for: command)
-        XCTAssertEqual(store.symlinkState(for: command), .notInstalled)
+        try store.syncSets(from: factory)
+        XCTAssertEqual(try String(contentsOf: datei, encoding: .utf8), "iwf/get-task")
     }
 
-    func testForeignFileIsNeverClobbered() throws {
-        try store.seedMissing(from: factory)
-        let command = store.assets(.command)[0]
-        let target = userDir.appendingPathComponent("commands/get-task.md")
-        try FileManager.default.createDirectory(at: target.deletingLastPathComponent(),
+    /// Was im Auslieferungsstand gelöscht wurde, ist auch im Bestand weg — sonst bliebe ein
+    /// zurückgezogener Skill für immer verlinkbar.
+    func testSyncEntferntWasDasWerkNichtMehrHat() throws {
+        try store.syncSets(from: factory)
+        try FileManager.default.removeItem(at: factory.appendingPathComponent("sets/iwf/skills/solve-task"))
+        try store.syncSets(from: factory)
+        XCTAssertEqual(store.assets(.skill, in: try set("iwf")).map(\.name), ["get-task"])
+    }
+
+    /// Ein von Hand dazugelegtes Set bleibt stehen: überschrieben wird, was wir liefern.
+    func testSyncLaesstFremdeSetsInRuhe() throws {
+        try store.syncSets(from: factory)
+        let eigen = root.appendingPathComponent("sets/eigen/skills/mein-skill", isDirectory: true)
+        try FileManager.default.createDirectory(at: eigen, withIntermediateDirectories: true)
+        try "meins".write(to: eigen.appendingPathComponent("SKILL.md"), atomically: true, encoding: .utf8)
+
+        try store.syncSets(from: factory)
+        XCTAssertEqual(store.sets().map(\.name), ["eigen", "iwf", "swift"])
+    }
+
+    func testSyncSchreibtNichtsBeiGleichemInhalt() throws {
+        try store.syncSets(from: factory)
+        let datei = root.appendingPathComponent("sets/iwf/skills/get-task/SKILL.md")
+        let vorher = try FileManager.default.attributesOfItem(atPath: datei.path)[.modificationDate]
+            as? Date
+        try store.syncSets(from: factory)
+        let nachher = try FileManager.default.attributesOfItem(atPath: datei.path)[.modificationDate]
+            as? Date
+        XCTAssertEqual(vorher, nachher)
+    }
+
+    // MARK: Verlinkung ins Projekt
+
+    func testSetLandetImProjektOrdner() throws {
+        try store.syncSets(from: factory)
+        let report = store.link(try set("iwf"), toProject: repo.path, agent: .claude)
+        XCTAssertTrue(report.isComplete)
+
+        // Skills in .claude/skills, Rules in .claude/rules — und die Links tragen wirklich Inhalt.
+        XCTAssertEqual(try String(contentsOf: repo.appendingPathComponent(".claude/skills/get-task/SKILL.md"),
+                                  encoding: .utf8), "iwf/get-task")
+        XCTAssertEqual(try String(contentsOf: repo.appendingPathComponent(".claude/rules/worktree.md"),
+                                  encoding: .utf8), "iwf/worktree")
+        XCTAssertEqual(store.state(of: try set("iwf"),
+                                   scope: .project(repoDir: repo.path, agent: .claude)), .linked)
+    }
+
+    /// Ein Codex-Projekt bekommt seine Skills in `.codex/skills` — die Rules aber trotzdem nach
+    /// `.claude/rules`: die Skills verweisen im Text auf `.claude/rules/…`, und dieser Pfad muss
+    /// unter beiden Agents aufgehen (dieselbe Überlegung wie bei `.claude/project.json`).
+    func testCodexProjektBekommtSkillsInCodexUndRulesInClaude() throws {
+        try store.syncSets(from: factory)
+        store.link(try set("iwf"), toProject: repo.path, agent: .codex)
+        XCTAssertEqual(try String(contentsOf: repo.appendingPathComponent(".codex/skills/get-task/SKILL.md"),
+                                  encoding: .utf8), "iwf/get-task")
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: repo.appendingPathComponent(".claude/rules/worktree.md").path))
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: repo.appendingPathComponent(".claude/skills/get-task").path))
+    }
+
+    /// Zwei Projekte, zwei Sets, **gleichzeitig** — der eigentliche Punkt des Umbaus.
+    func testZweiProjekteSehenGleichzeitigVerschiedeneSets() throws {
+        try store.syncSets(from: factory)
+        let zweitesRepo = repo.deletingLastPathComponent().appendingPathComponent("repo2")
+        try FileManager.default.createDirectory(at: zweitesRepo, withIntermediateDirectories: true)
+
+        store.link(try set("iwf"), toProject: repo.path, agent: .claude)
+        store.link(try set("swift"), toProject: zweitesRepo.path, agent: .claude)
+
+        XCTAssertEqual(try String(contentsOf: repo.appendingPathComponent(".claude/skills/get-task/SKILL.md"),
+                                  encoding: .utf8), "iwf/get-task")
+        XCTAssertEqual(try String(contentsOf: zweitesRepo.appendingPathComponent(".claude/skills/get-task/SKILL.md"),
+                                  encoding: .utf8), "swift/get-task")
+        // Das eine Set hat einen Skill mehr, das andere gar keine Rules.
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: repo.appendingPathComponent(".claude/skills/solve-task").path))
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: zweitesRepo.appendingPathComponent(".claude/skills/solve-task").path))
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: zweitesRepo.appendingPathComponent(".claude/rules").path))
+    }
+
+    /// Der Wechsel des Sets räumt auf, was vom alten übrig ist — sonst stünde ein zurückgezogener
+    /// Skill für immer im Projekt.
+    func testSetWechselRaeumtDieAltenSymlinksWeg() throws {
+        try store.syncSets(from: factory)
+        store.link(try set("iwf"), toProject: repo.path, agent: .claude)
+        let report = store.link(try set("swift"), toProject: repo.path, agent: .claude)
+
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: repo.appendingPathComponent(".claude/skills/solve-task").path))
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: repo.appendingPathComponent(".claude/rules/worktree.md").path))
+        XCTAssertEqual(report.removed.count, 2)
+        // Der gleichnamige Skill zeigt jetzt ins neue Set.
+        XCTAssertEqual(try String(contentsOf: repo.appendingPathComponent(".claude/skills/get-task/SKILL.md"),
+                                  encoding: .utf8), "swift/get-task")
+    }
+
+    /// Wechselt ein Projekt den Agent, sind die Links im Ordner des alten Überbleibsel.
+    func testAgentWechselRaeumtDenAnderenOrdnerWeg() throws {
+        try store.syncSets(from: factory)
+        store.link(try set("iwf"), toProject: repo.path, agent: .claude)
+        store.link(try set("iwf"), toProject: repo.path, agent: .codex)
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: repo.appendingPathComponent(".claude/skills/get-task").path))
+    }
+
+    // MARK: Fremdes
+
+    func testFremderZielortWirdGemeldetStattUeberschrieben() throws {
+        try store.syncSets(from: factory)
+        let ziel = repo.appendingPathComponent(".claude/skills/get-task")
+        try FileManager.default.createDirectory(at: ziel.deletingLastPathComponent(),
                                                 withIntermediateDirectories: true)
-        try "fremd".write(to: target, atomically: true, encoding: .utf8)
+        try "von Hand".write(to: ziel, atomically: true, encoding: .utf8)
 
-        guard case .foreign = store.symlinkState(for: command) else {
-            return XCTFail("echte Datei muss als fremd erkannt werden")
+        let iwf = try set("iwf")
+        let asset = store.assets(.skill, in: iwf)[0]
+        let scope = ClaudeLinkScope.project(repoDir: repo.path, agent: .claude)
+        guard case .foreign = store.symlinkState(for: asset, scope: scope) else {
+            return XCTFail("eine echte Datei am Zielort muss als fremd gelten")
         }
-        XCTAssertThrowsError(try store.installSymlink(for: command))
-        try store.removeSymlink(for: command)   // darf Fremdes nicht löschen
-        XCTAssertEqual(try String(contentsOf: target, encoding: .utf8), "fremd")
+        let report = store.link(iwf, toProject: repo.path, agent: .claude)
+        XCTAssertEqual(report.foreign.count, 1)
+        XCTAssertEqual(try String(contentsOf: ziel, encoding: .utf8), "von Hand")
+        // Der Rest des Sets liegt trotzdem da — ein belegter Zielort blockiert nicht alles.
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: repo.appendingPathComponent(".claude/skills/solve-task").path))
+        guard case .foreign = store.state(of: iwf, scope: scope) else {
+            return XCTFail("der Set-Zustand muss den belegten Zielort zeigen")
+        }
     }
 
-    func testRulesGetNoSymlink() throws {
-        try store.seedMissing(from: factory)
-        let rule = store.assets(.rule)[0]
-        XCTAssertNil(store.symlinkTarget(for: rule))
-        XCTAssertThrowsError(try store.installSymlink(for: rule))
-        XCTAssertTrue(store.installAllSymlinks().keys.allSatisfy { $0.kind != .rule })
-        XCTAssertTrue(store.linkableAgents(for: rule).isEmpty)
+    /// Ein fremder Symlink (auf etwas ausserhalb unseres Bestands) ist genauso tabu wie eine Datei.
+    func testFremderSymlinkBleibtLiegen() throws {
+        try store.syncSets(from: factory)
+        let fremd = repo.deletingLastPathComponent().appendingPathComponent("woanders")
+        try FileManager.default.createDirectory(at: fremd, withIntermediateDirectories: true)
+        let ziel = repo.appendingPathComponent(".claude/skills/get-task")
+        try FileManager.default.createDirectory(at: ziel.deletingLastPathComponent(),
+                                                withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: ziel, withDestinationURL: fremd)
+
+        store.link(try set("iwf"), toProject: repo.path, agent: .claude)
+        XCTAssertEqual(try FileManager.default.destinationOfSymbolicLink(atPath: ziel.path),
+                       fremd.path)
     }
 
-    func testSkillSymlinkPointsAtDirectory() throws {
-        try store.seedMissing(from: factory)
-        let skill = store.assets(.skill)[0]
-        try store.installSymlink(for: skill)
-        let linked = userDir.appendingPathComponent("skills/impact-analysis/SKILL.md")
-        XCTAssertEqual(try String(contentsOf: linked, encoding: .utf8), "skill")
-    }
+    // MARK: Agent-Homes und das alte Modell
 
-    // MARK: Beide Agents
-
-    /// Derselbe Bestand bedient Claude und Codex — ein Skill hängt in **beiden** Homes.
-    func testSkillIsLinkedIntoBothAgentHomes() throws {
-        try store.seedMissing(from: factory)
-        let skill = store.assets(.skill)[0]
-        XCTAssertEqual(store.linkableAgents(for: skill), AgentKind.allCases)
-
-        store.installAllSymlinks()
-        XCTAssertEqual(store.symlinkStates(for: skill),
-                       [.claude: .linked, .codex: .linked])
+    func testStandardSetLandetInBeidenHomes() throws {
+        try store.syncSets(from: factory)
+        store.link(try set("iwf"), toHomes: AgentKind.allCases)
         for home in [userDir!, codexDir!] {
-            let linked = home.appendingPathComponent("skills/impact-analysis/SKILL.md")
-            XCTAssertEqual(try String(contentsOf: linked, encoding: .utf8), "skill")
+            XCTAssertEqual(try String(contentsOf: home.appendingPathComponent("skills/get-task/SKILL.md"),
+                                      encoding: .utf8), "iwf/get-task")
         }
-    }
-
-    /// Codex kennt keine Commands — dort gibt es keinen Zielort, und der Versuch scheitert sauber.
-    func testCommandsAreClaudeOnly() throws {
-        try store.seedMissing(from: factory)
-        let command = store.assets(.command)[0]
-        XCTAssertEqual(store.linkableAgents(for: command), [.claude])
-        XCTAssertNil(store.symlinkTarget(for: command, agent: .codex))
-        XCTAssertThrowsError(try store.installSymlink(for: command, agent: .codex))
+        // Rules haben im Home keinen Ort — dort gibt es nichts, worauf ein Skill zeigen könnte.
+        XCTAssertNil(store.symlinkTarget(for: store.assets(.rule, in: try set("iwf"))[0],
+                                         scope: .home(.claude)))
         XCTAssertFalse(FileManager.default.fileExists(
-            atPath: codexDir.appendingPathComponent("commands").path))
+            atPath: userDir.appendingPathComponent("rules").path))
     }
 
-    // MARK: Command → Skill (Einmal-Umzug)
+    /// Ein Symlink aus dem alten flachen Modell (`claude/skills/<name>`) zeigt in unseren Bestand —
+    /// er wird umgehängt, nicht als fremd gemeldet. Sonst wäre `/get-task` nach dem Umbau weg.
+    func testAlteHomeSymlinksWerdenAufDasStandardSetUmgehaengt() throws {
+        let alt = root.appendingPathComponent("skills/get-task", isDirectory: true)
+        try FileManager.default.createDirectory(at: alt, withIntermediateDirectories: true)
+        try "alter Bestand".write(to: alt.appendingPathComponent("SKILL.md"),
+                                  atomically: true, encoding: .utf8)
+        let link = userDir.appendingPathComponent("skills/get-task")
+        try FileManager.default.createDirectory(at: link.deletingLastPathComponent(),
+                                                withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: alt)
 
-    func testMigrationMovesCommandIntoSkillAndKeepsEdits() throws {
-        try store.seedMissing(from: factory)
-        let command = store.assets(.command)[0]     // commands/get-task.md
-        try """
-        ---
-        description: Lade ein JIRA-Ticket
-        argument-hint: <TICKET-NUMMER>
-        ---
-        Mein editierter Rumpf mit $ARGUMENTS
-        """.write(to: command.url, atomically: true, encoding: .utf8)
-        try store.installSymlink(for: command)
-
-        let done = ClaudeAssetMigration.migrateCommandsToSkills(store: store)
-        XCTAssertEqual(done.map(\.name), ["get-task"])
-
-        // Der Command ist weg, der Skill da — und der Rumpf unverändert.
-        XCTAssertTrue(store.assets(.command).isEmpty)
-        let skill = root.appendingPathComponent("skills/get-task/SKILL.md")
-        let content = try String(contentsOf: skill, encoding: .utf8)
-        XCTAssertTrue(content.contains("Mein editierter Rumpf mit $ARGUMENTS"))
-        // Ergänzt wurde nur, was beide Agents brauchen.
-        XCTAssertTrue(content.contains("name: get-task"))
-        XCTAssertTrue(content.contains("disable-model-invocation: true"))
-        XCTAssertTrue(content.contains("description: Lade ein JIRA-Ticket"))
-
-        // Der ins Leere zeigende Alt-Symlink ist aufgeräumt.
-        XCTAssertFalse(FileManager.default.fileExists(
-            atPath: userDir.appendingPathComponent("commands/get-task.md").path))
+        try store.syncSets(from: factory)
+        let iwf = try set("iwf")
+        XCTAssertEqual(store.symlinkState(for: store.assets(.skill, in: iwf)[0],
+                                          scope: .home(.claude)),
+                       .otherSet(alt.path))
+        store.link(iwf, toHomes: [.claude])
+        XCTAssertEqual(try String(contentsOf: link.appendingPathComponent("SKILL.md"),
+                                  encoding: .utf8), "iwf/get-task")
     }
 
-    func testMigrationIsIdempotentAndNeverOverwritesAnExistingSkill() throws {
-        try store.seedMissing(from: factory)
-        XCTAssertEqual(ClaudeAssetMigration.migrateCommandsToSkills(store: store).map(\.name),
-                       ["get-task"])
-        XCTAssertTrue(ClaudeAssetMigration.migrateCommandsToSkills(store: store).isEmpty)
+    // MARK: Auflösung
 
-        // Gibt es den Skill schon, bleibt der Command liegen — nichts wird überschrieben.
-        try "wieder da".write(to: root.appendingPathComponent("commands/get-task.md"),
-                              atomically: true, encoding: .utf8)
-        XCTAssertTrue(ClaudeAssetMigration.migrateCommandsToSkills(store: store).isEmpty)
-        XCTAssertEqual(try String(contentsOf: root.appendingPathComponent("commands/get-task.md"),
-                                  encoding: .utf8), "wieder da")
+    func testProjektSetSonstStandardSet() throws {
+        try store.syncSets(from: factory)
+        XCTAssertEqual(store.resolve(skillSet: "swift", default: "iwf").set?.name, "swift")
+        XCTAssertEqual(store.resolve(skillSet: nil, default: "iwf").set?.name, "iwf")
+        XCTAssertEqual(store.resolve(skillSet: "", default: "iwf").set?.name, "iwf")
     }
 
-    func testMigrationAddsFrontmatterWhenThereIsNone() {
-        let patched = ClaudeAssetMigration.ensuringFrontmatter("# Nur Rumpf\n", name: "get-task")
-        XCTAssertTrue(patched.hasPrefix("---\nname: get-task\ndisable-model-invocation: true\n---"))
-        XCTAssertTrue(patched.contains("# Nur Rumpf"))
+    /// Ein Set, das es nicht (mehr) gibt: das Standard-Set greift, aber der Name bleibt sichtbar —
+    /// sonst arbeitete ein Projekt stillschweigend mit fremden Skills.
+    func testFehlendesSetFaelltAufDasStandardSetZurueckUndSagtEs() throws {
+        try store.syncSets(from: factory)
+        let auflösung = store.resolve(skillSet: "gibts-nicht", default: "iwf")
+        XCTAssertEqual(auflösung.set?.name, "iwf")
+        XCTAssertEqual(auflösung.missingName, "gibts-nicht")
+    }
+
+    /// Ohne Eintrag gilt das einzige vorhandene Set.
+    func testOhneStandardSetGiltDasEinzige() throws {
+        try FileManager.default.removeItem(at: factory.appendingPathComponent("sets/swift"))
+        try store.syncSets(from: factory)
+        XCTAssertEqual(store.defaultSet(configured: nil)?.name, "iwf")
+        XCTAssertNil(ClaudeAssetStore(canonicalRoot: root.appendingPathComponent("leer"))
+            .defaultSet(configured: nil))
     }
 }
-

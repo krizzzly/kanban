@@ -42,7 +42,10 @@ struct KanbanApp: App {
         if CommandLine.arguments.contains("--selftest") {
             SelfTest.runAndExit()
         }
-        ClaudeAssetFactory.seedAtLaunch()
+        // Der Bestand wird aus dem Bundle überschrieben, bevor irgendetwas ihn liest — die
+        // Einstellungen holen ihre Set-Auswahl von dort. Die Config wird hier nur wegen des
+        // Standard-Sets angefasst; AppModel liest sie gleich noch einmal richtig.
+        ClaudeAssetFactory.syncAtLaunch(defaultSkillSet: (try? KanbanConfig.load())?.defaultSkillSet)
     }
 
     var body: some Scene {

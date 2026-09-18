@@ -370,10 +370,10 @@ final class AppModel {
                 return
             }
             projects = cfg.projects
-            // project.json für ALLE Projekte aktualisieren, nicht nur das gewählte — die zentral
-            // verlinkten Commands lesen es in jedem Repo, unabhängig davon, was das Board zeigt.
+            // project.json und Skill-Set für ALLE Projekte herstellen, nicht nur fürs gewählte:
+            // beides liest ein Agent in seinem Repo, unabhängig davon, was das Board gerade zeigt.
             for project in cfg.projects where FileManager.default.fileExists(atPath: project.repoDir) {
-                _ = try? ClaudeProjectFile.write(for: project)
+                linkSkillSet(for: project, defaultSkillSet: cfg.defaultSkillSet)
             }
             jira = JiraClient(config: cfg)
             gitlab = GitLabClient(config: cfg)   // nil, solange GitLab nicht konfiguriert ist
@@ -463,11 +463,24 @@ final class AppModel {
         claudeCommands = ClaudeCommandScanner.scan(repoDir: project.repoDir,
                                                    only: Self.ticketCommandNames,
                                                    agent: project.agent)
-        // Projektwerte für die kanonischen (projektunabhängigen) Commands/Skills bereitstellen.
+        // Projektwerte und den Satz Skills bereitstellen, den dieses Projekt sehen soll.
         // Still: ein fehlendes Repo darf den Projektwechsel nicht stören.
-        _ = try? ClaudeProjectFile.write(for: project)
+        linkSkillSet(for: project, defaultSkillSet: config?.defaultSkillSet)
         clearDetail()
         Task { await loadForCurrentMode() }
+    }
+
+    /// Stellt für ein Projekt her, was ein Agent in seinem Repo vorfinden soll: die generierten
+    /// Projektwerte und das Skill-Set, das dieses Projekt sehen soll.
+    ///
+    /// Beides an einer Stelle, weil beides dieselbe Auflösung braucht — in `.claude/project.json`
+    /// steht der Name des Sets, mit dem das Projekt wirklich läuft. Still: ein fehlendes Repo oder
+    /// ein belegter Zielort darf den Projektwechsel nicht stören; was nicht ging, zeigt die
+    /// Skill-Set-Übersicht.
+    private func linkSkillSet(for project: ProjectConfig, defaultSkillSet: String?) {
+        let set = ClaudeAssetFactory.resolvedSetName(for: project, defaultSkillSet: defaultSkillSet)
+        _ = try? ClaudeProjectFile.write(for: project, skillSet: set)
+        ClaudeAssetFactory.link(project, defaultSkillSet: defaultSkillSet)
     }
 
     /// Sprint-Modus braucht erst die Sprintliste (die dann `refresh` auslöst); der freie Modus liest

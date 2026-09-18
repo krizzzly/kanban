@@ -21,13 +21,18 @@ public enum ClaudeProjectFile {
         public let worktreePrefix: String    // Ordner der Worktrees: <repoDir>-worktree (iwf-Konvention)
         public let stackDomain: String       // TLD des lokalen Stacks; URL = https://<worktree-name>.<stackDomain>
         public let gitlabProjectPath: String?
+        /// Das Set, aus dem die Skills dieses Projekts stammen — **aufgelöst**, nicht der Rohwert
+        /// aus der Config: ein Skill soll wissen, mit welchem Satz er gerade läuft, und nicht, was
+        /// jemand einmal hingeschrieben hat. Fehlt, solange es gar kein Set gibt.
+        public let skillSet: String?
         /// Hinweis an menschliche Leser — Kanban überschreibt die Datei beim Projektwechsel.
         public let generatedBy: String
     }
 
     public static let fileName = ".claude/project.json"
 
-    public static func values(for project: ProjectConfig) -> Values {
+    /// - Parameter skillSet: Name des aufgelösten Sets (siehe `ClaudeAssetStore.resolve`).
+    public static func values(for project: ProjectConfig, skillSet: String? = nil) -> Values {
         Values(prefix: project.prefix,
                tasksPath: project.tasksPathAbsolute,
                docsPath: project.docsPathAbsolute,
@@ -36,17 +41,18 @@ public enum ClaudeProjectFile {
                worktreePrefix: project.repoDir + "-worktree",
                stackDomain: "test",
                gitlabProjectPath: project.gitlabProjectPath,
+               skillSet: skillSet,
                generatedBy: "Kanban — generiert aus der Kanban-Config, nicht von Hand editieren")
     }
 
     /// Schreibt die Datei nur bei inhaltlicher Änderung (kein mtime-Rauschen für File-Watcher).
     /// Liefert true, wenn geschrieben wurde.
     @discardableResult
-    public static func write(for project: ProjectConfig) throws -> Bool {
+    public static func write(for project: ProjectConfig, skillSet: String? = nil) throws -> Bool {
         let url = URL(fileURLWithPath: project.repoDir).appendingPathComponent(fileName)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        var data = try encoder.encode(values(for: project))
+        var data = try encoder.encode(values(for: project, skillSet: skillSet))
         data.append(UInt8(ascii: "\n"))
 
         if let existing = try? Data(contentsOf: url), existing == data { return false }

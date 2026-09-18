@@ -19,7 +19,7 @@ Folgenden für die Werte aus `.claude/project.json`. **`<repo-ordnername>`** ist
 von `repoDir` — er ist zugleich der **Hermes-Projektname** (für die Jenkins-Tools) und der Container-Prefix
 des Haupt-Stacks (`<repo-ordnername>-fpm`).
 
-> Befehls-/Routing-Referenz zu Worktrees: `~/Library/Application Support/Kanban/claude/rules/worktree.md`.
+> Befehls-/Routing-Referenz zu Worktrees: `.claude/rules/worktree.md`.
 > Worktree-Routing (cwd bleibt Haupt-Repo): wie in `solve-task` Phase 0a.
 
 ## Input
