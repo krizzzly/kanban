@@ -55,9 +55,13 @@ enum SelectionStore {
     /// er einer von uns und wird umgehängt statt als fremd liegengelassen (`formerRoots`). Das kann
     /// die Config selbst nicht sagen — sie kennt nur den Wert von jetzt. Hier richtig aufgehoben und
     /// nicht in der Config: ein Beobachtungsposten, keine Einstellung.
+    ///
+    /// Und einer **je Profil**, wie die Schlüssel darüber: jedes Profil hat seinen eigenen
+    /// Sets-Ordner. Ein gemeinsamer Posten meldete nach jedem Profilwechsel einen Ordnerwechsel,
+    /// den es nie gab — und verlöre dabei den echten, auf den er angesetzt ist.
     static var claudeSetsRootSeen: String? {
-        get { UserDefaults.standard.string(forKey: setsRootDefaultsKey) }
-        set { UserDefaults.standard.set(newValue, forKey: setsRootDefaultsKey) }
+        get { read(setsRootDefaultsKey) { defaults.string(forKey: $0) } }
+        set { defaults.set(newValue, forKey: keys.key(setsRootDefaultsKey)) }
     }
 
     /// Die zuletzt gewählte Jira-Quelle als `SprintChoice.id` — eine Sprint-Id oder `"board"`.
