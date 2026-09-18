@@ -63,6 +63,10 @@ final class ProjectWindows {
     /// Die App beendet sich — ab jetzt wird die gemerkte Liste nicht mehr fortgeschrieben. Sonst
     /// hinge es an der Abbaureihenfolge, ob ⌘Q die offenen Fenster für den nächsten Start behält.
     private var beendetSich = false
+    /// Was wir selbst ins Fenster-Menü gehängt haben — um es beim nächsten Mal wieder zu entfernen.
+    private var eigeneEintraege: [NSMenuItem] = []
+    /// Die Ziele der Einträge. `NSMenuItem.target` hält nicht, also halten wir.
+    private var menueZiele: [MenueZiel] = []
 
     /// Der gemerkte Stand, **bevor** das erste Fenster ihn fortschreibt. Als gespeicherte
     /// Eigenschaft gelesen: sie steht, sobald es die Instanz gibt — und die entsteht beim Start
@@ -105,6 +109,7 @@ final class ProjectWindows {
             eintraege.append(Eintrag(id: id, key: key, model: model, window: nil))
         }
         listeSchreiben()
+        menueNachfuehren()
         if let frueh = vorAnmeldung.removeValue(forKey: id)?.window {
             fensterMerken(frueh, model: model)
         }
@@ -121,6 +126,7 @@ final class ProjectWindows {
         }
         guard eintraege[index].window !== window else { return }
         eintraege[index].window = window
+        menueNachfuehren()
         abmeldenVonBeobachtern(id)
         let zentrale = NotificationCenter.default
         beobachter[id] = [
@@ -149,6 +155,7 @@ final class ProjectWindows {
         abmeldenVonBeobachtern(id)
         eintraege.removeAll { $0.id == id }
         listeSchreiben()
+        menueNachfuehren()
     }
 
     private func abmeldenVonBeobachtern(_ id: ObjectIdentifier) {
@@ -264,6 +271,71 @@ final class ProjectWindows {
         for eintrag in eintraege { eintrag.model?.reloadConfig() }
     }
 
+    // MARK: - Fenster-Menü
+
+    /// Die offenen Boards im **Fenster-Menü** von macOS, jedes unter dem Namen seines Projekts.
+    ///
+    /// Ohne sie steht dort nichts: macOS listet ein Fenster über seinen Titel, und der ist hier
+    /// leer — mit Absicht (siehe `.navigationTitle("")` in `ContentView`). Seit jedes Projekt sein
+    /// eigenes Fenster hat, ist das eine Lücke: wer vier Boards offen hat, findet das gesuchte nur
+    /// durch Probieren.
+    ///
+    /// **Über AppKit und nicht über SwiftUIs `.commands`.** `CommandGroup(after: .windowList)` war
+    /// der naheliegende Weg und erzeugte nachweislich **gar keinen** Eintrag: die Menüs werden beim
+    /// Start einmal gebaut, da ist noch kein Fenster angemeldet, und auf die Änderung der
+    /// `@Observable`-Liste hin baut SwiftUI sie nicht neu (gemessen: zehn Sekunden nach dem Start,
+    /// mit zwei angemeldeten Fenstern, war das Menü unverändert leer). Hier dagegen steht die
+    /// Liste, die sich ohnehin bei jedem An- und Abmelden ändert — sie führt die Einträge gleich
+    /// selbst nach.
+    private func menueNachfuehren() {
+        guard let menue = NSApp.windowsMenu else { return }
+        for eintrag in eigeneEintraege where menue.items.contains(eintrag) {
+            menue.removeItem(eintrag)
+        }
+        eigeneEintraege = []
+        menueZiele = []
+
+        // Fenster ohne eigenes `NSWindow` bleiben draussen — ein Eintrag, der nichts nach vorn
+        // holen kann, ist schlimmer als keiner. Die **ohne Projekt** stehen dagegen drin (der
+        // Setup-Schirm, ein Fenster, dessen Projekt aus der Config verschwand): erreichbar sein
+        // müssen sie gerade dann, wenn daneben drei Boards stehen. `WindowTitles` nennt sie
+        // „Kanban", und sie kommen ans Ende — welches Projekt sie einmal zeigen werden, ist noch
+        // nicht entschieden.
+        var offene: [(key: String?, window: NSWindow)] = eintraege.compactMap {
+            guard let window = $0.window else { return nil }
+            return ($0.key, window)
+        }
+        offene += vorAnmeldung.values.compactMap { schwach in
+            schwach.window.map { (nil, $0) }
+        }
+        guard !offene.isEmpty else { return }
+        let titel = WindowTitles.titel(fuer: offene.map(\.key))
+
+        let trenner = NSMenuItem.separator()
+        menue.addItem(trenner)
+        eigeneEintraege.append(trenner)
+        for (index, paar) in zip(offene, titel).enumerated() {
+            let (fenster, name) = paar
+            let ziel = MenueZiel { [weak window = fenster.window] in
+                guard let window else { return }
+                window.makeKeyAndOrderFront(nil)
+                NSApp.activate(ignoringOtherApps: true)
+            }
+            // ⌘1…⌘9 in Öffnungsreihenfolge — Kurzbefehle, die die eingebaute Fensterliste von
+            // macOS gar nicht vergibt. Ab dem zehnten Fenster bleibt der Eintrag ohne.
+            let item = NSMenuItem(title: name, action: #selector(MenueZiel.ausloesen),
+                                  keyEquivalent: index < 9 ? "\(index + 1)" : "")
+            item.target = ziel
+            menue.addItem(item)
+            // `NSMenuItem.target` ist **schwach**: ohne diese Liste wäre das Ziel sofort wieder weg
+            // und der Eintrag täte nichts.
+            menueZiele.append(ziel)
+            eigeneEintraege.append(item)
+        }
+    }
+
+    // MARK: - Zuordnung
+    // MARK: - Zuordnung
     // MARK: - Zuordnung
 
     private func modell(zu window: NSWindow?) -> AppModel? {
@@ -303,6 +375,16 @@ final class ProjectWindows {
     }
 }
 
+/// Was ein Eintrag des Fenster-Menüs tut. `NSMenuItem` will ein Ziel mit Selektor; eine Closure
+/// darin zu verpacken ist der kürzeste Weg, der ohne eine zweite Zuordnung „Eintrag → Fenster"
+/// auskommt.
+@MainActor
+private final class MenueZiel: NSObject {
+    private let aktion: () -> Void
+    init(_ aktion: @escaping () -> Void) { self.aktion = aktion; super.init() }
+    @objc func ausloesen() { aktion() }
+}
+
 /// Ein Fenster, das noch keinem Eintrag gehört — ohne es am Leben zu halten.
 private struct SchwachesFenster {
     weak var window: NSWindow?
@@ -324,3 +406,5 @@ struct WindowAccessor: NSViewRepresentable {
         DispatchQueue.main.async { onWindow(nsView.window) }
     }
 }
+
+

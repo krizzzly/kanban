@@ -757,13 +757,44 @@ Projekt, `@Observable`, damit die Leiste mitbekommt, was offen ist):
 | `AttentionNotifier` | der Klick auf die Benachrichtigung sucht das Fenster, dessen Board das Ticket zeigt, holt es nach vorn und wählt dort; kennt keines es, entscheidet der Präfix (`TicketRouting`) — und ein Fenster geht dafür auf |
 | `WatchdogModel` | **eine** Instanz für den Prozess (`.shared`). Je Fenster eine hiesse N-mal `claude -p`, und das kostet Geld. `uebernehmen` ist deshalb ab dem zweiten Fenster wirkungslos; alle Fenster zeigen denselben Gesamtstand, weil der Watchdog ohnehin projektübergreifend scannt |
 | `CommitWindow` | **je Fenster** eines (Schlüssel ist das `AppModel`, wie bei `MarkdownDocumentWindow` der Dateipfad) — zwei Projekte dürfen gleichzeitig committen, und der Titel trägt den Projekt-Key |
-| `ClaudeWorkflowWindow` | **eines** für die App: Commands/Skills/Rules sind projektunabhängig, zwei Editoren auf denselben Dateien wären zwei Stände desselben Textes. Zumachen darf nur, wer aufgemacht hat |
 | Einstellungen speichern | lädt **alle** Fenster neu (`ProjectWindows.configNeuLaden`), nicht nur das, in dem gespeichert wurde |
 
-**Der Fenstertitel bleibt leer**, wie beim früheren `Window("", id: "main")`: welches Projekt ein
-Fenster zeigt, steht im Projekt-Menü der Kopfzeile. Ihn nur aus der Leiste zu nehmen und im
-Fenstermenü zu behalten (`toolbar(removing: .title)`), ging nicht — mit dem Titel-Element fällt auch
-der Zwischenraum weg, der die rechten Knöpfe nach rechts drückt.
+### Der Fenstertitel bleibt leer — das Fenster-Menü trägt die Namen trotzdem (KANBAN-010)
+
+Über dem Board soll kein Text stehen: welches Projekt ein Fenster zeigt, sagt das Projekt-Menü der
+Kopfzeile, und ein Titel darüber wäre eine zweite Antwort auf dieselbe Frage. Im **Fenster-Menü** von
+macOS dagegen standen die Fenster damit gar nicht — macOS listet ein Fenster über seinen Titel, und
+der war leer. Mit einem Fenster je Projekt (KANBAN-006) nahm das dem Ganzen die halbe Wirkung: wer
+vier Boards offen hat, findet das gesuchte nur durch Probieren.
+
+Beides ist nicht über den Titel zu haben. Drei Wege wurden an echtem AppKit gemessen (SwiftUI-Fenster
+900 pt breit, Knöpfe in `.navigation` und `.primaryAction`; mit sichtbarem Titel endet der rechteste
+bei **894**), alle drei scheitern:
+
+| Weg | Was passiert |
+|---|---|
+| `toolbar(removing: .title)` | nimmt das Titel-**Element** samt Zwischenraum — rechtester Knopf bei 207, die Knöpfe kleben links |
+| `titleVisibility = .hidden` | blendet nur den Text aus, lässt das Element aber auf Breite 0 schrumpfen — **derselbe** Fehler, 207 |
+| Titel setzen, Anzeige unterdrücken | geht nicht gegeneinander: SwiftUI schreibt `title` **und** `titleVisibility` bei jeder Aktualisierung zurück (gemessen: eine Sekunde nach dem eigenen Schreiben stand wieder „Kanban" mitten in der Leiste) |
+
+Also bleibt `.navigationTitle("")` — der leere Titel hält den Zwischenraum, und die Einträge macht
+Kanban selbst: `ProjectWindows.menueNachfuehren` hängt sie bei jedem An- und Abmelden ins
+`NSApp.windowsMenu`, benannt nach `WindowTitles` (Projekt-Key in Grossbuchstaben; ein zweites Fenster
+desselben Projekts bekommt `EVEN (2)`, denn das Projekt-Menü schaltet **im** Fenster um und zwei
+gleiche Einträge wären nicht auseinanderzuhalten). Dazu ⌘1…⌘9 — Kurzbefehle, die die eingebaute
+Fensterliste gar nicht vergibt.
+
+- **Nicht über SwiftUIs `.commands`.** `CommandGroup(after: .windowList)` war der naheliegende Weg
+  und erzeugte nachweislich **keinen einzigen** Eintrag: die Menüs entstehen beim Start, da ist noch
+  kein Fenster angemeldet, und auf die Änderung der `@Observable`-Liste hin baut SwiftUI sie nicht
+  neu (gemessen: zehn Sekunden nach dem Start, mit zwei angemeldeten Fenstern, war das Menü leer).
+- **`NSMenuItem.target` ist schwach** — die Ziele werden deshalb in `ProjectWindows` gehalten, sonst
+  täte der Eintrag nichts.
+- **Fenster ohne Projekt stehen mit drin** („Kanban", am Ende): der Setup-Schirm und ein Fenster,
+  dessen Projekt aus der Config verschwand, müssen gerade dann erreichbar sein, wenn daneben drei
+  Boards stehen.
+- Geht ein Fenster zu, wird neu durchgezählt: aus `EVEN (2)` wird wieder `EVEN` (gemessen, samt
+  nachrückendem ⌘1).
 
 **Eine lebende Terminal-Ansicht, zwei Fenster.** `TerminalCache` hält je tmux-Session genau eine
 `KanbanTerminalView`, und eine `NSView` hat nur einen Superview. Dasselbe Ticket kann in zwei
@@ -886,9 +917,9 @@ fehlte: nicht jedes Projekt will dieselben Skills.
 - `repoDir` ist von `tasksPath` **entkoppelt** (`modules.jira.projects.<key>.repoDir`, optional;
   absolut/`~`/relativ zum Basis-Pfad) — ohne Override gilt weiter das erste `tasksPath`-Segment.
 
-### Die Übersicht (✨-Toolbar-Button, eigenes Fenster)
+### Die Übersicht (Einstellungen › Skill-Sets)
 
-Das Fenster **zeigt und stellt her**, mehr nicht: je Set Name, Beschreibung, Ordner, Anzahl
+Sie **zeigt und stellt her**, mehr nicht: je Set Name, Beschreibung, Ordner, Anzahl
 Skills/Rules und die Markierung „Standard"; darunter **alle Projekte als Chips**. Ein Klick legt
 das Projekt auf dieses Set — und verlinkt es sofort.
 
@@ -900,9 +931,21 @@ das Projekt auf dieses Set — und verlinkt es sofort.
   fest und bekannt. Den Umbruch macht `Fluss`, ein `Layout` (macOS 13+): es misst jeden Chip einzeln
   und bricht um, wenn die Zeile voll ist. Ein `LazyVGrid` mit fester Spaltenbreite gäbe ein Raster,
   in dem zwischen `tp1` und `iwf-local-dev` überall Luft stünde.
+- **Eine Sektion, kein eigenes Fenster** (KANBAN-010). Sie hatte einmal beides — ein Fenster
+  860 × 640 und einen ✨-Knopf in der Kopfzeile. Seit sie nur noch zeigt und verlinkt (der Editor
+  mit Fassungen ist mit den Sets weggefallen), ist das mehr Apparat als Inhalt: ein Knopf, den man
+  dauernd sieht und dreimal im Monat braucht. Sie steht jetzt neben „Projekte" — beide gehören
+  keinem Modul, sondern liegen quer über die Projekte. Damit erledigt sich zugleich die Frage, ob
+  ein schon offenes Fenster nach vorn kommt; `ClaudeWorkflowWindow` und
+  `AppModel.claudeWorkflowPresented` gibt es nicht mehr.
+- **Sie schreibt sofort, der Speichern-Fuss gehört der Config.** Zwei Sorten Wirkung in einem
+  Fenster darf man nicht raten müssen, deshalb steht das als Zeile über der Liste — und wenn oben
+  Ungespeichertes liegt, sagt sie zusätzlich, was folgt: der Klick schreibt die Datei, und der
+  Fuss meldet danach einen Konflikt („Neu laden" / „Trotzdem speichern", dieselbe mtime-Erkennung
+  wie bei einer Änderung von aussen, nur ist die Ursache hier im selben Fenster zu sehen).
 - **Keinen „Verlinken"-Knopf mehr.** Ein Projekt, das an einem Set hängt, *ist* verlinkt — sonst
   wäre die Zuordnung eine Behauptung. Hergestellt wird beim Zuordnen, beim App-Start, beim
-  Projektwechsel und beim Öffnen dieses Fensters; der Aufruf ist idempotent, steht alles, passiert
+  Projektwechsel und beim Aufschlagen der Sektion; der Aufruf ist idempotent, steht alles, passiert
   nichts. Damit zieht auch ein von Hand aufgelöster Zielort ohne Knopfdruck nach.
 - **Zeilen nur für Projekte, an denen etwas nicht stimmt.** Im Normalfall sagt der Chip schon alles;
   eine zweite Liste, die dieselben Projekte noch einmal aufzählt, wäre Lärm.
@@ -1924,9 +1967,7 @@ geantwortet."` — vier Minuten Spinner nach jedem App-Start, für nichts.
 | Panel + Knopf | `Kanban/Watchdog/WatchdogPanel.swift` |
 | Einstellungen | `KanbanConfigSchema.watchdog` → `watchdog.*` in der Config (top-level wie `commit`, **kein** Modul — wandert nie nach Hermes) |
 
-Der Knopf steht in einer `ToolbarItemGroup` mit dem Skill-Set-Knopf: `ToolbarContent` nimmt nur
-zehn Elemente, und die waren vergeben — geteilt kostet er keinen eigenen Platz. Er steht **immer**
-da, auch bei ausgeschaltetem Watchdog: ausgeblendet wäre er genau dann weg, wenn man ihn sucht, und
+Der Knopf steht **immer** da, auch bei ausgeschaltetem Watchdog: ausgeblendet wäre er genau dann weg, wenn man ihn sucht, und
 das Panel sagt selbst, wo geschaltet wird. Ein einzelner Lauf lässt sich dort auch ausgeschaltet
 starten — der Schalter regelt den Hintergrund-Lauf, nicht den ausdrücklichen Wunsch.
 
@@ -1950,6 +1991,7 @@ Sources/
 │   ├── Domain/            Ticket, KanbanColumn, BoardMode (Sprint/Frei), TaskSection, Worktree,
 │   │                      MergeRequestRef (provider-neutral, trägt nur `forge` als Herkunft),
 │   │                      CardBadge, OpenProjects (welche Fenster beim Start aufgehen) +
+│   │                      WindowTitles (wie die Fenster im Fenster-Menü heissen) +
 │   │                      TicketRouting (welchem Projekt ein Ticket-Key gehört),
 │   │                      EpicRef + EpicColors (Jira-Palette) + EpicResolution (Sub-Task erbt Epic)
 │   ├── Jira/              JiraClient (Board/Sprints/Sprint-Issues/Worklog) + SprintSelection +
@@ -1997,7 +2039,8 @@ Sources/
 └── Kanban/                SwiftUI/AppKit app
     ├── App.swift          @main, WindowGroup(for: String.self) — Board-Fenster je Projekt-Key
     ├── ProjectWindows.swift  wer welches Projekt zeigt: Terminal-Klick und Benachrichtigung ins
-    │                      richtige Fenster, offene Projekte merken, beim Start wieder aufmachen
+    │                      richtige Fenster, offene Projekte merken, beim Start wieder aufmachen,
+    │                      die Boards ins Fenster-Menü von macOS hängen (`WindowTitles`, ⌘1…⌘9)
     ├── AppModel.swift     @Observable: config/selection/sprints/issues/MRs/worktrees/columns/refresh
     ├── ContentView.swift  VStack(TopBar, HSplitView(Board, Detail)); nimmt den Projekt-Key der Szene
     ├── TopBar/            project picker + sprint/board picker (nur Sprint-Modus) +
