@@ -1236,6 +1236,13 @@ Feld hat.
 - **`color-scheme` folgt der Helligkeit des Hintergrunds**, sonst blieben die Scrollbalken weiss.
   `underPageBackgroundColor` der WebView wird mitgefärbt — sonst blitzt beim Laden die alte Fläche
   auf, und beim Überziehen am Rand käme sie wieder hervor.
+- **Schriften kommen aus einer Liste**, nicht aus einem Textfeld (`ConfigFieldSpec.Kind.fontFamily`,
+  Familien über Core Text): ein vertippter Name fällt still auf die Vorgabe zurück, und man sieht nur,
+  dass nichts passiert. Fürs Terminal ist die Liste auf Festbreitenschriften gefiltert.
+- **Schrift je Überschriftenebene** (`markdown.headingFonts.h1`…`h6`), in der Oberfläche direkt hinter
+  der jeweiligen Grösse. Die Rückfallkette: eigene Ebene → `headingFont` (gemeinsam für H1–H6) →
+  `fontFamily` → Systemschrift. Eine nicht gesetzte Ebene ändert also nichts, und die CSS-Regel je
+  Ebene entsteht nur dort, wo wirklich eine eigene Schrift steht.
 - **Jede Farbe einzeln mit Rückfallwert**: ein unlesbarer Hex-Wert nimmt weder die Fassung noch die
   Config mit. Eine **Terminal**-Fassung dagegen fällt ganz weg, wenn `background`/`foreground` fehlen
   oder `ansi` nicht genau 16 lesbare Farben hat (`RawTheme.resolved`) — deshalb legt der Editor eine

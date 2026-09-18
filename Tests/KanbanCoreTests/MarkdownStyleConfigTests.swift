@@ -101,6 +101,59 @@ final class MarkdownStyleConfigTests: XCTestCase {
         XCTAssertEqual(t.fontSizes.h1, 72, "900 wird auf die Obergrenze gezogen")
     }
 
+    // MARK: - Schrift je Überschriftenebene
+
+    func testEbeneSchlaegtGemeinsameUeberschriftenschrift() {
+        let t = theme("""
+            { "markdown": { "fontFamily": "Iowan Old Style", "headingFont": "Futura",
+                            "headingFonts": { "h1": "Didot" } } }
+            """)
+        XCTAssertEqual(t.schrift(fuerUeberschrift: 1), "Didot")
+        XCTAssertEqual(t.schrift(fuerUeberschrift: 2), "Futura", "die anderen bleiben, wie sie waren")
+        XCTAssertEqual(t.schrift(fuerUeberschrift: 6), "Futura")
+    }
+
+    /// Ohne gemeinsame Überschriftenschrift fällt eine nicht gesetzte Ebene auf den Fliesstext —
+    /// dieselbe Kette wie vorher, nur eine Stufe länger.
+    func testOhneEintraegeAendertSichNichts() {
+        let t = theme("""
+            { "markdown": { "fontFamily": "Iowan Old Style", "headingFonts": { "h1": "Didot" } } }
+            """)
+        XCTAssertEqual(t.schrift(fuerUeberschrift: 1), "Didot")
+        XCTAssertEqual(t.schrift(fuerUeberschrift: 3), "Iowan Old Style")
+
+        let ohne = theme("{}")
+        XCTAssertTrue(ohne.headingFonts.istLeer)
+        XCTAssertNil(ohne.schrift(fuerUeberschrift: 1))
+    }
+
+    func testLeereEbeneGiltAlsNichtGesetzt() {
+        let t = theme("""
+            { "markdown": { "headingFont": "Futura", "headingFonts": { "h1": "   ", "h2": "" } } }
+            """)
+        XCTAssertEqual(t.schrift(fuerUeberschrift: 1), "Futura")
+        XCTAssertEqual(t.schrift(fuerUeberschrift: 2), "Futura")
+    }
+
+    /// Die Schriften müssen den Weg durch die Datei überstehen, sonst verlöre „neue Fassung als
+    /// Kopie" sie beim Anlegen.
+    func testEbenenschriftenUeberlebenDenWegDurchDieDatei() throws {
+        let fassung = MarkdownTheme(name: "X", background: MarkdownTheme.standard.background,
+                                    text: MarkdownTheme.standard.text,
+                                    secondaryText: MarkdownTheme.standard.secondaryText,
+                                    codeBackground: MarkdownTheme.standard.codeBackground,
+                                    link: MarkdownTheme.standard.link,
+                                    border: MarkdownTheme.standard.border,
+                                    headingFonts: MarkdownHeadingFonts(h1: "Didot", h3: "Futura"))
+        let root = JSONValue.object([
+            "markdown": .object(["theme": .string("X"), "themes": .object(["X": fassung.werte])]),
+        ])
+        let gelesen = KanbanSettingsStore.parse(try JSONEncoder().encode(root)).markdown
+        XCTAssertEqual(gelesen.headingFonts.h1, "Didot")
+        XCTAssertEqual(gelesen.headingFonts.h3, "Futura")
+        XCTAssertNil(gelesen.headingFonts.h2)
+    }
+
     // MARK: - Benannte Fassungen
 
     private let zweiFassungen = """

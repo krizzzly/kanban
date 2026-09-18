@@ -96,8 +96,8 @@ public enum ThemeMapEdit {
 public enum MarkdownAltblock {
     /// Die Schlüssel, die früher direkt unter `markdown` standen. `theme` und `themes` gehören
     /// **nicht** dazu: die beschreiben die Auswahl, nicht eine Fassung.
-    public static let schluessel = ["fontFamily", "headingFont", "background", "text",
-                                    "secondaryText", "codeBackground", "link", "border",
+    public static let schluessel = ["fontFamily", "headingFont", "headingFonts", "background",
+                                    "text", "secondaryText", "codeBackground", "link", "border",
                                     "fontSize", "headings"]
 
     /// Übernimmt einen vorhandenen flachen Block als Fassung `Eigene` und macht sie zur aktiven,
