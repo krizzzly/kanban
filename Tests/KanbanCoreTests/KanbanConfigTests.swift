@@ -70,11 +70,28 @@ final class KanbanConfigTests: XCTestCase {
         XCTAssertFalse(ProjectProjection.moduleNames.contains("claude"))
     }
 
-    /// Ohne Abschnitt entscheidet der Bestand (`ClaudeAssetStore.defaultSet`), nicht die Config.
+    /// Ohne Abschnitt entscheidet der Sets-Ordner (`ClaudeAssetStore.defaultSet`), nicht die Config.
     func testDefaultSkillSetIsNilWithoutTheSection() throws {
         let config = try load(#""even": {"prefix": "EVEN", "tasksPath": "even/docs/tasks"}"#)
         XCTAssertNil(config.defaultSkillSet)
         XCTAssertNil(AppConfig.empty.defaultSkillSet)
+    }
+
+    /// Wo die Sets **gepflegt** werden — genau dorthin zeigen die Symlinks der Projekte. Ohne
+    /// Eintrag gilt die Konvention „Kanban-Repo unter dem Basis-Pfad"; der Pfad wird aufgelöst wie
+    /// jeder andere (absolut, `~` oder relativ zum Basis-Pfad).
+    func testSetsPathDefaultsToTheKanbanRepo() throws {
+        let config = try load(#""even": {"prefix": "EVEN", "tasksPath": "even/docs/tasks"}"#)
+        XCTAssertEqual(config.skillSetsPath,
+                       "/base/kanban/Sources/Kanban/Resources/ClaudeAssets/sets")
+    }
+
+    func testSetsPathCanBeOverridden() throws {
+        let relativ = try loadRaw(#"{"basePath": "/base", "claude": {"setsPath": "meine-sets"}, "modules": {"jira": {"baseUrl": "https://x", "email": "a@b.c", "apiToken": "t"}}}"#)
+        XCTAssertEqual(relativ.skillSetsPath, "/base/meine-sets")
+
+        let absolut = try loadRaw(#"{"basePath": "/base", "claude": {"setsPath": "/anderswo/sets"}, "modules": {"jira": {"baseUrl": "https://x", "email": "a@b.c", "apiToken": "t"}}}"#)
+        XCTAssertEqual(absolut.skillSetsPath, "/anderswo/sets")
     }
 
     /// Bisheriges Verhalten ohne Override: Repo = Basis + erstes Segment des Tasks-Pfads.

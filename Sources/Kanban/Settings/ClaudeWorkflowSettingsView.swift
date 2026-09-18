@@ -5,10 +5,10 @@ import KanbanCore
 /// Die Skill-Set-Übersicht: welche Sets es gibt, welches Projekt an welchem hängt, und ob die
 /// Verlinkung wirklich steht.
 ///
-/// Sie zeigt und stellt her — mehr nicht. Bearbeitet werden die Sets im Kanban-Repo unter
-/// `Sources/Kanban/Resources/ClaudeAssets/sets/`, wo Änderungen einen Diff, eine Historie und ein
-/// Review haben. Der frühere Editor mit Anlegen, Einlesen, Zurücksetzen und Fassungen baute daneben
-/// ein zweites, schwächeres Git.
+/// Sie zeigt und stellt her — mehr nicht. Bearbeitet werden die Sets in ihrem Ordner
+/// (`claude.setsPath`, per Vorgabe das Kanban-Repo), und **genau dieser Ordner** ist das Ziel der
+/// Symlinks: eine Änderung wirkt sofort, ohne Zutun dieses Fensters. Der frühere Editor mit
+/// Anlegen, Einlesen, Zurücksetzen und Fassungen baute daneben ein zweites, schwächeres Git.
 @Observable
 final class ClaudeWorkflowModel {
     /// Ein Projekt an einem Set, mit dem Zustand seiner Verlinkung.
@@ -25,9 +25,13 @@ final class ClaudeWorkflowModel {
         var id: String { project.key }
     }
 
-    private let store = ClaudeAssetStore()
+    private var store = ClaudeAssetStore.configured()
 
     private(set) var sets: [ClaudeAssetSet] = []
+    /// Wo die Sets liegen — und ob der Ordner überhaupt da ist. Das ist der eine Preis der
+    /// direkten Verlinkung: ein verschobenes Repo nimmt jedem Projekt seine Skills.
+    private(set) var setsRoot = ""
+    private(set) var setsRootMissing = false
     private(set) var verlinkungen: [String: [Verlinkung]] = [:]   // Set-Name → Projekte
     private(set) var defaultSetName: String?
     /// Steht kein Standard-Set in der Config, gilt trotzdem eins — aber entschieden hat das niemand.
@@ -35,10 +39,10 @@ final class ClaudeWorkflowModel {
     private(set) var message: String?
 
     func load() {
-        // Der Bestand wird beim App-Start gespiegelt; hier noch einmal, falls das Fenster einen
-        // Start ohne Config erlebt hat.
         let config = try? KanbanConfig.load()
-        ClaudeAssetFactory.syncAtLaunch(defaultSkillSet: config?.defaultSkillSet)
+        store = .configured()
+        setsRoot = store.setsRoot.path
+        setsRootMissing = !store.setsRootExists
 
         sets = store.sets()
         let standard = store.defaultSet(configured: config?.defaultSkillSet)
@@ -123,6 +127,10 @@ final class ClaudeWorkflowModel {
         NSWorkspace.shared.activateFileViewerSelecting([set.url])
     }
 
+    func zeigeSetsOrdner() {
+        NSWorkspace.shared.activateFileViewerSelecting([store.setsRoot])
+    }
+
     func zeigeProjektOrdner(_ verlinkung: Verlinkung) {
         let dir = URL(fileURLWithPath: verlinkung.project.repoDir)
             .appendingPathComponent(verlinkung.project.agent.projectDirName, isDirectory: true)
@@ -161,11 +169,24 @@ struct ClaudeWorkflowSettingsView: View {
     private var kopf: some View {
         VStack(alignment: .leading, spacing: 4) {
             Text("Skill-Sets").font(.headline)
-            Text("Gepflegt werden die Sets im Kanban-Repo unter "
-                 + "Sources/Kanban/Resources/ClaudeAssets/sets/ — dort gibt es Diff, Historie und "
-                 + "Review. Dieses Fenster zeigt nur, was womit verbunden ist, und stellt es her.")
+            Text("Die Projekte verlinken **direkt** auf diese Ordner — keine Kopie, kein Sync. "
+                 + "Eine Änderung an einem SKILL.md wirkt sofort in jedem verlinkten Projekt. "
+                 + "Dieses Fenster zeigt nur, was womit verbunden ist, und stellt es her.")
                 .font(.caption).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 6) {
+                Button { model.zeigeSetsOrdner() } label: {
+                    Label(model.abbreviateHome(model.setsRoot), systemImage: "folder")
+                        .font(.caption)
+                }
+                .buttonStyle(.link)
+                .lineLimit(1).truncationMode(.middle)
+                .help("Der gepflegte Ordner — einzustellen unter Einstellungen › Allgemein")
+                if model.setsRootMissing {
+                    Label("gibt es nicht", systemImage: "exclamationmark.triangle")
+                        .font(.caption).foregroundStyle(.orange)
+                }
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(12)
@@ -173,11 +194,17 @@ struct ClaudeWorkflowSettingsView: View {
 
     private var leer: some View {
         VStack(spacing: 6) {
-            Text("Kein Skill-Set im Bestand").foregroundStyle(.secondary)
-            Text("Erwartet werden sie unter sets/<name>/{skills,rules} im App-Bundle.")
+            Text(model.setsRootMissing ? "Den Sets-Ordner gibt es nicht" : "Kein Skill-Set gefunden")
+                .foregroundStyle(.secondary)
+            Text(model.setsRootMissing
+                 ? "Erwartet unter \(model.abbreviateHome(model.setsRoot)) — der Pfad steht in den "
+                   + "Einstellungen unter „Allgemein\u{201C} (claude.setsPath)."
+                 : "Ein Set ist ein Unterordner mit skills/ oder rules/ und kebab-case-Namen.")
                 .font(.caption).foregroundStyle(.tertiary)
+                .multilineTextAlignment(.center)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(.horizontal, 20)
     }
 
     private func setKopf(_ set: ClaudeAssetSet) -> some View {
@@ -202,8 +229,8 @@ struct ClaudeWorkflowSettingsView: View {
             Spacer(minLength: 0)
             Button { model.zeigeImFinder(set) } label: { Image(systemName: "folder") }
                 .buttonStyle(.borderless)
-                .help("Im Finder zeigen: \(model.abbreviateHome(set.url.path)) — eine Kopie aus "
-                      + "dem App-Bundle, hier wird nicht editiert")
+                .help("Im Finder zeigen: \(model.abbreviateHome(set.url.path)) — hier wird das Set "
+                      + "gepflegt, und genau hierhin zeigen die Symlinks")
         }
         .padding(.vertical, 2)
     }
@@ -294,8 +321,8 @@ struct ClaudeWorkflowSettingsView: View {
             }
             HStack(spacing: 10) {
                 Text("Skills liegen im Projekt unter .claude/skills bzw. .codex/skills, Rules unter "
-                     + ".claude/rules — beides gitignored. Das Standard-Set hängt zusätzlich in "
-                     + "~/.claude und ~/.codex.")
+                     + ".claude/rules — beides gitignored, und beides Symlinks auf den gepflegten "
+                     + "Ordner. Das Standard-Set hängt zusätzlich in ~/.claude und ~/.codex.")
                     .font(.caption).foregroundStyle(.tertiary)
                     .fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 8)

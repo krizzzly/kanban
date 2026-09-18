@@ -75,9 +75,14 @@ public struct AppConfig: Sendable {
     public let watchdog: WatchdogSettings
 
     /// Das Skill-Set für alles, was keins gewählt hat (`claude.defaultSkillSet`). Fehlt der
-    /// Eintrag, gilt das einzige vorhandene Set — bei mehreren entscheidet der Bestand
+    /// Eintrag, gilt das einzige vorhandene Set — bei mehreren entscheidet der Sets-Ordner
     /// (`ClaudeAssetStore.defaultSet`), und die Übersicht sagt, dass hier nichts bestimmt ist.
     public let defaultSkillSet: String?
+
+    /// Der Ordner, in dem die Skill-Sets **gepflegt** werden und auf den die Symlinks der Projekte
+    /// zeigen (`claude.setsPath`, absolut/`~`/relativ zum Basis-Pfad). Immer gesetzt: ohne Eintrag
+    /// gilt das Kanban-Repo unter dem Basis-Pfad — eine Konvention, deshalb überschreibbar.
+    public let skillSetsPath: String
 
     /// `.claude/project.json` im Commit-Fenster vorab abwählen (`commit.excludeClaudeProjectFile`).
     /// Vorgabe **an**: die Datei erzeugt Kanban selbst, und wo `.claude/` nicht gitignored ist
@@ -94,6 +99,9 @@ public struct AppConfig: Sendable {
                                         gitlabBaseUrl: nil, gitlabApiToken: nil, projects: [],
                                         watchdog: WatchdogSettings(),
                                         defaultSkillSet: nil,
+                                        skillSetsPath: ClaudeAssetStore
+                                            .defaultSetsRoot(basePath: ("~/code" as NSString)
+                                                .expandingTildeInPath).path,
                                         excludeClaudeProjectFileFromCommit: true)
 
     public var hasJira: Bool {
@@ -222,6 +230,9 @@ public enum KanbanConfig {
             projects: projects,
             watchdog: watchdogSettings(raw.watchdog),
             defaultSkillSet: trimmedOrNil(raw.claude?.defaultSkillSet),
+            skillSetsPath: trimmedOrNil(raw.claude?.setsPath)
+                .map { resolve($0, against: basePathExpanded) }
+                ?? ClaudeAssetStore.defaultSetsRoot(basePath: basePathExpanded).path,
             excludeClaudeProjectFileFromCommit: raw.commit?.excludeClaudeProjectFile ?? true
         )
     }
@@ -330,9 +341,11 @@ private struct RawCommit: Decodable {
     let excludeClaudeProjectFile: Bool?
 }
 
-/// `claude` — ebenfalls Kanban-eigen: welches Skill-Set gilt, wo keins gewählt ist.
+/// `claude` — ebenfalls Kanban-eigen: wo die Skill-Sets liegen und welches gilt, wo keins gewählt
+/// ist.
 private struct RawClaude: Decodable {
     let defaultSkillSet: String?
+    let setsPath: String?
 }
 
 private struct RawModules: Decodable {

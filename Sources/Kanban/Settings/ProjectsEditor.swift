@@ -232,14 +232,14 @@ struct ProjectsEditor: View {
         }
     }
 
-    /// Welchen Satz Skills das neue Projekt sehen soll. Die Liste kommt aus dem Bestand, nicht aus
-    /// dem Code — ein Set, das im Repo dazukommt, steht ohne Codeänderung hier.
+    /// Welchen Satz Skills das neue Projekt sehen soll. Die Liste kommt aus dem Sets-Ordner, nicht
+    /// aus dem Code — ein Set, das im Repo dazukommt, steht ohne Codeänderung hier.
     ///
     /// „Standard-Set" ist die Vorgabe und bleibt es für fast jedes Projekt; der Eintrag wird dann
     /// gar nicht erst geschrieben.
     @ViewBuilder
     private var skillSetPicker: some View {
-        let namen = ClaudeAssetStore().sets().map(\.name)
+        let namen = ClaudeAssetStore.configured().sets().map(\.name)
         if !namen.isEmpty {
             Picker("Skill-Set", selection: Binding(
                 get: { draft.skillSet ?? "" },
