@@ -7,8 +7,10 @@ disable-model-invocation: true
 
 # START TASK - Analyse & Planungs-Arbeitsanweisung
 
-> ⚙️ **Projektwerte** (`prefix`, `tasksPath`, `repoDir`, `worktreePrefix`, `stackDomain`, `gitlabProjectPath`):
-> stehen in `.claude/project.json` im Repo-Root. Lies die Datei, bevor du einen Projektwert brauchst — nie raten.
+> ⚙️ **Projektwerte** (`prefix`, `tasksPath`, `repoDir`, `worktreePrefix`, `dockerStack`, `stackDomain`,
+> `gitlabProjectPath`): stehen in `.claude/project.json` im Repo-Root. Lies die Datei, bevor du einen
+> Projektwert brauchst — nie raten. `dockerStack: false` heisst: kein Docker-Stack — dann gibt es weder
+> `stackDomain` noch `iwf`, und Befehle laufen direkt im Worktree.
 
 Du bist ein erfahrener Software-Entwickler, der JIRA-Tasks systematisch analysiert und einen Lösungsplan erstellt.
 
@@ -68,11 +70,14 @@ maximale Analyse-Tiefe zu gewährleisten.
 ## Worktree-Verhalten (Default: AN)
 
 - **Standard:** Falls das Task-File noch keinen Worktree-Block hat, wird in Phase 0 automatisch einer angelegt
-  und der Block ins Task-File eingefügt (nur Worktree, **kein** Docker-Stack).
+  und der Block ins Task-File eingefügt (nur Worktree, **kein** Docker-Stack wird gestartet).
 - **Opt-out:** Wenn `$ARGUMENTS` das Flag `--no-worktree` enthält, KEIN Worktree anlegen — Analyse läuft im
   Haupt-Repo (altes Default-Verhalten). Das Flag wird beim Task-File-Lookup ignoriert.
+- **Wie angelegt wird, entscheidet `dockerStack`:** `true` (oder fehlend) → `iwf worktree create`;
+  `false` → `git worktree add` mit ermitteltem Basis-Branch.
 
-> Vollständige Befehls-/Flag-Referenz zu `iwf worktree`: `~/Library/Application Support/Kanban/claude/rules/worktree.md`.
+> Vollständige Befehls-/Flag-Referenz zu beiden Wegen:
+> `~/Library/Application Support/Kanban/claude/rules/worktree.md`.
 
 ---
 
@@ -108,12 +113,30 @@ Task-File, CLAUDE.md, `.claude/`, Docs werden weiterhin aus dem Haupt-Repo geles
    englischen `snake_case`-Kurztitel generieren und nach `<tasksPath>/<PREFIX>-NNNN_<english_title>.md` umbenennen
    (= Phase 1, Schritt 2 vorgezogen). Der Worktree-Branch wird aus diesem Namen abgeleitet, **niemals ohne Suffix**.
 1. Branch-Suffix = der `<english_title>`-Teil des (normalisierten) Dateinamens (immer gesetzt).
-2. `iwf worktree create NNNN <english_title>` ausführen (NNNN = nackte Ticket-Nummer, nicht `<PREFIX>-NNNN`).
+2. Worktree anlegen — **`dockerStack` aus `.claude/project.json` entscheidet, wie:**
+
+   **`dockerStack: true` (oder fehlend):** `iwf worktree create NNNN <english_title>` ausführen
+   (NNNN = nackte Ticket-Nummer, nicht `<PREFIX>-NNNN`).
+
+   **`dockerStack: false`:** reiner Git-Worktree, Basis-Branch ermitteln statt annehmen:
+   ```bash
+   R=<repoDir>
+   BASE=$(git -C "$R" symbolic-ref --quiet --short refs/remotes/origin/HEAD)
+   if [ -z "$BASE" ]; then
+     for kandidat in origin/develop origin/main develop main; do
+       git -C "$R" rev-parse --verify --quiet "$kandidat" >/dev/null && { BASE="$kandidat"; break; }
+     done
+   fi
+   [ -z "$BASE" ] && BASE=HEAD
+   git -C "$R" worktree add <worktreePrefix>/<PREFIX>-NNNN \
+       -b feature/<PREFIX>-NNNN_<english_title> --no-track "$BASE"
+   ```
    (Befehls-/Flag-Referenz: `~/Library/Application Support/Kanban/claude/rules/worktree.md`.)
 3. Nach erfolgreichem Lauf den Worktree-Block direkt unter die H1 des Task-Files einfügen
-   (Format identisch zu `create-worktree`).
+   (Format identisch zu `create-worktree` — die `🐳 **STACK**`-Zeile nur bei `dockerStack: true`).
 4. WORKTREE-ROUTING für den Rest der Session aktivieren.
-5. Schritt 0a (Develop-Pull im Haupt-Repo) entfällt — der Worktree wurde frisch von `origin/develop` erstellt.
+5. Schritt 0a (Develop-Pull im Haupt-Repo) entfällt — der Worktree wurde frisch vom Basis-Branch erstellt
+   (mit Stack: `origin/develop`; ohne Stack: der oben ermittelte `$BASE`).
 
 **Bei aktivem Worktree-Routing** beachte für alle Phasen:
 
@@ -224,7 +247,8 @@ Möchtest du die Arbeit an diesem Task fortsetzen?
   git -C <WORKTREE_PATH> push origin --delete feature/<PREFIX>-NNNN
   ```
   Danach die `🌿 **BRANCH**:`-Zeile im Worktree-Block des Task-Files entsprechend aktualisieren. (Worktree-Pfad
-  und Stack-Name bleiben unverändert — sie hängen an der Ticket-Nummer, nicht am Branch-Suffix.)
+  und — falls es einen gibt — Stack-Name bleiben unverändert: sie hängen an der Ticket-Nummer, nicht am
+  Branch-Suffix.)
 - Füge direkt unter der Überschrift einen Status-Abschnitt hinzu (falls nicht vorhanden):
   ```markdown
   ### Status

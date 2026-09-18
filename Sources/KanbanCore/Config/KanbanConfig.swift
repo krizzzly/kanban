@@ -29,6 +29,14 @@ public struct ProjectConfig: Identifiable, Sendable, Hashable {
     /// Branchnamen), nicht die Jira-Anbindung. Beides zu verwechseln hiesse, einem Projekt ohne
     /// Jira auch seine Task-Files zu nehmen.
     public let usesJira: Bool
+    /// Hat dieses Projekt einen eigenen Docker-Stack? `false` heisst: Worktrees sind reine
+    /// Git-Worktrees (`git worktree add`), es gibt kein `iwf`, keine Stack-Oberflaeche, keine
+    /// Snapshots und keinen Stack-Sweep.
+    ///
+    /// Fehlt der Schluessel, gilt `true` — jedes bestehende Projekt bleibt damit unveraendert eine
+    /// Web-Applikation mit Stack. Worktrees und Branches gibt es in **beiden** Faellen; abgeschaltet
+    /// wird nur die Docker-Haelfte.
+    public let usesDockerStack: Bool
 
     public var id: String { key }
 
@@ -37,7 +45,8 @@ public struct ProjectConfig: Identifiable, Sendable, Hashable {
                 repoDir: String, gitlabProjectPath: String?,
                 agent: AgentKind = .claude,
                 appearance: ProjectAppearance = .none,
-                usesJira: Bool = true) {
+                usesJira: Bool = true,
+                usesDockerStack: Bool = true) {
         self.key = key
         self.prefix = prefix
         self.jiraBaseUrl = jiraBaseUrl
@@ -49,6 +58,7 @@ public struct ProjectConfig: Identifiable, Sendable, Hashable {
         self.agent = agent
         self.appearance = appearance
         self.usesJira = usesJira
+        self.usesDockerStack = usesDockerStack
     }
 }
 
@@ -192,7 +202,9 @@ public enum KanbanConfig {
                 // keine Farben, Kopfzeile wie immer.
                 appearance: appearanceFor(key, appearance),
                 // Fehlt der Schlüssel, ist es ein Jira-Projekt — alles Bestehende bleibt, wie es war.
-                usesJira: p.useJira ?? true
+                usesJira: p.useJira ?? true,
+                // Dasselbe für den Stack: ohne Eintrag ist es eine Web-Applikation mit Docker-Stack.
+                usesDockerStack: p.dockerStack ?? true
             ))
         }
         projects.sort { $0.key < $1.key }
@@ -332,6 +344,8 @@ private struct RawJiraProject: Decodable {
     /// `false` = Projekt ohne Jira-Anbindung. Fehlt der Schlüssel, gilt `true` — jedes bestehende
     /// Projekt bleibt damit unverändert ein Jira-Projekt.
     let useJira: Bool?
+    /// `false` = Projekt ohne Docker-Stack. Fehlt der Schlüssel, gilt `true`.
+    let dockerStack: Bool?
 }
 
 private struct RawGitlab: Decodable {

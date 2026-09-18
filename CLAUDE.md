@@ -739,11 +739,15 @@ Nischen-Commands wie open-task/get-mr/solve-support.
   **User-Ebene** die Projektkopie — Gegenteil der verbreiteten Doku-Annahme. `ClaudeCommandScanner`
   liest beide Ebenen, überdeckte Projektkopien stehen in `shadowedProjectURL`.
 - **Keine Projektwerte in den Assets**: Platzhalter `<PREFIX>`/`<tasksPath>`/`<docsPath>`/
-  `<kbPath>`/`<worktreePrefix>`/`<stackDomain>` (nur die TLD; Hosts = `<ordnername>.<stackDomain>`)
-  verweisen auf `<repo>/.claude/project.json`, das `ClaudeProjectFile` beim Projektwechsel aus
-  Kanbans Config generiert (schreibt nur bei inhaltlicher Änderung; `.claude/` ist überall
-  gitignored). **`kbPath` fehlt**, wenn kein Knowledgebase-Pfad konfiguriert ist — ein Skill soll
-  „hier ist sie" von „es gibt keine" unterscheiden können; alle anderen Werte stehen immer da.
+  `<kbPath>`/`<worktreePrefix>`/`<dockerStack>`/`<stackDomain>` (nur die TLD; Hosts =
+  `<ordnername>.<stackDomain>`) verweisen auf `<repo>/.claude/project.json`, das
+  `ClaudeProjectFile` beim Projektwechsel aus Kanbans Config generiert (schreibt nur bei
+  inhaltlicher Änderung; `.claude/` ist überall gitignored). **Zwei Schlüssel fehlen bewusst, wenn
+  es sie nicht gibt**: `kbPath` ohne konfigurierte Knowledgebase und `stackDomain` ohne
+  Docker-Stack — ein Skill soll „hier ist sie" von „es gibt keine" unterscheiden können, und eine
+  TLD ohne Stack dahinter wäre eine Behauptung. `dockerStack` dagegen steht **immer** drin
+  (`true`/`false`): daran verzweigen die Skills, und ein fehlender Schlüssel würde dort als `true`
+  gelesen. Alle anderen Werte stehen immer da.
 - **Editor**: eigener ✨-Toolbar-Button → `ClaudeWorkflowWindow` (eigenständiges Fenster in
   Commit-Dialog-Grösse; die Hermes-Einstellungen bleiben ein Sheet) — CodeEditorView über den
   Bestand, Symlink-Status/-Verwaltung je Asset, „Auf Auslieferungsstand zurücksetzen" (aus dem Bundle).
@@ -958,6 +962,52 @@ gilt:
 - Zwei Projekte, die sich ein Repo teilen (`support` in `even`), teilen sich auch dessen
   `.claude/project.json` — es gewinnt das zuletzt gewählte. Das war schon vorher so, fällt mit
   `docsPath` aber mehr auf.
+
+## Projekt-Typen: zwei Schalter, zwei Hälften
+
+Kanban ist aus der IWF-Werkzeugkette gewachsen, und dort ist jedes Projekt eine Web-Applikation mit
+Jira-Board und eigenem Docker-Stack. Seit Kanban auch eigene Projekte führt (die App selbst, Hermes,
+Skript-Repos), stimmt das nicht mehr — und zwar in zwei unabhängigen Richtungen. Deshalb zwei
+Schalter im Projekt-Eintrag der `jira`-Sektion, **beide mit Vorgabe „an"**, beide nur geschrieben,
+wenn sie **aus** sind (ein Schlüssel, der nur den Normalfall wiederholt, stünde in jedem Projekt
+herum):
+
+| Schlüssel     | Swift              | Aus heisst                                                          |
+|---------------|--------------------|---------------------------------------------------------------------|
+| `useJira`     | `usesJira`         | kein Board, keine Sprints, keine Worklogs — nur freier Modus         |
+| `dockerStack` | `usesDockerStack`  | keine Stack-Oberfläche, kein `iwf` — Worktrees bleiben               |
+
+- **Was bei `dockerStack: false` verschwindet:** die Reiter „Maintree" und „Worktree" samt
+  Snapshots (`TerminalTabsView`), der Zähler „N Stacks stoppen" in der Leiste, und jeder Docker-/
+  `iwf`-Aufruf. Der eine Riegel dafür ist `AppModel.hasStack`; er sitzt unter anderem in
+  `directory(for:)`, durch das **jeder** Stack-Weg kommt (Lebenszyklus, Status, Snapshots,
+  Reparaturen, URL). **Ausgeblendet, nicht ausgegraut** — ein Schalter, der nie angeht, ist keine
+  Auskunft, sondern sieht aus wie „gerade nicht verfügbar".
+- **Was bleibt:** Worktrees, Branches, Task-Files, Commits, Merge Requests, Konsolen. Abgeschaltet
+  wird nur die Docker-Hälfte, nicht das halbe Projekt.
+- **Der Schalter wirkt bis in die Skills**, denn `ClaudeProjectFile` schreibt ihn nach
+  `<repo>/.claude/project.json`. Die Assets sind **ein** kanonischer Bestand ohne Projekt-Varianten
+  (`ClaudeAssetFactory`/`ClaudeAssetStore`), die Verzweigung steht deshalb **im Text** der Skills:
+  `create-worktree` ruft ohne Stack `git worktree add` statt `iwf worktree create` (und lehnt
+  `--start` ab), `destroy-worktree` `git worktree remove` statt `iwf worktree destroy --force`,
+  `solve-task` fährt Tests direkt im Worktree statt über `docker exec`. `rules/worktree.md` ist
+  dafür zweigeteilt: „Git-Worktree (gilt immer)" und „Per-Worktree-Stack (nur `dockerStack: true`)".
+- **Der Basis-Branch muss ohne `iwf` ermittelt werden.** `iwf worktree create` zweigt immer von
+  `origin/develop` ab; ohne `iwf` gibt es diese Konvention nicht, und `develop` existiert in vielen
+  Repos gar nicht (im Kanban-Repo selbst z.B.). Die Kette steht in `rules/worktree.md`:
+  `origin/HEAD` → `origin/develop` → `origin/main` → `develop` → `main` → `HEAD`, und der Skill sagt
+  in der Zusammenfassung, welchen er genommen hat.
+- **Vorbelegt, nicht entschieden:** `ProjectSuggestion` sieht beim Anlegen nach, ob im abgeleiteten
+  Repo-Ordner eine `.iwf.yml` liegt — die ist die Stack-Definition selbst. Der Blick auf die Platte
+  ist injizierbar (`fileExists`), damit der Vorschlag testbar bleibt. Geraten wird nur der
+  Vorschlag; entschieden wird im Editor, und ein Projekt **darf** den Schalter aus haben, obwohl
+  eine `.iwf.yml` existiert.
+- **Einen laufenden Stack stoppt das Abschalten nicht.** Die Oberfläche verschwindet, der Container
+  läuft weiter — heimlich zu stoppen wäre die unangenehmere Überraschung. Der Hilfetext des
+  Schalters sagt das und nennt den Weg (`iwf worktree stop <NR>`).
+- **Bestehende Task-Files werden nicht rückwirkend umgeschrieben.** Ein alter Worktree-Block mit
+  `🐳 **STACK**: -` bleibt stehen; neue Blöcke lassen die Zeile ohne Stack einfach weg (nicht auf
+  `-` setzen — eine Zeile, die nichts sagt, ist schlechter als keine).
 
 ## Kommentare als Diskussion, nicht als JSON
 
@@ -1354,7 +1404,9 @@ links — und derselbe Knopf schaltet zurück; der gefüllte Buchrücken sagt, w
 
 ## Maintree neben Worktree (dasselbe Panel, zwei Ziele)
 
-Die Reiterleiste über dem Terminal beginnt mit **Maintree | Worktree**. Beide zeigen dasselbe
+Die Reiterleiste über dem Terminal beginnt mit **Maintree | Worktree** — beide nur in Projekten
+**mit** Docker-Stack (`dockerStack`, siehe „Projekt-Typen"); ohne Stack fängt die Leiste bei
+„Claude" an. Beide zeigen dasselbe
 Stack-Panel — Statusabzeichen aus `iwf stack ps`, die abgeleiteten Zeilen mit ihren Reparaturen,
 Start/Stop/Neustart und die laufende Ausgabe. Es ist **ein** View mit einem Parameter
 (`StackTarget`), keine Kopie: eine zweite Datei hätte die Regeln unten nur einmal gekannt.
@@ -1457,6 +1509,9 @@ beide: ein `restore` will man genauso mitlesen wie ein `stack build`.
   `/` im Namen darf nie zu einem anderen Ordner führen.
 
 ## Stacks abräumen („N Stacks stoppen" in der Toolbar)
+
+> Nur in Projekten **mit** Docker-Stack: `loadStackSweep` bricht ohne `hasStack` ab, der Zähler
+> bleibt leer und der Knopf erscheint gar nicht (siehe „Projekt-Typen").
 
 Jeder Worktree bringt einen eigenen Docker-Stack mit, und der läuft weiter, wenn das Ticket längst
 in Review oder Done steht. Gemessen auf der Maschine, für die das gebaut wurde: 43 Worktrees, 12

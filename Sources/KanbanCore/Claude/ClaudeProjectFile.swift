@@ -18,8 +18,16 @@ public enum ClaudeProjectFile {
         /// soll den Unterschied sehen zwischen „hier ist die Knowledgebase" und „es gibt keine".
         public let kbPath: String?
         public let repoDir: String           // absolutes Haupt-Repo
-        public let worktreePrefix: String    // Ordner der Worktrees: <repoDir>-worktree (iwf-Konvention)
-        public let stackDomain: String       // TLD des lokalen Stacks; URL = https://<worktree-name>.<stackDomain>
+        /// Ordner der Worktrees: `<repoDir>-worktree`. Steht in **beiden** Fällen in der Datei —
+        /// Worktrees gibt es auch ohne Stack, dann eben als reine Git-Worktrees.
+        public let worktreePrefix: String
+        /// Hat das Projekt einen eigenen Docker-Stack? Der Wert, an dem die Skills verzweigen:
+        /// `false` heisst `git worktree add` statt `iwf worktree create`, kein Netbird-Pre-Flight,
+        /// keine Stack-Zeile im Task-File und Testläufe direkt im Worktree statt über `docker exec`.
+        public let dockerStack: Bool
+        /// TLD des lokalen Stacks; URL = `https://<worktree-name>.<stackDomain>`. **Fehlt** ohne
+        /// Stack: ein Wert, hinter dem keine Domain steht, wäre eine Behauptung.
+        public let stackDomain: String?
         public let gitlabProjectPath: String?
         /// Hinweis an menschliche Leser — Kanban überschreibt die Datei beim Projektwechsel.
         public let generatedBy: String
@@ -34,7 +42,8 @@ public enum ClaudeProjectFile {
                kbPath: project.kbPathAbsolute,
                repoDir: project.repoDir,
                worktreePrefix: project.repoDir + "-worktree",
-               stackDomain: "test",
+               dockerStack: project.usesDockerStack,
+               stackDomain: project.usesDockerStack ? "test" : nil,
                gitlabProjectPath: project.gitlabProjectPath,
                generatedBy: "Kanban — generiert aus der Kanban-Config, nicht von Hand editieren")
     }

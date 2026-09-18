@@ -102,6 +102,8 @@ struct ProjectsEditor: View {
         // Der Präfix allein sagt nicht mehr „Jira": ein Projekt ohne Anbindung hat ihn auch, nur
         // steht dahinter kein Board. „lokal" ist hier die ehrlichere Auskunft.
         if record.prefix != nil { badges.append(record.usesJira == false ? "lokal" : "Jira") }
+        // „Stack" steht nur, wo einer ist: ein Abzeichen, das auf jedem Projekt klebt, sagt nichts.
+        if record.usesDockerStack != false { badges.append("Stack") }
         if record.gitlab != nil { badges.append("GitLab") }
         if record.confluence != nil { badges.append("Confluence") }
         if record.vertec != nil { badges.append("Vertec") }
@@ -143,6 +145,19 @@ struct ProjectsEditor: View {
                              + "Board zeigt nur den freien Modus aus Task-Files, Worktrees und "
                              + "Merge Requests. Der Ticket-Präfix wird trotzdem gebraucht — er "
                              + "benennt Task-Files und Branches.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    // Direkt darunter, weil es dieselbe Art Entscheidung ist: eine ganze Hälfte
+                    // des Projekts an oder aus. Vorbelegt ist der Schalter aus dem Vorschlag
+                    // (`.iwf.yml` im Repo vorhanden?) — geraten wird nur, entschieden wird hier.
+                    Toggle("Docker-Stack", isOn: Binding(
+                        get: { draft.usesDockerStack ?? true },
+                        set: { draft.usesDockerStack = $0 ? nil : false }))
+                    if draft.usesDockerStack == false {
+                        Text("Ohne Docker-Stack: keine Reiter Maintree/Worktree, keine Snapshots, "
+                             + "kein „Stacks stoppen“ und kein iwf-Aufruf. Worktrees werden als "
+                             + "reine Git-Worktrees angelegt (git worktree add). Es bleiben "
+                             + "Worktrees, Branches, Task-Files, Commits und Merge Requests.")
                             .font(.caption).foregroundStyle(.secondary)
                     }
                     TextField("Ticket-Präfix", text: binding(\.prefix), prompt: Text("EVEN"))

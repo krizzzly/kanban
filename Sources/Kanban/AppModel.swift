@@ -1410,8 +1410,16 @@ final class AppModel {
 
     private enum WtOutput { case status, command }
 
+    /// Hat das gewählte Projekt einen eigenen Docker-Stack (`dockerStack` in der Config)?
+    ///
+    /// **Der eine Riegel vor jedem Docker-/`iwf`-Weg.** Ein Projekt ohne Stack hat kein `.iwf.yml`,
+    /// keine Container und keine Stack-URL — jeder Aufruf dorthin wäre entweder ein Fehler oder,
+    /// schlimmer, ein Treffer im Stack eines gleichnamigen Ordners. Ohne gewähltes Projekt lautet
+    /// die Antwort ebenfalls nein: dann gibt es nichts anzusprechen.
+    var hasStack: Bool { selectedProject?.usesDockerStack ?? false }
+
     func refreshWorktreeStatus() {
-        guard let cwd = currentWorktree?.path else { return }
+        guard hasStack, let cwd = currentWorktree?.path else { return }
         worktreeDbDump = WorktreeDbSeed.staged(worktreePath: cwd)
         runIwf(["stack", "ps"], cwd: cwd, into: .status)
         Task { await refreshStackStatus() }
@@ -1438,7 +1446,7 @@ final class AppModel {
 
     /// Die Stack-URL des Worktrees (`https://<name>.test`) — dieselbe, die der Domain-Status prüft.
     var worktreeStackURL: URL? {
-        guard let path = currentWorktree?.path else { return nil }
+        guard hasStack, let path = currentWorktree?.path else { return nil }
         return URL(string: "https://\((path as NSString).lastPathComponent).test")
     }
 
@@ -1451,7 +1459,7 @@ final class AppModel {
     }
 
     func repairStack(_ repair: StackPhase.Repair) {
-        guard !worktreeBusy, let cwd = currentWorktree?.path else { return }
+        guard hasStack, !worktreeBusy, let cwd = currentWorktree?.path else { return }
         let commands = repair.commands
         guard !commands.isEmpty else { return }
 
@@ -1500,7 +1508,7 @@ final class AppModel {
     /// from a local dump file. Requires the stack to be down — Docker will not release the data
     /// volume otherwise, and without dropping it MySQL ignores the new dump entirely.
     func seedDatabase(from source: StackSeeder.Source, importNow: Bool = false) {
-        guard !worktreeBusy, let worktree = currentWorktree?.path,
+        guard hasStack, !worktreeBusy, let worktree = currentWorktree?.path,
               let repoDir = selectedProject?.repoDir else { return }
         let projectName = (repoDir as NSString).lastPathComponent
         let running = stackStatus?.running.count ?? 0
@@ -1538,7 +1546,7 @@ final class AppModel {
     /// Derives the stack state from Docker + the worktree directory. Read-only, so it can run on
     /// every tab visit without side effects.
     func refreshStackStatus() async {
-        guard let cwd = currentWorktree?.path, let repoDir = selectedProject?.repoDir else {
+        guard hasStack, let cwd = currentWorktree?.path, let repoDir = selectedProject?.repoDir else {
             stackStatus = nil; return
         }
         let projectName = (repoDir as NSString).lastPathComponent
@@ -1571,8 +1579,13 @@ final class AppModel {
 
     // MARK: - Beide Stacks über ein Ziel angesprochen
 
-    /// Das Verzeichnis, in dem die `iwf`-Befehle dieses Stacks laufen.
+    /// Das Verzeichnis, in dem die `iwf`-Befehle dieses Stacks laufen — **nil ohne Stack**.
+    ///
+    /// Hier statt an jedem Aufrufer, weil jeder Stack-Weg hier durchkommt: Lebenszyklus, Status,
+    /// Snapshots, Reparaturen und die URL. Ein Projekt ohne Stack hat kein solches Verzeichnis, und
+    /// das ist die ehrlichere Antwort als ein Pfad, in dem `iwf` nichts zu suchen hätte.
     func directory(for target: StackTarget) -> String? {
+        guard hasStack else { return nil }
         switch target {
         case .worktree: return currentWorktree?.path
         case .maintree: return selectedProject?.repoDir
@@ -1634,7 +1647,7 @@ final class AppModel {
     /// der Ordnername, deshalb reicht derselbe Scanner.
     func refreshDerivedStatus(for target: StackTarget) async {
         guard target == .maintree else { await refreshStackStatus(); return }
-        guard let repoDir = selectedProject?.repoDir else { maintreeStackStatus = nil; return }
+        guard hasStack, let repoDir = selectedProject?.repoDir else { maintreeStackStatus = nil; return }
         let projectName = (repoDir as NSString).lastPathComponent
         maintreeStatusLoading = true
         defer { maintreeStatusLoading = false }
@@ -1803,7 +1816,7 @@ final class AppModel {
     /// Ein `docker ps` für die ganze Maschine, dazu die schon geladenen Worktrees und Karten.
     /// Läuft bei jedem Board-Refresh mit, damit der Toolbar-Zähler ohne Klick stimmt.
     func loadStackSweep() async {
-        guard let repoDir = selectedProject?.repoDir else { stackSweep = .empty; return }
+        guard hasStack, let repoDir = selectedProject?.repoDir else { stackSweep = .empty; return }
         let projectName = (repoDir as NSString).lastPathComponent
         let sweepCards = cards.map {
             StackSweepCard(key: $0.ticket.key, column: $0.column,
@@ -1873,6 +1886,7 @@ final class AppModel {
     }
 
     func openStackSweep() {
+        guard hasStack else { return }
         stackSweepOutput = ""
         stackSweepPresented = true
         stackSweepDeep = []     // die destruktive Stufe ist nie vorgewählt
@@ -1894,7 +1908,7 @@ final class AppModel {
     /// Sequenziell, nicht parallel: mehrere gleichzeitige `compose down` auf dieselbe Docker-Engine
     /// bringen nur Gedrängel, und die Ausgabe wäre nicht mehr lesbar zuzuordnen.
     func runStackSweep() {
-        guard !stackSweepBusy, let repoDir = selectedProject?.repoDir else { return }
+        guard hasStack, !stackSweepBusy, let repoDir = selectedProject?.repoDir else { return }
         let targets = stackSweep.candidates.filter { stackSweepSelection.contains($0.stackName) }
         guard !targets.isEmpty else { return }
         // Nur was auch tief abgeräumt werden *darf* — die Auswahl kann älter sein als die Liste.
@@ -1962,12 +1976,12 @@ final class AppModel {
 
     /// Creates the worktree + stack for a ticket that has none yet (run from the main repo).
     func worktreeCreate() {
-        guard let id = worktreeId, let repo = selectedProject?.repoDir else { return }
+        guard hasStack, let id = worktreeId, let repo = selectedProject?.repoDir else { return }
         runIwf(["worktree", "create", id, "--start"], cwd: repo, into: .command, thenRefresh: true)
     }
 
     private func runWorktreeLifecycle(_ args: [String]) {
-        guard let cwd = currentWorktree?.path else { return }
+        guard hasStack, let cwd = currentWorktree?.path else { return }
         runIwf(args, cwd: cwd, into: .command, thenRefresh: true)
     }
 
