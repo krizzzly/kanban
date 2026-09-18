@@ -117,6 +117,50 @@ final class ThemeMapEditTests: XCTestCase {
         XCTAssertNil(markdown.fehler(in: .object(["link": .string("#2c65cf")])))
     }
 
+    // MARK: - Mitgelieferte Fassungen in eine gewachsene Config
+
+    /// Der Fall, der in der Praxis auffiel: eine Config, die nie einen `markdown`-Abschnitt hatte.
+    /// Die Darstellung funktionierte (die eingebauten Fassungen stehen im Code), aber die Auswahl
+    /// in den Einstellungen war leer — es gab nichts einzustellen.
+    func testOhneAbschnittKommenDieMitgeliefertenInDieDatei() {
+        var root = JSONValue.object(["basePath": .string("~/code")])
+        XCTAssertTrue(ThemeMapEdit.ergaenzeVorlagen(&root, spec: markdown))
+        XCTAssertEqual(ThemeMapEdit.namen(root, markdown), ["Blatt", "Blatt Dunkel"])
+        XCTAssertEqual(root.value(at: ["markdown", "theme"])?.stringValue, "Blatt",
+                       "und zwar auf das, was ohnehin gilt")
+        XCTAssertEqual(root.value(at: ["basePath"])?.stringValue, "~/code", "additiv, sonst nichts")
+    }
+
+    func testMitVorhandenerFassungPassiertNichts() {
+        var root = JSONValue.object(["markdown": .object([
+            "theme": .string("Meine"),
+            "themes": .object(["Meine": .object(["background": .string("#101214")])]),
+        ])])
+        XCTAssertFalse(ThemeMapEdit.ergaenzeVorlagen(&root, spec: markdown))
+        XCTAssertEqual(ThemeMapEdit.namen(root, markdown), ["Meine"])
+        XCTAssertEqual(root.value(at: ["markdown", "theme"])?.stringValue, "Meine")
+    }
+
+    /// Reihenfolge ist Pflicht: erst der Altblock, dann die Vorlagen. Andersherum schöben die
+    /// mitgelieferten Fassungen den Altblock beiseite — `themes` gewinnt beim Laden, die von Hand
+    /// gesetzten Farben wären stumm weg.
+    func testAltblockGehtVorDenVorlagen() {
+        var root = JSONValue.object(["markdown": .object(["background": .string("#101214")])])
+        MarkdownAltblock.migriere(&root)
+        XCTAssertFalse(ThemeMapEdit.ergaenzeVorlagen(&root, spec: markdown))
+        XCTAssertEqual(ThemeMapEdit.namen(root, markdown), [MarkdownTheme.eigeneName])
+        XCTAssertEqual(root.value(at: ["markdown", "themes", "Eigene", "background"])?.stringValue,
+                       "#101214")
+    }
+
+    func testDasselbeGiltFuersTerminal() {
+        var root = JSONValue.object([:])
+        XCTAssertTrue(ThemeMapEdit.ergaenzeVorlagen(&root, spec: terminal))
+        XCTAssertEqual(ThemeMapEdit.namen(root, terminal), ["Kanban Dark", "Solarized Dark"])
+        XCTAssertEqual(root.value(at: ["terminal", "theme"])?.stringValue, "Solarized Dark")
+        XCTAssertNil(terminal.fehler(in: root.value(at: ["terminal", "themes", "Kanban Dark"])))
+    }
+
     // MARK: - Altblock-Umzug
 
     func testAltblockZiehtVerlustfreiUm() throws {

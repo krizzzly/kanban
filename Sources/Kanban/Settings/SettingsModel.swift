@@ -31,6 +31,7 @@ final class SettingsModel {
     func load() {
         do {
             document = try store.load()
+            vervollstaendigeDarstellung()
             loadError = nil
         } catch {
             document = nil
@@ -85,6 +86,23 @@ final class SettingsModel {
     private func abbreviate(_ path: String) -> String {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         return path.hasPrefix(home) ? "~" + path.dropFirst(home.count) : path
+    }
+
+    /// Was die Oberfläche zeigen muss, damit man es einstellen kann: die Fassungen. Steht in der
+    /// Datei noch keine, kommen die mitgelieferten hinein — sonst stünde die Auswahl leer da,
+    /// obwohl die Darstellung längst funktioniert (die eingebauten Fassungen stehen nur im Code).
+    ///
+    /// Beim Laden, nicht beim Speichern, und **ohne** `dirty`: die Datei wird davon allein nicht
+    /// angefasst. Erst wenn hier etwas geändert und gespeichert wird, steht es auch auf der Platte.
+    private func vervollstaendigeDarstellung() {
+        guard var doc = document else { return }
+        // Erst der Altblock: sonst schöben die mitgelieferten Fassungen ihn beiseite — `themes`
+        // gewinnt beim Laden, und die von Hand gesetzten Farben wären stumm weg.
+        MarkdownAltblock.migriere(&doc.root)
+        for spec in KanbanConfigSchema.sections.compactMap(\.groups).flatMap({ $0 }).compactMap(\.themeMap) {
+            ThemeMapEdit.ergaenzeVorlagen(&doc.root, spec: spec)
+        }
+        document = doc
     }
 
     /// Der flache `markdown`-Altblock zieht beim Speichern einmalig in eine benannte Fassung um
