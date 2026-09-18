@@ -85,14 +85,15 @@ final class MarkdownThemeTests: XCTestCase {
         let theme = MarkdownTheme.standard
         XCTAssertEqual(MarkdownTheme.hex(theme.background), "#ffffff")
         XCTAssertEqual(theme.colorScheme, "light")
-        XCTAssertNotEqual(MarkdownTheme.hex(theme.codeBackground),
+        XCTAssertNotEqual(MarkdownTheme.hex(theme.flaeche),
                           MarkdownTheme.hex(theme.background), "der Codeblock muss sich abheben")
     }
 
     func testFarbenKommenAusDerConfig() {
         let s = settings(##"{"markdown":{"background":"#fafafa","codeBackground":"#dddddd"}}"##)
         XCTAssertEqual(MarkdownTheme.hex(s.markdown.background), "#fafafa")
-        XCTAssertEqual(MarkdownTheme.hex(s.markdown.codeBackground), "#dddddd")
+        XCTAssertEqual(MarkdownTheme.hex(s.markdown.flaeche), "#dddddd",
+                       "eine fest gesetzte Farbe gewinnt gegen die Ableitung")
         // Nicht gesetzte Werte bleiben die Vorgabe.
         XCTAssertEqual(MarkdownTheme.hex(s.markdown.text),
                        MarkdownTheme.hex(MarkdownTheme.standard.text))

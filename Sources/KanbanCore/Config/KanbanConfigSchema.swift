@@ -311,8 +311,17 @@ public enum KanbanConfigSchema {
         ThemeFieldSpec(["text"], "Text", help: "Vorgabe #060606."),
         ThemeFieldSpec(["secondaryText"], "Nebentext",
                        help: "Zitate, Fussnoten, H6. Vorgabe #6b6e7b."),
-        ThemeFieldSpec(["codeBackground"], "Code-Hintergrund",
-                       help: "Auch Tabellenköpfe und der Frontmatter-Block. Vorgabe #f1f1f4."),
+        ThemeFieldSpec(["shade"], "Flächen-Abdunklung", kind: .number(min: 0, max: 100),
+                       placeholder: String(Int(MarkdownTheme.shadeVorgabe)),
+                       help: "In Prozent, relativ zum Hintergrund: wie stark sich Code-Blöcke, "
+                           + "Tabellenköpfe und Zebrastreifen vom Blatt absetzen. 0 = gar nicht. "
+                           + "Auf einem dunklen Blatt wird um denselben Anteil aufgehellt — dunkler "
+                           + "als fast schwarz sieht man nicht."),
+        ThemeFieldSpec(["codeBackground"], "Code-Hintergrund (fest)",
+                       placeholder: "aus dem Blatt abgeleitet",
+                       help: "Übersteuert die Abdunklung mit einer festen Farbe — für alle, die "
+                           + "genau diesen Ton wollen. Leer ist der Normalfall: dann folgt die "
+                           + "Fläche dem Hintergrund."),
         ThemeFieldSpec(["link"], "Links", help: "Vorgabe #2c65cf."),
         ThemeFieldSpec(["border"], "Linien",
                        help: "Tabellen, Trennlinien, Zitatbalken. Vorgabe #e4e4e8."),

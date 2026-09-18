@@ -1236,6 +1236,14 @@ Feld hat.
 - **`color-scheme` folgt der Helligkeit des Hintergrunds**, sonst blieben die Scrollbalken weiss.
   `underPageBackgroundColor` der WebView wird mitgefärbt — sonst blitzt beim Laden die alte Fläche
   auf, und beim Überziehen am Rand käme sie wieder hervor.
+- **Die Flächen folgen dem Blatt.** Code-Hintergrund, Tabellenkopf, Zebrastreifen und Frontmatter
+  (`--bg2`) sind keine feste Farbe mehr, sondern der Hintergrund um `markdown.shade` Prozent
+  abgesetzt (Vorgabe 6). Wer das Blatt cremefarben stellt, bekommt cremefarbene Flächen statt
+  kaltgrauer. Auf einem dunklen Blatt geht es um denselben Anteil nach oben — `#16181c` um 6 %
+  abzudunkeln wäre ein Zahlenschritt, den kein Schirm zeigt; die Richtung leitet sich wie
+  `color-scheme` aus der Helligkeit ab. `codeBackground` bleibt als feste Übersteuerung, ist aber
+  **nicht** mehr Teil der mitgelieferten Fassungen: eine Kopie erbte sie sonst und hielte die Fläche
+  fest (`GeerbteFlaechenfarbe` räumt genau diese geerbten Werte einmalig weg).
 - **Schriften kommen aus einer Liste**, nicht aus einem Textfeld (`ConfigFieldSpec.Kind.fontFamily`,
   Familien über Core Text): ein vertippter Name fällt still auf die Vorgabe zurück, und man sieht nur,
   dass nichts passiert. Fürs Terminal ist die Liste auf Festbreitenschriften gefiltert.

@@ -114,9 +114,14 @@ public struct MarkdownTheme: Sendable, Hashable {
     public let text: TerminalRGB
     /// Zitate, Fussnoten, Hilfszeilen.
     public let secondaryText: TerminalRGB
-    /// Hintergrund von `code`, ```-Blöcken und Tabellenköpfen — hierhin gehört auch das
-    /// Frontmatter, das als Codeblock gerendert wird (siehe `Frontmatter`).
-    public let codeBackground: TerminalRGB
+    /// Hintergrund von `code`, ```-Blöcken, Tabellenköpfen und Zebrastreifen — hierhin gehört auch
+    /// das Frontmatter, das als Codeblock gerendert wird (siehe `Frontmatter`).
+    ///
+    /// **nil heisst „aus dem Blatt abgeleitet"** (siehe `shade` und `flaeche`). Eine feste Farbe
+    /// hier hiess bisher: wer den Hintergrund ändert, behält graue Codeblöcke auf blauem Blatt.
+    /// Gesetzt gewinnt sie weiterhin — wer eine exakte Farbe will, bekommt sie.
+    public let codeBackground: TerminalRGB?
+    /// Wie stark sich diese Flächen vom Blatt absetzen, in Prozent (0–100). Vorgabe 6.
     public let link: TerminalRGB
     public let border: TerminalRGB
     /// Fliesstext und die sechs Überschriftenebenen (siehe `MarkdownFontSizes`).
@@ -130,9 +135,14 @@ public struct MarkdownTheme: Sendable, Hashable {
     /// Schrift je Ebene, wo eine Ebene aus der Reihe tanzen soll (typischerweise H1).
     public let headingFonts: MarkdownHeadingFonts
 
+    public let shade: Double
+
+    public static let shadeVorgabe: Double = 6
+
     public init(name: String = MarkdownTheme.eigeneName,
                 background: TerminalRGB, text: TerminalRGB, secondaryText: TerminalRGB,
-                codeBackground: TerminalRGB, link: TerminalRGB, border: TerminalRGB,
+                codeBackground: TerminalRGB? = nil, shade: Double = MarkdownTheme.shadeVorgabe,
+                link: TerminalRGB, border: TerminalRGB,
                 fontSizes: MarkdownFontSizes = .standard,
                 fontFamily: String? = nil, headingFont: String? = nil,
                 headingFonts: MarkdownHeadingFonts = .keine) {
@@ -141,6 +151,7 @@ public struct MarkdownTheme: Sendable, Hashable {
         self.text = text
         self.secondaryText = secondaryText
         self.codeBackground = codeBackground
+        self.shade = shade
         self.link = link
         self.border = border
         self.fontSizes = fontSizes
@@ -170,6 +181,32 @@ public struct MarkdownTheme: Sendable, Hashable {
         return "\"\(sauber)\", \(fallback)"
     }
 
+    /// Die tatsächlich gezeichnete Fläche: die gesetzte Farbe, sonst das um `shade` Prozent
+    /// abgesetzte Blatt.
+    public var flaeche: TerminalRGB {
+        codeBackground ?? Self.abgesetzt(background, prozent: shade)
+    }
+
+    /// Den Hintergrund um `prozent` **relativ** abdunkeln — die Fläche folgt damit dem Blatt,
+    /// statt als fester Grauton darauf zu liegen.
+    ///
+    /// Auf einem dunklen Blatt wird um denselben Anteil **aufgehellt**, und zwar nicht aus
+    /// Geschmack: `#16181c` um 6 % abzudunkeln ergibt `#15161a` — ein Unterschied von einem
+    /// Zahlenschritt, den kein Bildschirm zeigt. Die Richtung leitet sich wie `color-scheme` aus der
+    /// Helligkeit des Hintergrunds ab. Wer es anders will, setzt die Farbe direkt.
+    public static func abgesetzt(_ grund: TerminalRGB, prozent: Double) -> TerminalRGB {
+        let anteil = min(max(prozent, 0), 100) / 100
+        let helligkeit = (0.299 * Double(grund.r) + 0.587 * Double(grund.g)
+                          + 0.114 * Double(grund.b)) / 255
+        func kanal(_ wert: UInt8) -> UInt8 {
+            let v = Double(wert)
+            // Hell: Richtung Schwarz, anteilig am Wert. Dunkel: Richtung Weiss, anteilig am Rest.
+            let neu = helligkeit < 0.5 ? v + (255 - v) * anteil : v * (1 - anteil)
+            return UInt8(min(max(neu.rounded(), 0), 255))
+        }
+        return TerminalRGB(r: kanal(grund.r), g: kanal(grund.g), b: kanal(grund.b))
+    }
+
     private static func rgb(_ hex: String) -> TerminalRGB { TerminalRGB(hex: hex)! }
 
     /// Der Name, unter dem ein flacher `markdown`-Block ohne `themes` gelesen wird — und unter dem
@@ -184,7 +221,6 @@ public struct MarkdownTheme: Sendable, Hashable {
         background: rgb("#ffffff"),
         text: rgb("#060606"),
         secondaryText: rgb("#6b6e7b"),
-        codeBackground: rgb("#f1f1f4"),
         link: rgb("#2c65cf"),
         border: rgb("#e4e4e8"))
 
@@ -197,7 +233,6 @@ public struct MarkdownTheme: Sendable, Hashable {
         background: rgb("#16181c"),
         text: rgb("#e6e7ea"),
         secondaryText: rgb("#9aa0ab"),
-        codeBackground: rgb("#22262d"),
         link: rgb("#7aa7ff"),
         border: rgb("#2d323b"))
 
@@ -211,7 +246,6 @@ public struct MarkdownTheme: Sendable, Hashable {
             "background": .string(MarkdownTheme.hex(background)),
             "text": .string(MarkdownTheme.hex(text)),
             "secondaryText": .string(MarkdownTheme.hex(secondaryText)),
-            "codeBackground": .string(MarkdownTheme.hex(codeBackground)),
             "link": .string(MarkdownTheme.hex(link)),
             "border": .string(MarkdownTheme.hex(border)),
             "fontSize": .double(fontSizes.body),
@@ -221,6 +255,10 @@ public struct MarkdownTheme: Sendable, Hashable {
                 "h5": .double(fontSizes.h5), "h6": .double(fontSizes.h6),
             ]),
         ]
+        // Nur, was gesetzt ist: eine mitkopierte Code-Farbe hielte die Fläche fest, obwohl sie
+        // dem Blatt folgen soll — genau das war der Fehler an der alten Form.
+        if let codeBackground { obj["codeBackground"] = .string(MarkdownTheme.hex(codeBackground)) }
+        if shade != MarkdownTheme.shadeVorgabe { obj["shade"] = .double(shade) }
         if let fontFamily { obj["fontFamily"] = .string(fontFamily) }
         if let headingFont { obj["headingFont"] = .string(headingFont) }
         if let schriften = headingFonts.werte { obj["headingFonts"] = schriften }
