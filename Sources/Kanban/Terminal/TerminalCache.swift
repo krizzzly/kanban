@@ -91,6 +91,17 @@ final class TerminalCache {
         }
     }
 
+    /// Jede gehaltene Ansicht loslassen — beim Profilwechsel.
+    ///
+    /// Die tmux-Sitzungen laufen weiter; hier endet nur die Ansicht darauf. Sie hängt an einem
+    /// Sitzungsnamen, und der gehört ab dem Wechsel einem anderen Namensraum — eine stehengebliebene
+    /// Ansicht zeigte auf die Konsole der anderen Welt.
+    func leeren() {
+        for name in Array(terminals.keys) { remove(name) }
+        copyModeSessions.removeAll()
+        copyModeExitTime.removeAll()
+    }
+
     // MARK: - Scroll handling (tmux copy-mode + hidden caret)
 
     /// Claude keeps no scrollback of its own — output scrolls into tmux's scrollback — so the only way

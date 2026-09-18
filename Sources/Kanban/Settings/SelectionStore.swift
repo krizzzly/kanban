@@ -7,6 +7,10 @@ import KanbanCore
 ///
 /// UserDefaults, like `AppScale`: this is local UI state. It deliberately does **not** go into
 /// `~/.hermes/config.json`, which is shared with Hermes and describes projects, not window state.
+///
+/// Jeder Schlüssel gehört einem **Profil** (`ProfileDefaults`): ohne Präfix machte der Start im
+/// privaten Profil die Fenster der Arbeit auf. Welches Profil gilt, setzt die App; ungesetzt
+/// verhält sich der Speicher wie vor der Profil-Ebene.
 enum SelectionStore {
     private static let projectDefaultsKey = "selectedProjectKey"
     private static let openProjectsDefaultsKey = "openProjectKeys"
@@ -14,14 +18,26 @@ enum SelectionStore {
     private static let boardModeDefaultsKey = "boardModeByProject"
     private static let setsRootDefaultsKey = "claudeSetsRootSeen"
 
+    /// Die Schlüssel-Abbildung des aktiven Profils.
+    static var keys = ProfileDefaults(profile: nil)
+    /// Injizierbar, damit ein Test nicht die echten Voreinstellungen anfasst.
+    static var defaults: UserDefaults = .standard
+
+    /// Lesen mit Rückgriff auf den alten Schlüssel — siehe `ProfileDefaults`.
+    private static func read<T>(_ name: String, _ hole: (String) -> T?) -> T? {
+        if let wert = hole(keys.key(name)) { return wert }
+        guard let alt = keys.legacyKey(name) else { return nil }
+        return hole(alt)
+    }
+
     /// The project key selected when the app last quit (nil on first run).
     ///
     /// Seit „ein Fenster je Projekt" ist das **nicht** mehr, was beim Start aufgeht — dafür gibt es
     /// `openProjectKeys`. Es bleibt das zuletzt benutzte Projekt: die Rückfallebene, wenn die Liste
     /// leer ist, und die Quelle, aus der die Liste beim ersten Start migriert wird.
     static var projectKey: String? {
-        get { UserDefaults.standard.string(forKey: projectDefaultsKey) }
-        set { UserDefaults.standard.set(newValue, forKey: projectDefaultsKey) }
+        get { read(projectDefaultsKey) { defaults.string(forKey: $0) } }
+        set { defaults.set(newValue, forKey: keys.key(projectDefaultsKey)) }
     }
 
     /// Die Projekte mit offenem Fenster, in der Reihenfolge, in der die Fenster aufgingen.
@@ -29,8 +45,8 @@ enum SelectionStore {
     /// nil heisst „noch nie geschrieben" (nicht „keines offen") — nur dann greift die Migration vom
     /// alten Einzelwert, siehe `OpenProjects.wiederherstellen`.
     static var openProjectKeys: [String]? {
-        get { UserDefaults.standard.stringArray(forKey: openProjectsDefaultsKey) }
-        set { UserDefaults.standard.set(newValue, forKey: openProjectsDefaultsKey) }
+        get { read(openProjectsDefaultsKey) { defaults.stringArray(forKey: $0) } }
+        set { defaults.set(newValue, forKey: keys.key(openProjectsDefaultsKey)) }
     }
 
     /// Der Sammelordner der Skill-Sets, wie ihn die Übersicht zuletzt gesehen hat.
@@ -50,7 +66,7 @@ enum SelectionStore {
     /// eine nackte Sprint-Id, und ein Nutzer soll seine Auswahl nicht verlieren, nur weil das
     /// Format gewachsen ist.
     static func sprintChoice(forProject key: String) -> String? {
-        switch UserDefaults.standard.dictionary(forKey: sprintDefaultsKey)?[key] {
+        switch read(sprintDefaultsKey, { defaults.dictionary(forKey: $0) })?[key] {
         case let text as String: return text
         case let number as NSNumber: return String(number.intValue)
         default: return nil
@@ -58,21 +74,21 @@ enum SelectionStore {
     }
 
     static func setSprintChoice(_ id: String, forProject key: String) {
-        var map = UserDefaults.standard.dictionary(forKey: sprintDefaultsKey) ?? [:]
+        var map = read(sprintDefaultsKey, { defaults.dictionary(forKey: $0) }) ?? [:]
         map[key] = id
-        UserDefaults.standard.set(map, forKey: sprintDefaultsKey)
+        defaults.set(map, forKey: keys.key(sprintDefaultsKey))
     }
 
     /// Sprint- oder freier Modus, ebenfalls je Projekt: ein Projekt ohne Jira-Board darf dauerhaft
     /// frei laufen, während ein anderes im Sprint bleibt.
     static func boardMode(forProject key: String) -> BoardMode? {
-        (UserDefaults.standard.dictionary(forKey: boardModeDefaultsKey)?[key] as? String)
+        (read(boardModeDefaultsKey, { defaults.dictionary(forKey: $0) })?[key] as? String)
             .flatMap(BoardMode.init(rawValue:))
     }
 
     static func setBoardMode(_ mode: BoardMode, forProject key: String) {
-        var map = UserDefaults.standard.dictionary(forKey: boardModeDefaultsKey) ?? [:]
+        var map = read(boardModeDefaultsKey, { defaults.dictionary(forKey: $0) }) ?? [:]
         map[key] = mode.rawValue
-        UserDefaults.standard.set(map, forKey: boardModeDefaultsKey)
+        defaults.set(map, forKey: keys.key(boardModeDefaultsKey))
     }
 }

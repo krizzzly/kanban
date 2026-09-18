@@ -215,28 +215,20 @@ public enum KanbanConfigError: Error, LocalizedError {
 /// a message, because silently ignoring it would look like data loss.
 public enum KanbanConfig {
     public static var fileURL: URL {
-        let base = FileManager.default
-            .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("Kanban", isDirectory: true)
-        try? FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
-        return base.appendingPathComponent("config.json")
+        try? FileManager.default.createDirectory(at: KanbanPaths.root,
+                                                 withIntermediateDirectories: true)
+        return KanbanPaths.configFile
     }
 
     public static var path: String { fileURL.path }
 
-    /// `~/Library/Application Support/Kanban` — reine Pfad-Rechnung, legt nichts an (anders als
-    /// `fileURL`, das die Config schreiben können muss).
-    public static var supportDirectory: String {
-        FileManager.default
-            .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("Kanban", isDirectory: true).path
-    }
+    /// Der Datenordner des **aktiven Profils** — reine Pfad-Rechnung, legt nichts an (anders als
+    /// `fileURL`, das die Config schreiben können muss). Woher er kommt, sagt `KanbanPaths`.
+    public static var supportDirectory: String { KanbanPaths.root.path }
 
     /// Wo die Doku eines Projekts liegt, das keinen eigenen Pfad nennt: `<support>/docs/<key>`.
     /// Gegenstück zu `<support>/tasks/<…>` — beides gehört Kanban, nicht dem Repo.
-    public static var docsRoot: String {
-        (supportDirectory as NSString).appendingPathComponent("docs")
-    }
+    public static var docsRoot: String { KanbanPaths.docsRoot.path }
 
     public static func load(path: String? = nil) throws -> AppConfig {
         let resolved = path ?? Self.path

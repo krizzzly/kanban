@@ -134,10 +134,13 @@ public struct ClaudeAssetStore: Sendable {
     public let userCodexDir: URL
 
     /// `~/Library/Application Support/Kanban/claude` — der alte Bestand.
+    ///
+    /// Bewusst am **globalen** Ordner und nicht am Profil: er ist per Definition der Ort von
+    /// früher. Wanderte er mit dem Profil, hielte `isOurs` die Symlinks, die ein anderes Profil
+    /// gelegt hat, für fremd — sie würden weder aufgeräumt noch umgehängt, und das neue Profil
+    /// bekäme in den Agent-Homes gar keine Skills.
     public static var defaultLegacyRoot: URL {
-        FileManager.default
-            .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("Kanban/claude", isDirectory: true)
+        KanbanPaths.globalRoot.appendingPathComponent("claude", isDirectory: true)
     }
 
     /// Wo die Sets liegen, wenn die Config nichts sagt: `~/Library/Application Support/Kanban/claude`.
@@ -147,7 +150,7 @@ public struct ClaudeAssetStore: Sendable {
     /// `skills/` und/oder `rules/` ist dort ein Set; wer seine Sets woanders hat, trägt sie einzeln
     /// ein (`claude.sets.<name>.path`) oder zeigt mit `claude.setsPath` auf einen anderen
     /// Sammelordner.
-    public static func defaultSetsRoot(basePath: String) -> URL { defaultLegacyRoot }
+    public static func defaultSetsRoot(basePath: String) -> URL { KanbanPaths.claudeSetsRoot }
 
     public init(setsRoot: URL,
                 registered: [ClaudeAssetSet] = [],
@@ -173,7 +176,21 @@ public struct ClaudeAssetStore: Sendable {
         let root = config?.skillSetsPath ?? defaultSetsRoot(basePath: AppConfig.empty.basePath).path
         return ClaudeAssetStore(setsRoot: URL(fileURLWithPath: root),
                                 registered: (config?.skillSets ?? []).map(\.asset),
-                                formerRoots: formerRoots)
+                                formerRoots: formerRoots + otherProfileSetsRoots())
+    }
+
+    /// Die Sets-Ordner der **anderen** Profile.
+    ///
+    /// Sie zählen wie ein früher gewählter Ordner als „unser" — und das ist keine Bequemlichkeit,
+    /// sondern Bedingung: `~/.claude/skills` gehört allen Profilen gemeinsam. Ohne diese Wurzeln
+    /// hielte `isOurs` die Symlinks des zuvor aktiven Profils für **fremd**, `cleanUp` liesse sie
+    /// stehen und `installSymlink` meldete den Zielort als belegt — das neue Profil bekäme dort gar
+    /// keine Skills und behielte sichtbar die des alten.
+    static func otherProfileSetsRoots() -> [URL] {
+        let aktiv = ProfileStore.active().slug
+        return ProfileStore.load().profiles
+            .filter { $0.slug != aktiv }
+            .map { $0.folder.appendingPathComponent("claude", isDirectory: true) }
     }
 
     /// Home des Agents — in Tests umgebogen, im Betrieb `~/.claude` bzw. `~/.codex`.
@@ -472,6 +489,16 @@ public struct ClaudeAssetStore: Sendable {
             result[agent] = report
         }
         return result
+    }
+
+    /// Unsere Skill-Symlinks aus beiden Agent-Homes nehmen, ohne neue zu legen — für ein Profil,
+    /// das gar kein Set hat. Fremdes bleibt wie überall unangetastet.
+    @discardableResult
+    public func unlinkHomes(_ agents: [AgentKind] = AgentKind.allCases) -> [String] {
+        agents.flatMap { agent in
+            cleanUp(in: homeDir(agent).appendingPathComponent("skills", isDirectory: true),
+                    keeping: [])
+        }
     }
 
     private func install(_ asset: ClaudeAsset, scope: ClaudeLinkScope,

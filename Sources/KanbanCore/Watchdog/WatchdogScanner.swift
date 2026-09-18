@@ -53,7 +53,7 @@ public actor WatchdogScanner {
         public let ausgewertet: Bool
     }
 
-    private let store: WatchdogStore
+    private var store: WatchdogStore
     private let projectsDir: String
     private let macheClient: @Sendable (String) -> ClaudeHeadless
 
@@ -66,6 +66,16 @@ public actor WatchdogScanner {
     }
 
     public func state() -> WatchdogState { store.laden() }
+
+    /// Profilwechsel: der Stand liegt ab jetzt in einer anderen Datei.
+    ///
+    /// `WatchdogStore` bindet seinen Pfad bei der Konstruktion, und dieser Actor lebt prozessweit
+    /// über einen Wechsel hinweg. Ohne das Nachziehen schriebe er die Befunde des neuen Profils
+    /// weiter in die `watchdog.json` des alten — und Befunde tragen wörtliche
+    /// Transcript-Ausschnitte, das wäre ein Übertritt über die Profilgrenze.
+    public func neuAufsetzen(store: WatchdogStore = WatchdogStore()) {
+        self.store = store
+    }
 
     // MARK: - Scan
 

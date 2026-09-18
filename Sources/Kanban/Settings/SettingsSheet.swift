@@ -34,6 +34,7 @@ struct SettingsSheet: View {
     private static let notificationsSectionID = "notifications"
     private static let projectsSectionID = "projects"
     private static let skillSetsSectionID = "skillsets"
+    private static let profilesSectionID = "profiles"
 
     /// Die Hermes-Sektion nur, wenn es eine Hermes-Config gibt — sonst wäre sie ein Schalter ohne Ziel.
     private var visibleSections: [ConfigSectionSpec] {
@@ -46,6 +47,9 @@ struct SettingsSheet: View {
         List(selection: $selection) {
             // Steht bewusst oben und abgesetzt: quer zu allen Modulen, und der Ort, an dem ein
             // neues Projekt entsteht (HERMES-043).
+            // Ganz oben und noch vor den Projekten: ein Profil enthält sie alle. Wer hier
+            // umschaltet, tauscht die ganze Welt darunter aus.
+            Label("Profile", systemImage: "person.2.crop.square.stack").tag(Self.profilesSectionID)
             Label("Projekte", systemImage: "square.stack.3d.up").tag(Self.projectsSectionID)
             // Direkt daneben, aus demselben Grund: ein Set gehört keinem Modul, sondern liegt quer
             // über die Projekte — und zugeordnet wird es hier, am Set.
@@ -75,6 +79,8 @@ struct SettingsSheet: View {
             }
             .padding(30)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if selection == Self.profilesSectionID {
+            ProfilesSettingsView()
         } else if selection == Self.projectsSectionID {
             ProjectsEditor(settings: settings)
         } else if selection == Self.skillSetsSectionID {

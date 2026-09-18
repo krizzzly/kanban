@@ -10,12 +10,9 @@ public enum ClaudeHookInstaller {
         ("~/.claude/settings.json" as NSString).expandingTildeInPath
     }
 
-    public static var scriptPath: String {
-        let base = FileManager.default
-            .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("Kanban", isDirectory: true)
-        return base.appendingPathComponent("kanban-attention-hook.sh").path
-    }
+    /// Global wie die Marker daneben: `~/.claude/settings.json` ruft dieses Skript mit absolutem
+    /// Pfad auf, ein Skript je Profil wäre bei jedem Wechsel ein Schreibzugriff auf fremde Config.
+    public static var scriptPath: String { KanbanPaths.hookScript.path }
 
     /// The event → command mapping we own. All three point at the same script; the script branches
     /// on `hook_event_name`.
