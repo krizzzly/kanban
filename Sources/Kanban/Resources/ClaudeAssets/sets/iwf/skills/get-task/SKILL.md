@@ -440,7 +440,7 @@ setzen und die sichtbare Projektion aus diesem State neu rendern.
 Direkt unter der H1 den aktuellen `workflow_state.task` + `workflow_state.workspace` menschenlesbar rendern:
 
 ```markdown
-> 🎫 **JIRA**: <jiraBaseUrl>/browse/<TICKET>\
+> 🎫 **JIRA**: `<jiraBaseUrl>/browse/<PREFIX>-NNNN`\
 > 📌 **STATUS**: <mapped human status>\
 > 🌳 **WORKTREE**: `<resolved-worktree-path | ->`\
 > 🌿 **BRANCH**: `<resolved-feature-branch | ->`\
