@@ -168,6 +168,7 @@ public enum KanbanConfig {
         let gitlab = raw.modules?.gitlab
         let confluence = raw.modules?.confluence
         let knowledgebase = raw.modules?.knowledgebase
+        let docker = raw.modules?.docker
         let appearance = raw.appearance
 
         var projects: [ProjectConfig] = []
@@ -203,8 +204,9 @@ public enum KanbanConfig {
                 appearance: appearanceFor(key, appearance),
                 // Fehlt der Schlüssel, ist es ein Jira-Projekt — alles Bestehende bleibt, wie es war.
                 usesJira: p.useJira ?? true,
-                // Dasselbe für den Stack: ohne Eintrag ist es eine Web-Applikation mit Docker-Stack.
-                usesDockerStack: p.dockerStack ?? true
+                // Der Stack steht in der **eigenen** Sektion, nicht im Jira-Eintrag: er hat mit
+                // Jira nichts zu tun. Ohne Eintrag ist es eine Web-Applikation mit Docker-Stack.
+                usesDockerStack: docker?.projects?[key]?.stack ?? true
             ))
         }
         projects.sort { $0.key < $1.key }
@@ -326,6 +328,9 @@ private struct RawModules: Decodable {
     /// Ebenfalls kein Modul: nur der Ort der Knowledgebase je Projekt, den Kanban als `kbPath` in
     /// `.claude/project.json` durchreicht.
     let knowledgebase: RawKnowledgebase?
+    /// Auch kein Modul, und erst recht keins von Hermes: ob ein Projekt lokal einen Docker-Stack
+    /// hat. Kanban wertet das selbst aus und reicht es als `dockerStack` an die Skills durch.
+    let docker: RawDocker?
 }
 
 private struct RawJira: Decodable {
@@ -344,8 +349,6 @@ private struct RawJiraProject: Decodable {
     /// `false` = Projekt ohne Jira-Anbindung. Fehlt der Schlüssel, gilt `true` — jedes bestehende
     /// Projekt bleibt damit unverändert ein Jira-Projekt.
     let useJira: Bool?
-    /// `false` = Projekt ohne Docker-Stack. Fehlt der Schlüssel, gilt `true`.
-    let dockerStack: Bool?
 }
 
 private struct RawGitlab: Decodable {
@@ -373,4 +376,14 @@ private struct RawKnowledgebase: Decodable {
 
 private struct RawKnowledgebaseProject: Decodable {
     let path: String?      // absolut, ~ oder relativ zum Basis-Pfad
+}
+
+private struct RawDocker: Decodable {
+    let projects: [String: RawDockerProject]?
+}
+
+private struct RawDockerProject: Decodable {
+    /// `false` = Projekt ohne Docker-Stack. Fehlt der Schlüssel (der Normalfall — geschrieben wird
+    /// nur die Abschaltung), gilt `true`.
+    let stack: Bool?
 }

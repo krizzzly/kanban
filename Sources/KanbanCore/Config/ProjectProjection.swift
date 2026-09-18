@@ -13,13 +13,15 @@ import Foundation
 /// Einträge sollen nicht stillschweigend verschwinden. Umgekehrt gilt für Keys, die die Registry
 /// kennt: fehlt dort ein Modul-Block, verschwindet der zugehörige Eintrag — dafür ist sie ja Owner.
 public enum ProjectProjection {
-    private static let jiraOwnedKeys = ["prefix", "tasksPath", "repoDir", "baseUrl", "useJira",
-                                        "dockerStack"]
+    private static let jiraOwnedKeys = ["prefix", "tasksPath", "repoDir", "baseUrl", "useJira"]
     private static let gitlabOwnedKeys = ["path"]
     private static let confluenceOwnedKeys = ["space", "path"]
     private static let vertecOwnedKeys = ["project", "phase", "task", "additionalKeys"]
     private static let jenkinsOwnedKeys = ["jobs"]
     private static let dockerhubOwnedKeys = ["namespace", "repository"]
+    /// Der lokale Docker-Stack — **nicht** DockerHub darüber. Zwei Sections, zwei Fragen: ob das
+    /// Projekt lokal als Stack läuft gegen die Registry, in der sein Image liegt.
+    private static let dockerOwnedKeys = ["stack"]
 
     /// Die Module, deren `projects`-Section dieselben Projekt-Keys benutzt. (Argo CDs `instances`
     /// sieht ähnlich aus, meint aber Umgebungen — bewusst nicht dabei.)
@@ -32,7 +34,7 @@ public enum ProjectProjection {
     /// Sections, die **nur Kanban** kennt: sie stehen nicht in `moduleNames`, weil die Registry sie
     /// nicht besitzt — `apply` würde sie sonst bei jeder Projektion löschen. Beim ausdrücklichen
     /// Entfernen eines Projekts müssen sie aber mit weg, sonst bliebe ein verwaister Eintrag stehen.
-    static let kanbanOnlySections = ["knowledgebase"]
+    static let kanbanOnlySections = ["knowledgebase", "docker"]
 
     /// Sections ausserhalb von `modules` — ihr Pfad lässt sich nicht aus einem Modulnamen bauen.
     /// Bisher nur `appearance.projects` (Bild und Kopfzeilenfarben): reine Oberfläche, die in
@@ -61,6 +63,7 @@ public enum ProjectProjection {
         let vertec = section(config, "vertec")
         let jenkins = section(config, "jenkins")
         let dockerhub = section(config, "dockerhub")
+        let docker = section(config, "docker")
 
         var registry = ProjectRegistry()
         let keys = Set(jira.keys).union(gitlab.keys).union(confluence.keys).union(vertec.keys)
@@ -75,8 +78,10 @@ public enum ProjectProjection {
                 record.repoDir = entry["repoDir"]?.stringValue
                 record.jiraBaseUrl = entry["baseUrl"]?.stringValue
                 record.usesJira = entry["useJira"]?.boolValue
-                record.usesDockerStack = entry["dockerStack"]?.boolValue
             }
+            // Eigene Section, bewusst **nicht** in der Key-Vereinigung oben: ein Eintrag, der nur
+            // sagt „kein Stack", beschreibt kein Projekt.
+            record.usesDockerStack = docker[key]?.objectValue?["stack"]?.boolValue
             if let path = gitlab[key]?.objectValue?["path"]?.stringValue {
                 record.gitlab = .init(path: path)
             }
@@ -120,6 +125,23 @@ public enum ProjectProjection {
         return result
     }
 
+    /// Schreibt die Sections, die **nur Kanban** kennt — und zwar **nur in Kanbans eigene Config**.
+    ///
+    /// Bewusst getrennt von `apply(_:key:to:)`: das läuft über `HermesSync` auch gegen
+    /// `~/.hermes/config.json`, und `modules.docker` hätte dort nichts zu suchen — Hermes kennt
+    /// keinen Stack-Schalter und würde einen Schlüssel geschenkt bekommen, den es nie liest. Genau
+    /// deshalb steht `docker` in `kanbanOnlySections` und nicht in `moduleNames`.
+    public static func applyKanbanOnly(_ record: ProjectRecord, key: String,
+                                       to config: JSONValue) -> JSONValue {
+        var result = config
+        // Nur die Abschaltung wird geschrieben — `true` ist die Vorgabe, und ein Schlüssel, der nur
+        // den Normalfall wiederholt, stünde in jedem Projekt herum. Beim Wiedereinschalten
+        // verschwindet der ganze Eintrag (`write` mit nil).
+        write(record.usesDockerStack == false ? ["stack": .bool(false)] : nil,
+              ownedKeys: dockerOwnedKeys, at: projectsPath("docker") + [key], in: &result)
+        return result
+    }
+
     /// Schreibt die Registry in die Config und gibt die neue Fassung zurück.
     public static func apply(_ registry: ProjectRegistry, to config: JSONValue) -> JSONValue {
         var result = config
@@ -141,8 +163,6 @@ public enum ProjectProjection {
             // Nur die Abschaltung wird geschrieben: `true` ist die Vorgabe, und ein Schlüssel,
             // der nur den Normalfall wiederholt, stünde in jedem Projekt herum.
             if record.usesJira == false { fields["useJira"] = .bool(false) }
-            // Dieselbe Regel für den Stack: nur die Abschaltung steht in der Config.
-            if record.usesDockerStack == false { fields["dockerStack"] = .bool(false) }
             jira = fields
         }
         write(jira, ownedKeys: jiraOwnedKeys, at: projectsPath("jira") + [key], in: &config)

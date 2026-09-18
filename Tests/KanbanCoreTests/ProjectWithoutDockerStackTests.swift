@@ -2,8 +2,9 @@ import XCTest
 @testable import KanbanCore
 
 /// Ein Projekt **ohne Docker-Stack**: Worktrees, Branches und Task-Files bleiben, die Docker-Hälfte
-/// fällt weg. Gebaut nach dem Vorbild von `ProjectWithoutJiraTests` — dasselbe Muster, weil es
-/// dieselbe Art Schalter ist (nur die Abschaltung steht in der Config).
+/// fällt weg. Das Muster ist `ProjectWithoutJiraTests` (Vorgabe an, nur die Abschaltung wird
+/// geschrieben) — der **Ort** ist ein anderer: eine eigene Section `modules.docker.projects`, denn
+/// mit Jira hat der Schalter nichts zu tun.
 final class ProjectWithoutDockerStackTests: XCTestCase {
 
     private func projekte(_ json: String) throws -> [ProjectConfig] {
@@ -24,9 +25,10 @@ final class ProjectWithoutDockerStackTests: XCTestCase {
 
     func testAbgeschalteterStackWirdGelesen() throws {
         let projects = try projekte("""
-            { "modules": { "jira": { "projects": {
-                "kanban": { "prefix": "KANBAN", "tasksPath": "/tmp/tasks/kanban",
-                            "dockerStack": false } } } } }
+            { "modules": {
+                "jira":   { "projects": { "kanban": { "prefix": "KANBAN",
+                                                      "tasksPath": "/tmp/tasks/kanban" } } },
+                "docker": { "projects": { "kanban": { "stack": false } } } } }
             """)
         XCTAssertEqual(projects.count, 1)
         XCTAssertFalse(projects[0].usesDockerStack)
@@ -38,15 +40,24 @@ final class ProjectWithoutDockerStackTests: XCTestCase {
     /// `dockerStack: true` ausdrücklich hinzuschreiben ist erlaubt und ändert nichts.
     func testAusdruecklichesTrue() throws {
         let projects = try projekte("""
-            { "modules": { "jira": { "projects": {
-                "even": { "prefix": "EVEN", "tasksPath": "/t", "dockerStack": true } } } } }
+            { "modules": {
+                "jira":   { "projects": { "even": { "prefix": "EVEN", "tasksPath": "/t" } } },
+                "docker": { "projects": { "even": { "stack": true } } } } }
             """)
         XCTAssertTrue(projects[0].usesDockerStack)
     }
 
+    /// Ein Docker-Eintrag **ohne** Jira-Eintrag beschreibt kein Projekt — er darf keins erfinden.
+    func testDockerEintragAlleinIstKeinProjekt() throws {
+        let projects = try projekte("""
+            { "modules": { "docker": { "projects": { "geist": { "stack": false } } } } }
+            """)
+        XCTAssertTrue(projects.isEmpty)
+    }
+
     /// Die beiden Schalter sind unabhängig: ein Projekt ohne Jira kann sehr wohl einen Stack haben
     /// (und umgekehrt).
-    func testBeideSchalterSindUnabhaengig() throws {
+    func testJiraAusBedeutetNichtStackAus() throws {
         let projects = try projekte("""
             { "modules": { "jira": { "projects": {
                 "intern": { "prefix": "INT", "tasksPath": "/t", "useJira": false } } } } }
@@ -57,22 +68,31 @@ final class ProjectWithoutDockerStackTests: XCTestCase {
 
     // MARK: - Schreiben
 
-    /// Der Normalfall schreibt den Schlüssel **nicht** — er stünde sonst in jedem Projekt herum.
+    /// Der Normalfall schreibt gar nichts — ohne Abschaltung entsteht keine Docker-Section.
     func testVorgabeWirdNichtGeschrieben() {
         let record = ProjectRecord(prefix: "EVEN", tasksPath: "/tmp/tasks/even")
-        let config = ProjectProjection.apply(record, key: "even", to: .object([:]))
-        let eintrag = config.value(at: ["modules", "jira", "projects", "even"])?.objectValue
-        XCTAssertEqual(eintrag?["prefix"]?.stringValue, "EVEN")
-        XCTAssertNil(eintrag?["dockerStack"])
+        let config = ProjectProjection.applyKanbanOnly(record, key: "even", to: .object([:]))
+        XCTAssertNil(config.value(at: ["modules", "docker"]))
     }
 
     func testAbschaltungWirdGeschrieben() {
         var record = ProjectRecord(prefix: "KANBAN", tasksPath: "/tmp/tasks/kanban")
         record.usesDockerStack = false
-        let config = ProjectProjection.apply(record, key: "kanban", to: .object([:]))
-        let eintrag = config.value(at: ["modules", "jira", "projects", "kanban"])?.objectValue
-        XCTAssertEqual(eintrag?["dockerStack"]?.boolValue, false)
-        XCTAssertEqual(eintrag?["prefix"]?.stringValue, "KANBAN")
+        let config = ProjectProjection.applyKanbanOnly(record, key: "kanban", to: .object([:]))
+        XCTAssertEqual(
+            config.value(at: ["modules", "docker", "projects", "kanban", "stack"])?.boolValue, false)
+    }
+
+    /// Der Schalter steht **nicht** im Jira-Eintrag — das war der Punkt des Umzugs.
+    func testDerJiraEintragBleibtSauber() {
+        var record = ProjectRecord(prefix: "KANBAN", tasksPath: "/t")
+        record.usesDockerStack = false
+        var config = ProjectProjection.apply(record, key: "kanban", to: .object([:]))
+        config = ProjectProjection.applyKanbanOnly(record, key: "kanban", to: config)
+        let jira = config.value(at: ["modules", "jira", "projects", "kanban"])?.objectValue
+        XCTAssertEqual(jira?["prefix"]?.stringValue, "KANBAN")
+        XCTAssertNil(jira?["dockerStack"])
+        XCTAssertNil(jira?["stack"])
     }
 
     /// Hin und zurück: was geschrieben wurde, muss die Registry wieder einlesen — sonst stünde der
@@ -80,57 +100,85 @@ final class ProjectWithoutDockerStackTests: XCTestCase {
     func testRundlauf() {
         var record = ProjectRecord(prefix: "KANBAN", tasksPath: "/tmp/tasks/kanban")
         record.usesDockerStack = false
-        let config = ProjectProjection.apply(record, key: "kanban", to: .object([:]))
+        var config = ProjectProjection.apply(record, key: "kanban", to: .object([:]))
+        config = ProjectProjection.applyKanbanOnly(record, key: "kanban", to: config)
         let registry = ProjectProjection.importing(from: config)
         XCTAssertEqual(registry["kanban"]?.usesDockerStack, false)
         XCTAssertEqual(registry["kanban"]?.prefix, "KANBAN")
     }
 
-    /// Wird der Stack wieder eingeschaltet, muss der Schlüssel **verschwinden** — bliebe er als
+    /// Wird der Stack wieder eingeschaltet, muss der Eintrag **verschwinden** — bliebe er als
     /// `false` stehen, wäre das Projekt weiterhin abgeschaltet, während der Schalter „an" zeigt.
-    func testWiederEinschaltenEntferntDenSchluessel() {
+    func testWiederEinschaltenEntferntDenEintrag() {
         var aus = ProjectRecord(prefix: "KANBAN", tasksPath: "/t")
         aus.usesDockerStack = false
-        var config = ProjectProjection.apply(aus, key: "kanban", to: .object([:]))
+        var config = ProjectProjection.applyKanbanOnly(aus, key: "kanban", to: .object([:]))
         XCTAssertEqual(
-            config.value(at: ["modules", "jira", "projects", "kanban", "dockerStack"])?.boolValue,
-            false)
+            config.value(at: ["modules", "docker", "projects", "kanban", "stack"])?.boolValue, false)
 
         var an = ProjectRecord(prefix: "KANBAN", tasksPath: "/t")
         an.usesDockerStack = nil
-        config = ProjectProjection.apply(an, key: "kanban", to: config)
-        XCTAssertNil(config.value(at: ["modules", "jira", "projects", "kanban", "dockerStack"]))
+        config = ProjectProjection.applyKanbanOnly(an, key: "kanban", to: config)
+        XCTAssertNil(config.value(at: ["modules", "docker", "projects", "kanban"]))
     }
 
-    /// Die Projektion ist additiv: ein Schlüssel, den nur Hermes kennt, überlebt das Schreiben.
-    /// (Ein Hermes ohne `dockerStack` darf von dem Schalter nichts merken — und umgekehrt.)
+    /// Die Projektion ist additiv: ein Schlüssel, den nur jemand anderes kennt, überlebt das
+    /// Schreiben — auch im Docker-Eintrag selbst.
     func testFremderSchluesselImSelbenEintragBleibt() {
         var config = JSONValue.object([:])
-        config.set(.object(["prefix": .string("KANBAN"),
-                            "tasksPath": .string("/t"),
-                            "irgendwasVonHermes": .string("bleibt")]),
-                   at: ["modules", "jira", "projects", "kanban"])
+        config.set(.object(["stack": .bool(true), "irgendwasFremdes": .string("bleibt")]),
+                   at: ["modules", "docker", "projects", "kanban"])
 
         var record = ProjectRecord(prefix: "KANBAN", tasksPath: "/t")
         record.usesDockerStack = false
-        config = ProjectProjection.apply(record, key: "kanban", to: config)
+        config = ProjectProjection.applyKanbanOnly(record, key: "kanban", to: config)
 
-        let eintrag = config.value(at: ["modules", "jira", "projects", "kanban"])?.objectValue
-        XCTAssertEqual(eintrag?["irgendwasVonHermes"]?.stringValue, "bleibt")
-        XCTAssertEqual(eintrag?["dockerStack"]?.boolValue, false)
+        let eintrag = config.value(at: ["modules", "docker", "projects", "kanban"])?.objectValue
+        XCTAssertEqual(eintrag?["irgendwasFremdes"]?.stringValue, "bleibt")
+        XCTAssertEqual(eintrag?["stack"]?.boolValue, false)
+    }
+
+    /// Der Grund für den eigenen Aufruf: `apply` läuft über `HermesSync` auch gegen Hermes' Config,
+    /// und dort hätte `modules.docker` nichts zu suchen.
+    func testDieNormaleProjektionSchreibtKeineDockerSection() {
+        var record = ProjectRecord(prefix: "KANBAN", tasksPath: "/t")
+        record.usesDockerStack = false
+        let config = ProjectProjection.apply(record, key: "kanban", to: .object([:]))
+        XCTAssertNil(config.value(at: ["modules", "docker"]))
+    }
+
+    /// Ein gelöschtes Projekt darf keinen verwaisten Docker-Eintrag hinterlassen.
+    func testEntfernenRaeumtDieDockerSectionMitAb() {
+        var record = ProjectRecord(prefix: "KANBAN", tasksPath: "/t")
+        record.usesDockerStack = false
+        var config = ProjectProjection.apply(record, key: "kanban", to: .object([:]))
+        config = ProjectProjection.applyKanbanOnly(record, key: "kanban", to: config)
+
+        config = ProjectProjection.remove("kanban", from: config)
+        XCTAssertNil(config.value(at: ["modules", "docker", "projects", "kanban"]))
+        XCTAssertNil(config.value(at: ["modules", "jira", "projects", "kanban"]))
     }
 
     // MARK: - Schema
 
-    func testSchalterStehtInDerJiraSektion() {
-        let jira = KanbanConfigSchema.sections.first { $0.id == "jira" }
-        let feld = jira?.projectMap?.fields.first { $0.key == "dockerStack" }
-        XCTAssertNotNil(feld, "ohne Feld im Schema gibt es den Schalter in den Einstellungen nicht")
+    func testSchalterStehtInDerEigenenDockerSektion() {
+        let docker = KanbanConfigSchema.sections.first { $0.id == "docker" }
+        XCTAssertNotNil(docker, "ohne Sektion gibt es den Schalter in den Einstellungen nicht")
+        XCTAssertEqual(docker?.projectMap?.path, ["modules", "docker", "projects"])
+
+        let feld = docker?.projectMap?.fields.first { $0.key == "stack" }
+        XCTAssertNotNil(feld)
         XCTAssertFalse(feld?.required ?? true)
         guard case .bool(let defaultOn)? = feld?.kind else {
-            return XCTFail("dockerStack sollte ein Schalter sein")
+            return XCTFail("stack sollte ein Schalter sein")
         }
         XCTAssertTrue(defaultOn, "ohne Eintrag muss ein Projekt einen Stack haben")
+    }
+
+    /// Und er steht **nicht** mehr unter Jira: mit der Jira-Anbindung hat er nichts zu tun.
+    func testUnterJiraStehtKeinStackSchalterMehr() {
+        let jira = KanbanConfigSchema.sections.first { $0.id == "jira" }
+        XCTAssertNil(jira?.projectMap?.fields.first { $0.key == "dockerStack" })
     }
 
     // MARK: - Vorschlag beim Anlegen

@@ -968,14 +968,25 @@ gilt:
 Kanban ist aus der IWF-Werkzeugkette gewachsen, und dort ist jedes Projekt eine Web-Applikation mit
 Jira-Board und eigenem Docker-Stack. Seit Kanban auch eigene Projekte führt (die App selbst, Hermes,
 Skript-Repos), stimmt das nicht mehr — und zwar in zwei unabhängigen Richtungen. Deshalb zwei
-Schalter im Projekt-Eintrag der `jira`-Sektion, **beide mit Vorgabe „an"**, beide nur geschrieben,
-wenn sie **aus** sind (ein Schlüssel, der nur den Normalfall wiederholt, stünde in jedem Projekt
-herum):
+Schalter, **beide mit Vorgabe „an"**, beide nur geschrieben, wenn sie **aus** sind (ein Schlüssel,
+der nur den Normalfall wiederholt, stünde in jedem Projekt herum):
 
-| Schlüssel     | Swift              | Aus heisst                                                          |
-|---------------|--------------------|---------------------------------------------------------------------|
-| `useJira`     | `usesJira`         | kein Board, keine Sprints, keine Worklogs — nur freier Modus         |
-| `dockerStack` | `usesDockerStack`  | keine Stack-Oberfläche, kein `iwf` — Worktrees bleiben               |
+| Config                                      | Swift             | Aus heisst                                            |
+|---------------------------------------------|-------------------|-------------------------------------------------------|
+| `modules.jira.projects.<key>.useJira`       | `usesJira`        | kein Board, keine Sprints, keine Worklogs — nur freier Modus |
+| `modules.docker.projects.<key>.stack`       | `usesDockerStack` | keine Stack-Oberfläche, kein `iwf` — Worktrees bleiben |
+
+- **Der Stack-Schalter hat eine eigene Sektion**, obwohl er dieselbe *Form* hat wie `useJira`. Er
+  stand zuerst im Jira-Eintrag daneben — gleiche Form, gleiche Reichweite, ein Feld gespart. Das war
+  eine Verwechslung von Form und Sache: mit Jira hat der lokale Docker-Stack nichts zu tun, und in
+  den Einstellungen unter „Jira" sucht ihn niemand. Jetzt: Sektion **Docker** (`shippingbox`),
+  zwischen Knowledgebase und Darstellung.
+- **`modules.docker` ist Kanban-eigen** und steht deshalb in `ProjectProjection.kanbanOnlySections`,
+  nicht in `moduleNames`: `apply(_:key:to:)` läuft über `HermesSync` auch gegen
+  `~/.hermes/config.json`, und dort hätte der Schlüssel nichts zu suchen. Geschrieben wird er über
+  `applyKanbanOnly(_:key:to:)`, das nur `SettingsModel.createProject` gegen Kanbans eigenes Dokument
+  aufruft. Über `kanbanOnlySections` räumt `remove` den Eintrag beim Löschen eines Projekts mit ab.
+  Nicht zu verwechseln mit `modules.dockerhub` — das ist die Registry, in der das Image liegt.
 
 - **Was bei `dockerStack: false` verschwindet:** die Reiter „Maintree" und „Worktree" samt
   Snapshots (`TerminalTabsView`), der Zähler „N Stacks stoppen" in der Leiste, und jeder Docker-/
@@ -1983,6 +1994,10 @@ und wer die eine Datei kennt, kennt die andere.
   im Fenster aufschlägt (siehe „Knowledgebase lesen"). Ohne `kbPath` gibt es den Knopf nicht;
   existiert der Ordner nicht, bleibt er sichtbar und die Ansicht nennt den fehlenden Pfad, statt
   sich zu verstecken.
+- `modules.docker.projects.<key>.stack` — **kein Modul und keins von Hermes**: ob das Projekt einen
+  eigenen Docker-Stack hat (siehe „Projekt-Typen"). Fehlt der Schlüssel, gilt `true`; geschrieben
+  wird nur die Abschaltung. Wie `knowledgebase` in `kanbanOnlySections` statt `moduleNames`, damit
+  er nicht nach Hermes wandert, ein gelöschtes Projekt aber keinen verwaisten Eintrag hinterlässt.
 - `modules.confluence.projects.<key>.{space,path}` — **kein Modul, das Kanban betreibt**: nur der
   Space und der Ablageort der exportierten Seiten (`docsPath`, siehe „Task-Files und Doku liegen im
   Kanban-Ordner"). Ohne Eintrag gilt `~/Library/Application Support/Kanban/docs/<key>`. Ein Key ohne
