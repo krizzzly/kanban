@@ -32,6 +32,20 @@ public struct ConfigFieldSpec: Identifiable, Sendable {
         case path              // string that is a filesystem path (gets a "Wählen…" button)
         case stringList        // JSON string array, edited comma-separated
         case choice([String])  // enum; empty selection removes the key (= module default)
+        /// Farbe als `#rrggbb`-Text. Leer entfernt den Schlüssel — und damit gilt wieder die
+        /// eingebaute Vorgabe, nicht Schwarz.
+        case color
+        /// Zahl mit Grenzen, geschrieben als JSON-**Zahl**.
+        ///
+        /// Eigener Typ, weil `stringBinding` sonst `"16"` in die Datei schriebe — und ein String, wo
+        /// eine Zahl erwartet wird, lässt den Config-Decoder werfen und setzt **die ganze**
+        /// Darstellung auf die Vorgaben zurück (nachgemessen). Die Grenzen sind dieselben wie im
+        /// Decoder, hier nur sichtbar statt stumm.
+        case number(min: Double, max: Double)
+        /// Auswahl, deren Optionen erst in der Datei stehen: die Schlüssel des Objekts an diesem
+        /// Pfad (`terminal.themes`). Ohne das müsste das Schema Namen kennen, die der Benutzer
+        /// gerade erst vergeben hat.
+        case choiceFromKeys([String])
     }
 
     public let path: [String]
@@ -107,6 +121,111 @@ public struct ProjectMapSpec: Sendable {
     }
 }
 
+/// Eine benannte Fassung in einer Themes-Map (`terminal.themes.<name>`, `markdown.themes.<name>`),
+/// als Kopiervorlage für „neue Fassung".
+public struct ThemeVorlage: Sendable {
+    public let name: String
+    public let werte: JSONValue
+
+    public init(name: String, werte: JSONValue) {
+        self.name = name
+        self.werte = werte
+    }
+}
+
+/// Ein Feld **innerhalb** einer Fassung. Unterpfad statt Schlüssel, weil `headings.h1` zwei Ebenen
+/// tief liegt und ein Editor, der nur einen Schlüssel anhängen kann, daran scheitert.
+public struct ThemeFieldSpec: Identifiable, Sendable {
+    public let subpath: [String]
+    public let label: String
+    public let kind: ConfigFieldSpec.Kind
+    public let placeholder: String?
+    public let help: String?
+
+    public var id: String { subpath.joined(separator: ".") }
+
+    public init(_ subpath: [String], _ label: String, kind: ConfigFieldSpec.Kind = .color,
+                placeholder: String? = nil, help: String? = nil) {
+        self.subpath = subpath
+        self.label = label
+        self.kind = kind
+        self.placeholder = placeholder
+        self.help = help
+    }
+}
+
+/// Eine Map benannter Fassungen samt der Auswahl darüber — **ein** Bauteil für Terminal und
+/// Markdown. Der Unterschied ist die Feldliste, nicht die Bedienung: auswählen, anlegen (als Kopie),
+/// umbenennen, entfernen.
+public struct ThemeMapSpec: Sendable {
+    /// Wo die Fassungen stehen, z. B. `["markdown", "themes"]`.
+    public let path: [String]
+    /// Wo der Name der aktiven steht, z. B. `["markdown", "theme"]`.
+    public let activePath: [String]
+    public let title: String
+    public let keyPlaceholder: String
+    public let fields: [ThemeFieldSpec]
+    /// Schlüssel, ohne die eine Fassung **stumm** aus der Auswahl fällt (`RawTheme.resolved` wirft
+    /// sie weg). Der Editor warnt, statt sie verschwinden zu lassen.
+    public let requiredKeys: [String]
+    /// Unterschlüssel mit genau 16 ANSI-Farben — nil, wo es keine gibt (Markdown).
+    public let ansiKey: String?
+    /// Womit eine neue Fassung startet, wenn es noch keine zum Kopieren gibt.
+    public let vorlagen: [ThemeVorlage]
+
+    public init(path: [String], activePath: [String], title: String, keyPlaceholder: String,
+                fields: [ThemeFieldSpec], requiredKeys: [String] = [], ansiKey: String? = nil,
+                vorlagen: [ThemeVorlage] = []) {
+        self.path = path
+        self.activePath = activePath
+        self.title = title
+        self.keyPlaceholder = keyPlaceholder
+        self.fields = fields
+        self.requiredKeys = requiredKeys
+        self.ansiKey = ansiKey
+        self.vorlagen = vorlagen
+    }
+
+    /// Warum eine Fassung nicht zählt — nil heisst „vollständig". Dieselbe Prüfung wie beim Laden,
+    /// damit die Oberfläche nicht etwas anderes behauptet als der Decoder tut.
+    public func fehler(in werte: JSONValue?) -> String? {
+        let fehlend = requiredKeys.filter { key in
+            TerminalRGB(hex: werte?.value(at: [key])?.stringValue ?? "") == nil
+        }
+        if !fehlend.isEmpty {
+            return "Ohne \(fehlend.joined(separator: ", ")) fällt die Fassung aus der Auswahl."
+        }
+        if let ansiKey {
+            let lesbar = (werte?.value(at: [ansiKey])?.arrayValue ?? [])
+                .filter { TerminalRGB(hex: $0.stringValue ?? "") != nil }.count
+            if lesbar != 16 {
+                return "\(lesbar) von 16 ANSI-Farben lesbar — erst mit allen 16 zählt die Fassung."
+            }
+        }
+        return nil
+    }
+}
+
+/// Eine Gruppe innerhalb einer Sektion: eigener Titel, eigene Felder, optional eine Themes-Map.
+/// „Darstellung" führt drei davon (Kopfzeile, Markdown, Terminal), statt die Seitenleiste um zwei
+/// weitere Einträge zu verlängern.
+public struct ConfigFieldGroup: Identifiable, Sendable {
+    public let id: String
+    public let title: String
+    public let intro: String?
+    public let fields: [ConfigFieldSpec]
+    public let themeMap: ThemeMapSpec?
+
+    public init(id: String, title: String, intro: String? = nil,
+                fields: [ConfigFieldSpec] = [], themeMap: ThemeMapSpec? = nil) {
+        self.id = id
+        self.title = title
+        self.intro = intro
+        self.fields = fields
+        self.themeMap = themeMap
+    }
+}
+
 /// A sidebar section of the settings sheet.
 public struct ConfigSectionSpec: Identifiable, Sendable {
     public let id: String
@@ -115,14 +234,17 @@ public struct ConfigSectionSpec: Identifiable, Sendable {
     public let intro: String?
     public let fields: [ConfigFieldSpec]
     public let projectMap: ProjectMapSpec?
+    public let groups: [ConfigFieldGroup]
 
     public init(id: String, title: String, icon: String, intro: String? = nil,
-                fields: [ConfigFieldSpec], projectMap: ProjectMapSpec? = nil) {
+                fields: [ConfigFieldSpec], projectMap: ProjectMapSpec? = nil,
+                groups: [ConfigFieldGroup] = []) {
         self.id = id
         self.title = title
         self.icon = icon
         self.intro = intro
         self.fields = fields
         self.projectMap = projectMap
+        self.groups = groups
     }
 }

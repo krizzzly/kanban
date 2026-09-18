@@ -39,6 +39,24 @@ struct SchemaFieldView: View {
                 Text("Standard").tag("")
                 ForEach(options, id: \.self) { Text($0).tag($0) }
             }
+        case .color:
+            ColorField(label: spec.label, hex: settings.stringBinding(spec.path))
+        case .number(let min, let max):
+            NumberField(label: spec.label, path: spec.path, min: min, max: max,
+                        placeholder: spec.placeholder, settings: settings)
+        case .choiceFromKeys(let keysPath):
+            // Die Optionen stehen in der Datei, nicht im Schema. Ein Name, den es dort nicht (mehr)
+            // gibt, bleibt trotzdem in der Liste — sonst stünde die Auswahl leer da, obwohl in der
+            // Config etwas steht, und niemand sähe, was.
+            let gesetzt = settings.stringValue(at: spec.path)
+            let namen = settings.keys(at: keysPath)
+            Picker(spec.label, selection: settings.stringBinding(spec.path)) {
+                Text("Standard").tag("")
+                ForEach(namen, id: \.self) { Text($0).tag($0) }
+                if !gesetzt.isEmpty && !namen.contains(gesetzt) {
+                    Text("\(gesetzt) — gibt es nicht mehr").tag(gesetzt)
+                }
+            }
         }
     }
 
@@ -52,6 +70,63 @@ struct SchemaFieldView: View {
         default:
             return nil
         }
+    }
+}
+
+/// Zahl mit Grenzen, geschrieben als JSON-**Zahl**.
+///
+/// Eigenes Bauteil, weil so ein Feld drei Zustände hat: leer (= Vorgabe), unfertig getippt und
+/// fertig. Deshalb hält es seinen Text selbst und zieht erst beim Verlassen auf die Grenzen — wer
+/// „1" tippt, um „16" zu schreiben, soll nicht nach dem ersten Zeichen bei 8 stehen.
+struct NumberField: View {
+    let label: String
+    let path: [String]
+    let min: Double
+    let max: Double
+    var placeholder: String?
+    let settings: SettingsModel
+
+    @State private var text = ""
+    @State private var geladen = false
+    @FocusState private var fokussiert: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 8) {
+                Text(label)
+                Spacer(minLength: 8)
+                TextField("", text: $text, prompt: placeholder.map(Text.init))
+                    .multilineTextAlignment(.trailing)
+                    .frame(width: 64)
+                    .focused($fokussiert)
+                    .onSubmit(uebernehmen)
+                Text("pt").font(.caption).foregroundStyle(.secondary)
+            }
+            if let hinweis {
+                Text(hinweis).font(.caption).foregroundStyle(.orange)
+            }
+        }
+        .onAppear {
+            guard !geladen else { return }
+            text = settings.numberText(at: path)
+            geladen = true
+        }
+        .onChange(of: text) { settings.setNumber(path, from: text) }
+        .onChange(of: fokussiert) { _, jetzt in if !jetzt { uebernehmen() } }
+    }
+
+    private var hinweis: String? {
+        let getrimmt = text.trimmingCharacters(in: .whitespaces).replacingOccurrences(of: ",", with: ".")
+        guard !getrimmt.isEmpty else { return nil }
+        guard let zahl = Double(getrimmt) else { return "Keine Zahl — der Wert wird nicht übernommen." }
+        guard zahl < min || zahl > max else { return nil }
+        return "Ausserhalb \(SettingsModel.zahlText(min))–\(SettingsModel.zahlText(max)) — "
+             + "wird beim Verlassen darauf gezogen."
+    }
+
+    private func uebernehmen() {
+        settings.clampNumber(path, min: min, max: max)
+        text = settings.numberText(at: path)
     }
 }
 

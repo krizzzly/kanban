@@ -251,13 +251,3 @@ enum JiraFieldExtraction {
     }
 }
 
-extension JSONValue {
-    /// `1` und `1.0` sind in Jira dasselbe Story-Point-Feld — beide Formen liefern hier einen Double.
-    var doubleValue: Double? {
-        switch self {
-        case .double(let value): return value
-        case .int(let value): return Double(value)
-        default: return nil
-        }
-    }
-}

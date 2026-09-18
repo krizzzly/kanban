@@ -9,8 +9,8 @@ import Foundation
 /// Wer weitere Hermes-Module pflegen will, tut das in Hermes.
 public enum KanbanConfigSchema {
     public static let sections: [ConfigSectionSpec] = [general, jira, gitlab, confluence,
-                                                       knowledgebase, docker, appearance, watchdog,
-                                                       hermes]
+                                                       knowledgebase, docker, appearance,
+                                                       watchdog, hermes]
 
     /// Nur sinnvoll, solange eine `~/.hermes/config.json` existiert — die Einstellungen blenden die
     /// Sektion sonst aus (`HermesSync.isAvailable`).
@@ -179,15 +179,18 @@ public enum KanbanConfigSchema {
     /// **Alles optional, und nichts davon ist voreingestellt.** Ohne Eintrag sieht die Kopfzeile aus
     /// wie bisher; das ist kein Sonderfall, sondern der Normalfall. Deshalb gibt es zu jedem Feld
     /// auch einen Weg zurück auf „nicht gesetzt" statt nur auf eine andere Farbe.
+    /// Alles, was „wie sieht das aus" beantwortet, in **einer** Sektion mit drei Gruppen:
+    /// Kopfzeile je Projekt, Markdown, Terminal. Vorher hatten Markdown und Terminal gar keine
+    /// Oberfläche und die Sektion hiess trotzdem „Darstellung" — sie betraf nur die Kopfzeile.
     static let appearance = ConfigSectionSpec(
         id: "appearance", title: "Darstellung", icon: "paintpalette",
-        intro: "Optional — gibt jedem Projekt ein eigenes Gesicht in der Kopfzeile: ein Bild links "
-             + "neben der Projektauswahl und die Farben der Zeile selbst. Das gewählte Bild wird "
-             + "nach ~/Library/Application Support/Kanban/images kopiert, damit es nicht "
-             + "verschwindet, wenn die Quelldatei umzieht. Nichts gesetzt = Kopfzeile wie immer.",
+        intro: "Wie Kanban aussieht: die Kopfzeile je Projekt, die gerenderten Markdown-Ansichten "
+             + "und das Terminal. Alles optional — ein leeres Feld heisst „eingebaute Vorgabe“, "
+             + "nicht Schwarz und nicht 0.",
         fields: [],
         projectMap: ProjectMapSpec(
             path: ["appearance", "projects"],
+            title: "Kopfzeile je Projekt",
             keyPlaceholder: "even",
             fields: [
                 ProjectFieldSpec("image", "Bild", kind: .image, required: false,
@@ -208,7 +211,112 @@ public enum KanbanConfigSchema {
                                  required: false,
                                  help: "In Punkten. Ohne Farbe passiert nichts — beides gehört "
                                      + "zusammen."),
-            ]))
+            ]),
+        groups: [markdownGruppe, terminalGruppe])
+
+    // MARK: - Darstellung: die beiden Themes
+
+    /// Gerendertes Markdown: Task-Files, Knowledgebase, Dokumentfenster, Prompt-Vorschau. Benannte
+    /// Fassungen wie beim Terminal — die Auswahl steht hier, die Werte einer Fassung im Editor
+    /// darunter.
+    static let markdownGruppe = ConfigFieldGroup(
+        id: "markdown", title: "Markdown",
+        intro: "Eine gerenderte Datei ist bewusst ein Blatt Papier: sie wandert **nicht** mit dem "
+             + "Fenster-Erscheinungsbild mit. Wer sie dunkel will, wählt die dunkle Fassung — "
+             + "Scrollbalken und Bedienelemente ziehen von selbst nach.",
+        fields: [
+            ConfigFieldSpec(["markdown", "theme"], "Aktive Fassung",
+                            kind: .choiceFromKeys(["markdown", "themes"]),
+                            help: "Gilt für alle gerenderten Ansichten. „Standard\" nimmt die erste "
+                                + "Fassung der Liste."),
+        ],
+        themeMap: ThemeMapSpec(
+            path: ["markdown", "themes"], activePath: ["markdown", "theme"],
+            title: "Markdown-Fassungen", keyPlaceholder: "Meine Fassung",
+            fields: markdownThemeFelder,
+            vorlagen: MarkdownTheme.vorgaben.map { ThemeVorlage(name: $0.name, werte: $0.werte) }))
+
+    /// Die Werte **einer** Markdown-Fassung. Leer heisst überall Vorgabe, deshalb steht der
+    /// Vorgabewert im Platzhalter statt im Feld.
+    static let markdownThemeFelder: [ThemeFieldSpec] = [
+        ThemeFieldSpec(["fontFamily"], "Schrift (Fliesstext)", kind: .string,
+                       placeholder: "Systemschrift",
+                       help: "Name wie in der Schriftsammlung, z.B. „Iowan Old Style\" — ohne "
+                           + "Anführungszeichen. Unbekannte Namen fallen still auf die Systemschrift "
+                           + "zurück. Code-Blöcke behalten ihre feste Monospace-Schrift."),
+        ThemeFieldSpec(["headingFont"], "Schrift (Überschriften)", kind: .string,
+                       placeholder: "wie Fliesstext",
+                       help: "Gilt für alle sechs Ebenen H1–H6. Nur H1 anders zu setzen würde eine "
+                           + "Datei zerreissen, in der H2 dann wieder wie Fliesstext aussieht."),
+        ThemeFieldSpec(["background"], "Hintergrund",
+                       help: "Vorgabe #ffffff. Die Helligkeit dieses Werts entscheidet auch, ob "
+                           + "WebKit die Bedienelemente hell oder dunkel zeichnet."),
+        ThemeFieldSpec(["text"], "Text", help: "Vorgabe #060606."),
+        ThemeFieldSpec(["secondaryText"], "Nebentext",
+                       help: "Zitate, Fussnoten, H6. Vorgabe #6b6e7b."),
+        ThemeFieldSpec(["codeBackground"], "Code-Hintergrund",
+                       help: "Auch Tabellenköpfe und der Frontmatter-Block. Vorgabe #f1f1f4."),
+        ThemeFieldSpec(["link"], "Links", help: "Vorgabe #2c65cf."),
+        ThemeFieldSpec(["border"], "Linien",
+                       help: "Tabellen, Trennlinien, Zitatbalken. Vorgabe #e4e4e8."),
+        ThemeFieldSpec(["fontSize"], "Schriftgrösse Fliesstext", kind: .number(min: 8, max: 72),
+                       placeholder: "15",
+                       help: "In Punkt. Alles darüber oder darunter wird auf 8 bzw. 72 gezogen."),
+        ThemeFieldSpec(["headings", "h1"], "H1", kind: .number(min: 8, max: 72), placeholder: "26"),
+        ThemeFieldSpec(["headings", "h2"], "H2", kind: .number(min: 8, max: 72), placeholder: "21"),
+        ThemeFieldSpec(["headings", "h3"], "H3", kind: .number(min: 8, max: 72), placeholder: "17"),
+        ThemeFieldSpec(["headings", "h4"], "H4", kind: .number(min: 8, max: 72), placeholder: "15",
+                       help: "Auf Textgrösse — hier gliedert die Fettung, nicht die Grösse."),
+        ThemeFieldSpec(["headings", "h5"], "H5", kind: .number(min: 8, max: 72), placeholder: "14"),
+        ThemeFieldSpec(["headings", "h6"], "H6", kind: .number(min: 8, max: 72), placeholder: "13"),
+    ]
+
+    /// Das Terminal: Fassung, Schrift und die zwei Schalter. Farben einer Fassung im Editor
+    /// darunter — 22 Stück, deshalb wählt man eine Fassung, statt sie hier zusammenzumischen.
+    static let terminalGruppe = ConfigFieldGroup(
+        id: "terminal", title: "Terminal",
+        intro: "Gilt für alle Terminal-Tabs. Schrift und Farben wirken sofort, ohne Neustart — die "
+             + "laufende Sitzung bleibt dabei stehen, es wechselt nur, wie sie gezeichnet wird.",
+        fields: [
+            ConfigFieldSpec(["terminal", "theme"], "Aktive Fassung",
+                            kind: .choiceFromKeys(["terminal", "themes"]),
+                            help: "„Standard\" nimmt die erste Fassung der Liste."),
+            ConfigFieldSpec(["terminal", "font", "family"], "Schrift", kind: .string,
+                            placeholder: "Meslo LG S DZ Regular for Powerline",
+                            help: "Monospace-Schrift mit Powerline-Zeichen. Unbekannte Namen fallen "
+                                + "auf die eingebauten Kandidaten zurück, zuletzt auf die "
+                                + "System-Monospace."),
+            ConfigFieldSpec(["terminal", "font", "size"], "Schriftgrösse",
+                            kind: .number(min: 6, max: 72), placeholder: "16",
+                            help: "In Punkt, vor der App-Skalierung."),
+            ConfigFieldSpec(["terminal", "font", "smoothing"], "Schriftglättung",
+                            kind: .bool(defaultOn: true),
+                            help: "Kantenglättung („thin strokes\"). Aus wirkt härter und auf "
+                                + "manchen Schirmen schärfer."),
+            ConfigFieldSpec(["terminal", "optionAsMeta"], "⌥ als Meta-Taste",
+                            kind: .bool(defaultOn: false),
+                            help: "Aus (Vorgabe): ⌥ setzt Zeichen zusammen — auf Schweizer und "
+                                + "deutschen Layouts kommen so erst `# @ { } [ ] |` zustande. An: "
+                                + "⌥ wirkt als Meta. Wirkt sofort, auch in laufenden Sitzungen."),
+        ],
+        themeMap: ThemeMapSpec(
+            path: ["terminal", "themes"], activePath: ["terminal", "theme"],
+            title: "Terminal-Fassungen", keyPlaceholder: "Meine Fassung",
+            fields: terminalThemeFelder,
+            requiredKeys: ["background", "foreground"], ansiKey: "ansi",
+            vorlagen: [TerminalTheme.solarizedDark, TerminalTheme.kanbanDark]
+                .map { ThemeVorlage(name: $0.name, werte: $0.werte) }))
+
+    /// Die Werte **einer** Terminal-Fassung, ohne die 16 ANSI-Farben — die zeichnet der Editor als
+    /// Raster, weil sie eine Reihenfolge haben und keine Namen.
+    static let terminalThemeFelder: [ThemeFieldSpec] = [
+        ThemeFieldSpec(["background"], "Hintergrund", help: "Pflicht — ohne sie zählt die Fassung nicht."),
+        ThemeFieldSpec(["foreground"], "Text", help: "Pflicht — ohne sie zählt die Fassung nicht."),
+        ThemeFieldSpec(["cursor"], "Cursor", help: "Leer = wie der Text."),
+        ThemeFieldSpec(["cursorText"], "Zeichen unter dem Cursor"),
+        ThemeFieldSpec(["selectionBackground"], "Auswahl (Hintergrund)"),
+        ThemeFieldSpec(["selectionText"], "Auswahl (Text)"),
+    ]
 
     /// Der Session-Watchdog. Kein Modul und kein Projekt-Kram — ein Schalter plus vier Stellschrauben
     /// für einen Hintergrund-Lauf, der Geld kostet. Deshalb steht hier auch, was er kostet: eine

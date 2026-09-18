@@ -41,6 +41,16 @@ final class TerminalCache {
 
     func has(_ name: String) -> Bool { terminals[name] != nil }
 
+    /// Nach dem Speichern der Einstellungen: Farben, Schrift und Schalter an den **bestehenden**
+    /// Ansichten nachziehen. Der laufende tmux-Prozess bleibt, wo er ist — deshalb hier und nicht
+    /// über ein Neuanlegen der Ansichten.
+    func reapplyAppearance() {
+        for terminal in terminals.values {
+            terminal.applyAppearance()
+            terminal.applyFont()
+        }
+    }
+
     /// Attach to the tmux session once — via a login shell that waits for the session to exist
     /// (it may still be spawning) and then `exec`s `tmux attach`, so no lingering shell remains.
     func startProcessIfNeeded(for name: String) {

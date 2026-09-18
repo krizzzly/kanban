@@ -43,6 +43,7 @@ final class SettingsModel {
 
     @discardableResult
     func save(force: Bool = false) -> Bool {
+        migriereMarkdownAltblock()
         guard let doc = document else { return false }
         do {
             document = try store.save(doc, force: force)
@@ -86,6 +87,15 @@ final class SettingsModel {
         return path.hasPrefix(home) ? "~" + path.dropFirst(home.count) : path
     }
 
+    /// Der flache `markdown`-Altblock zieht beim Speichern einmalig in eine benannte Fassung um
+    /// (`MarkdownAltblock` — dort steht auch, warum).
+    private func migriereMarkdownAltblock() {
+        guard var doc = document else { return }
+        guard MarkdownAltblock.migriere(&doc.root) else { return }
+        document = doc
+        dirty = true
+    }
+
     // MARK: - Mutation
 
     private func mutate(_ change: (inout JSONValue) -> Void) {
@@ -118,6 +128,86 @@ final class SettingsModel {
 
     /// Public read for validation display (SchemaFieldView).
     func stringValue(at path: [String]) -> String { string(at: path) }
+
+    // MARK: - Zahlen (als JSON-Zahl, nicht als Zeichenkette)
+
+    /// Der Wert als Text fürs Feld — leer heisst „nicht gesetzt", also Vorgabe.
+    func numberText(at path: [String]) -> String {
+        document?.root.value(at: path)?.doubleValue.map(Self.zahlText) ?? ""
+    }
+
+    /// Schreibt **ungerundet und ungezogen**, was dasteht: gezogen wird erst beim Verlassen des
+    /// Feldes (`clampNumber`). Wer „1" tippt, um „16" zu schreiben, soll nicht nach dem ersten
+    /// Zeichen bei der Untergrenze landen. Leer entfernt den Schlüssel; Unlesbares bleibt liegen,
+    /// statt eine halbe Eingabe in die Datei zu schreiben.
+    func setNumber(_ path: [String], from text: String) {
+        let getrimmt = text.trimmingCharacters(in: .whitespaces).replacingOccurrences(of: ",", with: ".")
+        if getrimmt.isEmpty {
+            guard document?.root.value(at: path) != nil else { return }
+            mutate { $0.set(nil, at: path) }
+            return
+        }
+        guard let zahl = Double(getrimmt), zahl != document?.root.value(at: path)?.doubleValue else { return }
+        mutate { $0.set(Self.jsonZahl(zahl), at: path) }
+    }
+
+    /// Beim Verlassen auf die Grenzen ziehen — dieselben, die auch der Decoder anwendet.
+    func clampNumber(_ path: [String], min: Double, max: Double) {
+        guard let zahl = document?.root.value(at: path)?.doubleValue else { return }
+        let gezogen = Swift.min(Swift.max(zahl, min), max)
+        guard gezogen != zahl else { return }
+        mutate { $0.set(Self.jsonZahl(gezogen), at: path) }
+    }
+
+    /// Ganze Zahlen bleiben ganz: `16` statt `16.0` — `JSONValue` hält die beiden auseinander, und
+    /// eine Config voller `.0` liest sich schlechter.
+    static func jsonZahl(_ wert: Double) -> JSONValue {
+        wert == wert.rounded() && abs(wert) < 1e15 ? .int(Int(wert)) : .double(wert)
+    }
+
+    static func zahlText(_ wert: Double) -> String {
+        wert == wert.rounded() && abs(wert) < 1e15 ? String(Int(wert)) : String(wert)
+    }
+
+    // MARK: - Benannte Fassungen (`terminal.themes`, `markdown.themes`)
+
+    /// Die Schlüssel eines Objekts — die Namen der Fassungen, die Auswahl einer `choiceFromKeys`.
+    func keys(at path: [String]) -> [String] {
+        (document?.root.value(at: path)?.objectValue ?? [:]).keys.sorted()
+    }
+
+    func themeValues(_ spec: ThemeMapSpec, key: String) -> JSONValue? {
+        document?.root.value(at: spec.path + [key])
+    }
+
+    func activeTheme(_ spec: ThemeMapSpec) -> String {
+        document?.root.value(at: spec.activePath)?.stringValue ?? ""
+    }
+
+    /// Anlegen, Entfernen, Umbenennen und die ANSI-Farben liegen als reine JSON-Operationen in
+    /// `ThemeMapEdit` — dort stehen auch die Gründe, und dort sind sie prüfbar.
+    func addTheme(_ spec: ThemeMapSpec, key: String) {
+        mutate { ThemeMapEdit.add(&$0, spec: spec, name: key) }
+    }
+
+    func removeTheme(_ spec: ThemeMapSpec, key: String) {
+        mutate { ThemeMapEdit.remove(&$0, spec: spec, name: key) }
+    }
+
+    func renameTheme(_ spec: ThemeMapSpec, from: String, to: String) {
+        mutate { ThemeMapEdit.rename(&$0, spec: spec, from: from, to: to) }
+    }
+
+    func ansiBinding(_ path: [String], index: Int) -> Binding<String> {
+        Binding(
+            get: { [weak self] in
+                let liste = self?.document?.root.value(at: path)?.arrayValue ?? []
+                return index < liste.count ? (liste[index].stringValue ?? "") : ""
+            },
+            set: { [weak self] neu in
+                self?.mutate { ThemeMapEdit.setAnsi(&$0, path: path, index: index, hex: neu) }
+            })
+    }
 
     // MARK: - String lists (comma-separated in the UI, JSON array on disk)
 

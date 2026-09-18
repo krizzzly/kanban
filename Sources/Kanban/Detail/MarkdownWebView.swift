@@ -48,16 +48,18 @@ struct MarkdownWebView: NSViewRepresentable {
                              injectionTime: .atDocumentEnd, forMainFrameOnly: true))
         }
         let webView = WKWebView(frame: .zero, configuration: configuration)
-        // Die Fläche gehört jetzt der Palette (`markdown.*`), nicht mehr dem SwiftUI-Bereich
-        // darunter. `underPageBackgroundColor` mitzufärben verhindert das kurze Aufblitzen der
-        // alten Fläche, bevor das Dokument steht — und färbt den Überzieh-Bereich beim Scrollen.
-        let flaeche = HTMLTemplate.theme.background
         webView.setValue(false, forKey: "drawsBackground")
-        webView.underPageBackgroundColor = NSColor(srgbRed: CGFloat(flaeche.r) / 255,
-                                                   green: CGFloat(flaeche.g) / 255,
-                                                   blue: CGFloat(flaeche.b) / 255, alpha: 1)
+        Coordinator.faerbeFlaeche(webView)
         webView.navigationDelegate = context.coordinator
+        context.coordinator.webView = webView
         return webView
+    }
+
+    /// Ein Dokument, wie es in die Ansicht geht: gerendert, mit Sprungmarken an den Überschriften.
+    /// An zwei Stellen gebraucht — beim Inhaltswechsel und beim Neuzeichnen nach einem
+    /// Theme-Wechsel — und deshalb hier, nicht zweimal.
+    static func dokument(fuer markdown: String) -> String {
+        HTMLTemplate.wrap(HeadingAnchors.inject(into: MarkdownHTML.render(markdown)))
     }
 
     func updateNSView(_ webView: WKWebView, context: Context) {
@@ -66,6 +68,7 @@ struct MarkdownWebView: NSViewRepresentable {
         context.coordinator.onLinkClick = onLinkClick
         context.coordinator.pendingFragment = scrollToFragment
         context.coordinator.pendingSearch = search
+        context.coordinator.baseURL = baseURL
 
         // Only reload when the content actually changed (avoids flicker on unrelated re-renders).
         guard context.coordinator.lastMarkdown != markdown else {
@@ -79,8 +82,7 @@ struct MarkdownWebView: NSViewRepresentable {
         context.coordinator.lastMarkdown = markdown
         // Sprungmarken an den Überschriften: cmark vergibt keine, die Knowledgebase verlinkt sie
         // aber (`#zwei-cqrs-generationen`). Ohne IDs zeigt so ein Link ins Leere.
-        let html = HTMLTemplate.wrap(HeadingAnchors.inject(into: MarkdownHTML.render(markdown)))
-        webView.loadHTMLString(html, baseURL: baseURL)
+        webView.loadHTMLString(Self.dokument(fuer: markdown), baseURL: baseURL)
     }
 
     final class Coordinator: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
@@ -90,6 +92,45 @@ struct MarkdownWebView: NSViewRepresentable {
         var onLinkClick: ((URL) -> Bool)?
         var pendingFragment: String?
         var pendingSearch: MarkdownSearch?
+        /// Die eigene Ansicht — nur fürs Neuzeichnen nach einem Theme-Wechsel. Schwach, weil die
+        /// Ansicht den Coordinator überlebt, nicht umgekehrt.
+        weak var webView: WKWebView?
+        var baseURL: URL?
+        private var themeBeobachter: NSObjectProtocol?
+
+        override init() {
+            super.init()
+            // SwiftUI erfährt von einer geänderten Datei auf der Platte nichts: ohne diesen Weg
+            // bliebe die gerenderte Seite auf der alten Palette stehen, bis der Inhalt wechselt.
+            themeBeobachter = NotificationCenter.default.addObserver(
+                forName: .kanbanAppearanceChanged, object: nil, queue: .main) { [weak self] _ in
+                    MainActor.assumeIsolated { self?.zeichneNeu() }
+                }
+        }
+
+        deinit {
+            if let themeBeobachter { NotificationCenter.default.removeObserver(themeBeobachter) }
+        }
+
+        /// Neue Palette, gleicher Inhalt: das Stylesheet steckt im Dokument, also wird es neu
+        /// geladen. Die Suche und die Sprungmarke setzt `didFinish` danach wieder.
+        @MainActor
+        private func zeichneNeu() {
+            guard let webView, let markdown = lastMarkdown else { return }
+            Self.faerbeFlaeche(webView)
+            webView.loadHTMLString(MarkdownWebView.dokument(fuer: markdown), baseURL: baseURL)
+        }
+
+        /// Die Fläche gehört der Palette (`markdown.*`), nicht dem SwiftUI-Bereich darunter.
+        /// `underPageBackgroundColor` mitzufärben verhindert das kurze Aufblitzen der alten Fläche,
+        /// bevor das Dokument steht — und färbt den Überzieh-Bereich beim Scrollen.
+        @MainActor
+        static func faerbeFlaeche(_ webView: WKWebView) {
+            let flaeche = HTMLTemplate.theme.background
+            webView.underPageBackgroundColor = NSColor(srgbRed: CGFloat(flaeche.r) / 255,
+                                                       green: CGFloat(flaeche.g) / 255,
+                                                       blue: CGFloat(flaeche.b) / 255, alpha: 1)
+        }
         /// Zuletzt ausgeführte Suche — ohne die liefe das Skript bei jedem Rerender erneut über den
         /// ganzen DOM, obwohl sich nichts geändert hat.
         private var appliedSearch: MarkdownSearch?
@@ -245,7 +286,7 @@ enum HTMLTemplate {
         }
         html, body { background: var(--bg); margin: 0; }
         body {
-          font-family: -apple-system, system-ui, "Helvetica Neue", sans-serif;
+          font-family: \(MarkdownTheme.cssFontStack(theme.fontFamily));
           font-size: \(zahl(theme.fontSizes.body))px; line-height: 1.5; color: var(--text); padding: 16px;
           -webkit-text-size-adjust: 100%; word-wrap: break-word;
         }
@@ -257,7 +298,12 @@ enum HTMLTemplate {
            Config ändert. Vorher standen feste 6 px darunter — nach einer H1 derselbe Zwischenraum
            wie zwischen zwei Absätzen, weshalb die Überschrift am Text klebte.
            Oben mehr als unten (2,3 : 1): eine Überschrift gehört zu dem, was **unter** ihr steht. */
-        h1, h2, h3, h4, h5, h6 { line-height: 1.25; margin: 1.15em 0 0.5em; font-weight: 600; }
+        /* Eigene Schrift fuer die Ueberschriften (`markdown.headingFont`) — ohne Eintrag faellt
+           sie auf dieselbe Kette wie der Fliesstext zurueck, die Regel ist dann ein No-Op. */
+        h1, h2, h3, h4, h5, h6 {
+          font-family: \(MarkdownTheme.cssFontStack(theme.headingFont ?? theme.fontFamily));
+          line-height: 1.25; margin: 1.15em 0 0.5em; font-weight: 600;
+        }
         h1 { font-size: \(zahl(theme.fontSizes.h1))px; font-weight: 700; }
         h2 { font-size: \(zahl(theme.fontSizes.h2))px; }
         h3 { font-size: \(zahl(theme.fontSizes.h3))px; }

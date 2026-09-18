@@ -1144,22 +1144,39 @@ Vorgabe, gemessen im DOM einer echten WKWebView (`getComputedStyle`):
 - Eine Überschrift **am Textanfang** bekommt keinen Abstand nach oben (nachgemessen: 16 px vom
   Rand, genau das Body-Polster).
 
-### Die Farben stehen in der Config (`markdown.*`)
+### Darstellung: benannte Fassungen für Markdown **und** Terminal (`markdown.*`, `terminal.*`)
 
-Konfiguriert wie das Terminal-Theme: derselbe Abschnitt der Datei, keine eigene Oberfläche
-(`MarkdownTheme` — `background`, `text`, `secondaryText`, `codeBackground`, `link`, `border`, dazu
-`fontSize` und `headings.h1`…`h6`).
+Beide Themes sind gleich gebaut und stehen an derselben Stelle: **Einstellungen → Darstellung**, dort
+drei Gruppen — Kopfzeile je Projekt, Markdown, Terminal. Je Gruppe eine Auswahl der aktiven Fassung
+(`markdown.theme`, `terminal.theme`) und darunter ein Editor für die Fassungen selbst
+(`markdown.themes.<name>`, `terminal.themes.<name>`). Der Roh-JSON-Editor bleibt für alles, was kein
+Feld hat.
 
 - **Eine Palette, deckend.** Vorher war die Fläche *durchsichtig* (der SwiftUI-Bereich schien durch)
   und die Farben wechselten mit `prefers-color-scheme`. Eine gerenderte Datei ist aber ein Blatt
-  Papier, kein Fensterteil — Vorgabe ist deshalb **weiss**, mit einem etwas kräftigeren Grau für
-  Codeblöcke (`#f1f1f4`; das alte `#f7f7f9` war auf Weiss kaum zu sehen).
-- **Wer es dunkel will, stellt die sechs Werte dunkel** — `color-scheme` zieht dann nach, abgeleitet
-  aus der Helligkeit des Hintergrunds, sonst blieben die Scrollbalken weiss.
-- **Jede Farbe einzeln mit Rückfallwert**: ein unlesbarer Hex-Wert nimmt weder die Palette noch die
-  Config mit; er fällt auf die Vorgabe zurück.
-- `underPageBackgroundColor` der WebView wird mitgefärbt — sonst blitzt beim Laden die alte Fläche
+  Papier, kein Fensterteil — Vorgabe ist deshalb **weiss** (`Blatt`), mit einem etwas kräftigeren
+  Grau für Codeblöcke (`#f1f1f4`; das alte `#f7f7f9` war auf Weiss kaum zu sehen). Mitgeliefert ist
+  `Blatt Dunkel` als zweite Fassung — **kein** Hell/Dunkel-Paar: umgeschaltet wird von Hand.
+- **`color-scheme` folgt der Helligkeit des Hintergrunds**, sonst blieben die Scrollbalken weiss.
+  `underPageBackgroundColor` der WebView wird mitgefärbt — sonst blitzt beim Laden die alte Fläche
   auf, und beim Überziehen am Rand käme sie wieder hervor.
+- **Jede Farbe einzeln mit Rückfallwert**: ein unlesbarer Hex-Wert nimmt weder die Fassung noch die
+  Config mit. Eine **Terminal**-Fassung dagegen fällt ganz weg, wenn `background`/`foreground` fehlen
+  oder `ansi` nicht genau 16 lesbare Farben hat (`RawTheme.resolved`) — deshalb legt der Editor eine
+  neue Fassung als **Kopie** an und warnt an der Fassung, statt sie stumm verschwinden zu lassen.
+- **`themes` gewinnt.** Der flache `markdown`-Block von früher bleibt lesbar, wird aber beim
+  nächsten Speichern einmalig zur Fassung `Eigene` (`MarkdownAltblock`) — zwei Wahrheiten in einer
+  Datei, von denen eine stumm ignoriert wird, sucht man sonst an der falschen Stelle.
+- **Zahlen sind Zahlen.** `markdown.fontSize`, `markdown.headings.*` und `terminal.font.size` stehen
+  als JSON-Zahl in der Datei; gelesen wird beides (`LenientNumber`), geschrieben nur die Zahl.
+  Das ist kein Schönheitsthema: `RawSettings` wird mit **einem** `try?` gelesen — ein einziger Wert
+  vom falschen Typ liess den Decoder werfen und setzte damit **die ganze** Darstellung auf die
+  Vorgaben zurück, Terminal-Theme inklusive (nachgemessen, jetzt als Test festgehalten).
+- **Gespeichert heisst sichtbar.** `KanbanSettingsStore.current` ist neu ladbar (vorher ein
+  `static let`, also ein Wert pro Prozess). `AppModel.reloadConfig()` lädt neu,
+  `TerminalCache.reapplyAppearance()` zieht Farben, Schrift und ⌥-Taste an den **laufenden**
+  Terminals nach (der tmux-Prozess bleibt), und die gerenderten Markdown-Ansichten zeichnen über
+  `Notification.Name.kanbanAppearanceChanged` neu — SwiftUI merkt von einer geänderten Datei nichts.
 
 ### Eine Suchleiste für jede gerenderte Ansicht (`MarkdownFindBar`)
 

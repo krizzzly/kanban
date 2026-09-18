@@ -86,6 +86,21 @@ struct SettingsSheet: View {
                 if let map = section.projectMap {
                     ProjectMapEditor(spec: map, settings: settings)
                 }
+                // Gruppen (heute nur „Darstellung": Markdown und Terminal) — je eigene Überschrift,
+                // damit die Seitenleiste nicht um zwei weitere Einträge wächst.
+                ForEach(section.groups) { gruppe in
+                    Section(gruppe.title) {
+                        if let intro = gruppe.intro {
+                            Text(intro).font(.callout).foregroundStyle(.secondary)
+                        }
+                        ForEach(gruppe.fields) { field in
+                            SchemaFieldView(spec: field, settings: settings)
+                        }
+                    }
+                    if let themeMap = gruppe.themeMap {
+                        ThemeMapEditor(spec: themeMap, settings: settings)
+                    }
+                }
             }
             .formStyle(.grouped)
             .id(section.id)   // fresh scroll position + field state per section
