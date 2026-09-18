@@ -14,6 +14,11 @@ final class WatchdogModel {
 
     private(set) var befunde: [WatchdogFinding] = []
     private(set) var laeuft = false
+    /// Seit wann der laufende Scan läuft — der Spinner soll sagen, worauf er wartet, statt nur zu
+    /// drehen. Ein Lauf dauert hier gemessen 5–6 Minuten.
+    private(set) var laeuftSeit: Date?
+    /// Wurde der laufende Scan von Hand abgebrochen? Dann ist sein Ende kein Fehler.
+    private var abbruchGewollt = false
     private(set) var letzterScan: Date?
     private(set) var letzterFehler: String?
     private(set) var letzteKostenUSD: Double?
@@ -65,6 +70,14 @@ final class WatchdogModel {
     func stoppen() {
         schleife?.cancel()
         schleife = nil
+    }
+
+    /// Den laufenden Scan beenden. Beendet den `claude -p`-Unterprozess; der Lauf endet daraufhin
+    /// von selbst, und sein Abbruch zählt nicht als Fehler.
+    func abbrechen() {
+        guard laeuft else { return }
+        abbruchGewollt = true
+        _ = ClaudeHeadless.alleBeenden()
     }
 
     /// „Jetzt scannen" aus dem Panel — läuft auch, wenn der Watchdog ausgeschaltet ist. Der Schalter
@@ -120,7 +133,9 @@ final class WatchdogModel {
     private func scannen() async {
         guard !laeuft else { return }
         laeuft = true
-        defer { laeuft = false }
+        laeuftSeit = Date()
+        abbruchGewollt = false
+        defer { laeuft = false; laeuftSeit = nil; abbruchGewollt = false }
 
         // Hier geprüft und nicht beim Start: die CLI kann während der Laufzeit kommen oder gehen,
         // und ein fehlendes Binary soll als klarer Satz im Panel stehen statt als Prozessfehler
@@ -137,7 +152,9 @@ final class WatchdogModel {
             anwenden(ergebnis.state)
             neueIds.formUnion(ergebnis.neueIds)
         } catch {
-            letzterFehler = error.localizedDescription
+            // Ein selbst abgebrochener Lauf ist kein Fehlschlag — sonst stünde in der Fusszeile
+            // „Letzter Lauf gescheitert", weil jemand auf ✕ gedrückt hat.
+            letzterFehler = abbruchGewollt ? nil : error.localizedDescription
             letzterScan = Date()
         }
     }

@@ -749,6 +749,103 @@ Nischen-Commands wie open-task/get-mr/solve-support.
   Bestand, Symlink-Status/-Verwaltung je Asset, „Auf Auslieferungsstand zurücksetzen" (aus dem Bundle).
   Das Kettenglied ist grün, wenn **jedes** mögliche Home verlinkt ist — ein Skill nur in `~/.claude`
   ist für ein Codex-Projekt nicht da.
+
+#### Anlegen und Löschen (+/− unter der Liste)
+
+Bis dahin liess sich der Bestand nur **bearbeiten**: ein eigener Skill musste von Hand in
+`~/Library/Application Support/Kanban/claude/skills/` angelegt und verlinkt werden.
+
+- **Skill oder Rule**, keine Commands: die sind Altbestand (`ClaudeAssetMigration` hat sie zu Skills
+  gemacht), Codex kennt die Gattung gar nicht, und ein neu angelegter wäre von Anfang an ein
+  Sonderfall.
+- **Der Name ist kebab-case, und das ist keine Kosmetik** (`ClaudeAssetName`): er ist Dateiname,
+  Symlink-Ziel **und** der Aufruf selbst (`/create-task` bzw. `$create-task`). Eingaben werden
+  normalisiert („Mein Neuer Skill" → `mein-neuer-skill`), alles andere abgelehnt; der Dialog zeigt
+  vorher, was daraus wird.
+- **Ein Skill entsteht als Ordner mit `SKILL.md`** und dem Frontmatter, das der ganze Bestand trägt
+  (`name`, `description`, `disable-model-invocation: true`) — samt `$ARGUMENTS`, der Form, die
+  **beide** Agents einsetzen. Er wird **sofort in beide Homes verlinkt**: ein Skill, der nirgends
+  hängt, ist nur eine Datei im Bestand.
+- **Löschen nimmt die Symlinks mit**, sonst zeigten sie ins Leere.
+
+#### Zwei Bäume links, lesen oder bearbeiten rechts
+
+Der Bestand **sind** zwei Ordner, und so steht er jetzt auch da: ein Baum je Gattung, überschrieben
+mit dem Ordnernamen und der Anzahl (`skills/ · 14`, `rules/ · 6`). Vorher war es eine durchgehende
+Liste, in der ein Skill mit Beiwerk als `impact-analysis/methodology.md` zwischen den anderen stand.
+
+- **Ein Dreieck nur, wo etwas drin ist.** Ein Skill, der aus nichts als `SKILL.md` besteht, ist eine
+  Zeile — dort *ist* der Ordner die Datei, und ein Aufklapp-Dreieck mit genau einer Zeile darunter
+  wäre ein Klick für nichts. Hier betrifft das 11 der 14 Skills; die drei mit `methodology.md`
+  (`audit-security`, `impact-analysis`, `quality-analysis`) klappen auf.
+- **Der gewählte Ordner klappt von selbst auf** — sonst zeigte die rechte Seite einen Inhalt, dessen
+  Zeile links hinter einem Dreieck steckt (dieselbe Regel wie im Knowledgebase-Baum).
+- **Das Kettenglied hängt am Asset**, nicht an der Datei: verlinkt wird der Skill-Ordner, nicht sein
+  `SKILL.md`.
+
+Rechts **ganz oben** steht ein 📁-Knopf und daneben „Gerendert | Bearbeiten". Der Knopf zeigt die
+gewählte Datei im Finder — den Ordner also, **mit ihr ausgewählt**: bei einem Skill sein eigener
+(dort liegt auch das Beiwerk), bei einer Rule der `rules/`-Ordner. Der Bestand liegt in Application
+Support und ist von Hand kaum zu finden; denselben Knopf gibt es aus demselben Grund in der
+Knowledgebase und im Dokumentfenster.
+
+„Gerendert | Bearbeiten": Gelesen wird hier mehr als geschrieben — ein
+`SKILL.md` hat bis zu 49 KB, und als Rohtext mit Sternchen und Tabellen-Pipes ist das mühsam.
+Vorgabe ist deshalb **gerendert**, wie im Commit-Dialog (Diff vor Editor) und im Dokumentfenster.
+
+- **Gerendert wird der Editor-Text**, nicht die Datei: wer etwas geändert und noch nicht gespeichert
+  hat, soll sehen, was er gleich speichert — und nicht den Stand von vorher. Die Kopfzeile sagt
+  „ungespeicherte Änderungen — hier zu sehen".
+- **Ein Link auf eine Nachbardatei springt in der Ansicht dorthin** (`[methodology.md](methodology.md)`
+  — genau die Schreibweise, die der Bestand benutzt), statt den Finder zu rufen. Alles andere geht
+  den gewohnten Weg nach draussen.
+- Die Wahl gilt fürs **Fenster**, nicht je Asset: beim Durchklicken will man nicht bei jeder Datei
+  neu umschalten.
+
+#### Inhalt aus einer Datei einlesen
+
+„Einlesen…" im Fuss übernimmt den Inhalt einer Markdown-Datei von der Platte in das gewählte Asset;
+im Anlegen-Dialog legt „Aus Datei…" gleich ein neues daraus an (der Name wird aus dem Dateinamen
+vorgeschlagen — bei `SKILL.md` aus dem Ordner darüber, der Dateiname sagt dort nichts).
+
+- **Das Frontmatter überlebt es** (`ClaudeAssetImport.zusammengefuegt`). Ein `SKILL.md` lebt von
+  seinem Kopf: `name` liest Codex, `description` zeigen beide im Menü,
+  `disable-model-invocation: true` hält den Skill davon ab, von allein loszulaufen. Eine beliebige
+  Markdown-Datei hat keinen — sie einfach hineinzukopieren machte aus einem funktionierenden Skill
+  eine Datei, die kein Agent mehr anbietet, und zwar lautlos. Fehlt der eingelesenen Datei der Kopf,
+  bleibt der bisherige stehen und nur der Rumpf wird ersetzt. Bringt sie **einen mit**, gilt er
+  unverändert — wer eins mitbringt, meint es auch, und zwei Köpfe übereinander wären in beiden
+  Agents ungültig.
+- **Erkannt wird der Block textuell**, nicht über einen YAML-Leser: der Kopf soll wortgleich stehen
+  bleiben, mit Reihenfolge und Kommentaren. Ein `---` als Trennlinie mitten im Text ist keins, ein
+  nie geschlossener Block auch nicht.
+- **Eingelesen heisst nicht gespeichert**: der Text landet im Editor, der Punkt zeigt „ungespeichert",
+  und der bisherige Stand wandert vorher in die **Fassungen** — auch dann, wenn diese Datei noch nie
+  über den Editor gespeichert wurde. Der Rückweg steht also bereit, bevor man hinsieht.
+- **Grenze 1 MB**: das grösste Asset im Bestand hat 49 KB; ein Megabyte ist kein Skill mehr, sondern
+  ein Versehen (ein Log, ein Export). Nicht-UTF-8 wird benannt, nicht stillschweigend verstümmelt.
+
+#### Fassungen (Versionsgeschichte je Datei)
+
+Es gab genau **eine** Fassung — die Datei — und daneben den Auslieferungsstand als Notausgang. Wer
+einen Skill umbaute und den alten Wortlaut wiederhaben wollte, konnte nur ganz auf Werk zurück und
+warf damit alle anderen eigenen Änderungen mit weg.
+
+- **Jedes Speichern legt eine Fassung an** (`ClaudeAssetVersionStore`), zusätzlich lässt sich der
+  aktuelle Stand **benennen** („Stand vor dem Umbau") — ein Name ist der Grund, warum man eine
+  Fassung später wiederfindet.
+- **Abgelegt neben dem Bestand**, in `claude/.versions/<pfad der datei>/<zeitstempel · name>.md`.
+  Der Zeitstempel steht **im Dateinamen** statt in einem Index: das bleibt im Finder lesbar, und
+  eine von Hand dazugelegte oder weggeworfene Datei macht nichts kaputt. Ein Index daneben wäre eine
+  zweite Wahrheit. `.versions` taucht nie als Asset auf — `assets(_:)` sieht nur in
+  `commands`/`skills`/`rules`.
+- **Aktivieren sichert den bisherigen Stand**, bevor es ihn überschreibt: ein Wechsel, kein Verlust.
+- **Zweimal Speichern ohne Änderung gibt keine zweite Fassung** — sonst wäre die Liste nach einem
+  Tag voller Wiederholungen. Eine **benannte** entsteht trotzdem; der Name ist ja der Punkt.
+- **Gedeckelt wird nur das Automatische** (50 je Datei, älteste zuerst). Benannte Fassungen bleiben
+  — sie sind genau die, die jemand behalten wollte.
+- **Ein Zurücksetzen auf Werk lässt die Fassungen stehen** (sie liegen neben dem Asset, nicht darin)
+  — von dort kommt der eigene Stand zurück. Der Dialog verspricht das, ein Test hält es fest.
 - `repoDir` ist von `tasksPath` **entkoppelt** (`modules.jira.projects.<key>.repoDir`, optional;
   absolut/`~`/relativ zum Basis-Pfad) — ohne Override gilt weiter das erste `tasksPath`-Segment.
 
@@ -880,6 +977,106 @@ sie hergibt. Jetzt wird je Beitrag eine Karte gerendert (Autor, Zeitpunkt, Text)
   ginge daneben.
 - Ein unlesbarer Zeitstempel bleibt stehen, wie er ist — ein falsch geratenes Datum wäre schlimmer.
 
+## Gerendertes Markdown: Frontmatter und Farben
+
+Beides gilt für **jede** gerenderte Markdown-Ansicht — Task-File-Tabs, Knowledgebase, das
+Dokumentfenster aus dem Finder und die Lese-Ansicht des Asset-Editors —, weil beides an einer Stelle
+sitzt: `MarkdownHTML.render` und `HTMLTemplate`.
+
+### Der YAML-Kopf steht als Codeblock da
+
+Markdown kennt kein Frontmatter, und cmark las es als etwas ganz anderes: die erste `---`-Zeile wird
+eine Trennlinie, die zweite macht aus den Zeilen darüber eine **Setext-Überschrift**. Gemessen an
+einem echten Skill-Kopf:
+
+```html
+<hr />
+<h2>name: solve-task
+description: löst ein Ticket
+disable-model-invocation: true</h2>
+```
+
+Also eine fette Überschrift quer über die Seite, dort wo Metadaten stehen. `Frontmatter.alsCodeblock`
+macht daraus vor dem Rendern einen ```yaml-Block.
+
+- **Vor dem Rendern, an einer Stelle** (`MarkdownHTML.render`) — nicht bei den Aufrufern: so zeigt
+  jede Ansicht dasselbe, und `TaskSearch.visibleText` geht durch denselben Renderer, zählt also
+  weiter gleich mit dem DOM (der Kopf ist jetzt auch durchsuchbar, er steht ja auf dem Schirm).
+- **Der Zaun ist länger als die längste Backtick-Folge im Kopf** (`zaunlaenge`): ein
+  ``description: nutzt ```json``` dafür`` beendete den Block sonst mittendrin.
+- Die `---`-Zeilen selbst fallen weg — im Codeblock sind sie nur Rauschen. Eine Trennlinie mitten im
+  Text und ein nie geschlossener Block sind **kein** Kopf und bleiben unangetastet.
+
+### Überschriften sind wieder Überschriften
+
+Alle sechs Ebenen standen auf **Textgrösse** (15 px) und unterschieden sich nur an der Strichstärke
+— auf einem Task-File mit `#`, `##` und `###` war die Gliederung praktisch nicht zu sehen. Die
+Grössen stehen jetzt im Theme (`markdown.headings.*`, dazu `markdown.fontSize` für den Fliesstext).
+
+Vorgabe, gemessen im DOM einer echten WKWebView (`getComputedStyle`):
+
+| | h1 | h2 | h3 | h4 | h5 | h6 | p |
+|---|---|---|---|---|---|---|---|
+| px | 26 | 21 | 17 | 15 | 14 | 13 | 15 |
+| weight | 700 | 600 | 600 | 600 | 600 | 600 | 400 |
+
+- **Ab H4 gliedert die Fettung, nicht die Grösse** (H4 = Textgrösse), H5/H6 darunter und H6
+  zusätzlich in der Sekundärfarbe — dieselbe Staffel wie GitHub. Sechs Ebenen linear zu spreizen
+  ergäbe entweder ein winziges H6 oder ein plakatgrosses H1.
+- **Die Abstände stehen in `em`, nicht in Pixeln** (`margin: 1.15em 0 0.5em`) — also relativ zur
+  **eigenen** Schriftgrösse der Überschrift. Vorher standen feste 6 px darunter, und das war
+  derselbe Zwischenraum wie zwischen zwei Absätzen: eine 26-px-Überschrift klebte am Text. Gemessen
+  im DOM, vorher → nachher:
+
+  | | P→H1 | H1→P | P→H2 | H2→P | P→H3 | H3→Liste | P→P |
+  |---|---|---|---|---|---|---|---|
+  | vorher | 18 | **6** | 16 | **6** | 12 | **6** | 6 |
+  | nachher | 30 | **13** | 24 | **11** | 20 | **9** | 6 |
+
+  In `em` gerechnet hält die Staffel auch, wenn jemand die Grössen in der Config ändert: mit
+  `h1: 34` wird aus 13 px Abstand darunter 17 px, ohne dass man etwas nachziehen müsste. **Oben mehr
+  als unten** (2,3 : 1), weil eine Überschrift zu dem gehört, was unter ihr steht.
+- **Begrenzt auf 8–72 pt**: eine 0 oder eine 900 in der Config macht die Ansicht unbenutzbar, ohne
+  dass man sähe, warum. Ein unlesbarer Wert fällt einzeln auf die Vorgabe zurück, wie bei den Farben.
+- Eine Überschrift **am Textanfang** bekommt keinen Abstand nach oben (nachgemessen: 16 px vom
+  Rand, genau das Body-Polster).
+
+### Die Farben stehen in der Config (`markdown.*`)
+
+Konfiguriert wie das Terminal-Theme: derselbe Abschnitt der Datei, keine eigene Oberfläche
+(`MarkdownTheme` — `background`, `text`, `secondaryText`, `codeBackground`, `link`, `border`, dazu
+`fontSize` und `headings.h1`…`h6`).
+
+- **Eine Palette, deckend.** Vorher war die Fläche *durchsichtig* (der SwiftUI-Bereich schien durch)
+  und die Farben wechselten mit `prefers-color-scheme`. Eine gerenderte Datei ist aber ein Blatt
+  Papier, kein Fensterteil — Vorgabe ist deshalb **weiss**, mit einem etwas kräftigeren Grau für
+  Codeblöcke (`#f1f1f4`; das alte `#f7f7f9` war auf Weiss kaum zu sehen).
+- **Wer es dunkel will, stellt die sechs Werte dunkel** — `color-scheme` zieht dann nach, abgeleitet
+  aus der Helligkeit des Hintergrunds, sonst blieben die Scrollbalken weiss.
+- **Jede Farbe einzeln mit Rückfallwert**: ein unlesbarer Hex-Wert nimmt weder die Palette noch die
+  Config mit; er fällt auf die Vorgabe zurück.
+- `underPageBackgroundColor` der WebView wird mitgefärbt — sonst blitzt beim Laden die alte Fläche
+  auf, und beim Überziehen am Rand käme sie wieder hervor.
+
+### Eine Suchleiste für jede gerenderte Ansicht (`MarkdownFindBar`)
+
+Gesucht wird überall dort, wo Markdown gerendert steht — Task-File-Tabs, Dokumentfenster aus dem
+Finder, Knowledgebase und die Lese-Ansicht des Asset-Editors. **Ein** Bauteil, dieselbe Optik,
+dieselbe Tastatur: ⌘F springt hinein, ⏎ weiter, ⇧⏎ zurück, esc leert.
+
+- **Die Leiste hält keinen Zustand**, der Aufrufer tut es — weil er zwei verschiedene ist: das
+  Task-File sucht über **alle** Tabs und wechselt beim Sprung den Tab (`TaskTabsView`), ein Dokument
+  sucht in sich selbst (`MarkdownFind`: eine Sektion, die Trefferzahl ist die Fundstellenzahl).
+- **Dieselbe Maschinerie wie beim Task-File**: `TaskSearchIndex` zählt in Swift, `findScript` zählt
+  im DOM, und beide zählen gleich — an der echten `solve-task/SKILL.md` (27 KB, mit Frontmatter,
+  Tabellen und Codeblöcken) über sechs Suchwörter gegengeprüft: 74/74, 12/12, 87/87, 22/22, 29/29,
+  2/2, die markierte Stelle ist die gemeinte, und Leeren räumt alle Markierungen weg.
+- **Nur für gerendertes Markdown.** Im Quelltext sucht der Code-Editor selbst, ein HTML-Artefakt
+  bringt seine eigene Seite mit. ⌘F schaltet deshalb vorher auf „gerendert" um, statt in einer
+  Ansicht zu landen, in der die Leiste nichts täte.
+- **Der Suchindex wird faul gebaut** und nur bei echtem Inhaltswechsel verworfen — auch hier gilt,
+  dass `visibleText` das Dokument durch cmark schickt.
+
 ## Task-File durchsuchen (Feld rechts neben dem Dateinamen)
 
 Ein Task-File hat hier bis zu 23 Tabs und 137 KB; das Gesuchte steht selten in dem, der gerade offen
@@ -930,6 +1127,22 @@ niemand. Gemessen auf dieser Maschine: 193 Task-Ordner, 382 Dateien — 231 png,
 - **Aus, solange nichts da ist.** Die meisten Tickets haben keinen Anhang, und ein Knopf, der ein
   leeres Feld aufschlägt, sagt nichts. Die Zahl daneben nennt, was einen erwartet, ohne dass man
   aufmachen muss.
+- **Den Pfad jeder Datei kopieren** (`ClipboardPath`, derselbe Knopf und dieselbe Regel wie beim
+  Task-File): in der Kopfzeile der Vorschau als Knopf, im Baum als Kontextmenü je Zeile — man soll
+  eine 40-MB-Datei nicht erst öffnen müssen, um ihren Pfad zu bekommen. Kopiert wird **relativ zum
+  Repo**, solange die Datei darin liegt (Claudes cwd), sonst **absolut**. Der frühere Rückfall auf
+  den blossen **Dateinamen** stammt aus der Zeit, als die Task-Files im Repo lagen; seit dem Umzug
+  nach Application Support traf er jedes Projekt ausser `hermes` — und mit `EVEN-3530_foo.md` findet
+  weder Claude noch der Finder noch eine Shell etwas.
+- **📁 links neben der Büroklammer** führt dieselbe Frage nach draussen: der Task-Ordner wird im
+  Finder **geöffnet** (man will die Bilder sehen, nicht den Ordner markiert). Ohne Task-Ordner —
+  also bei der Mehrheit der Tickets — zeigt er statt dessen das **Task-File**, im Tasks-Verzeichnis
+  ausgewählt: derselbe Ort, und „hier liegt deine Datei" ist eine bessere Antwort als ein toter
+  Knopf. Bei 643 Task-Files nebeneinander ist das Auswählen der Punkt (`AppModel.taskFinderTarget`,
+  Ziel aus `taskFolders` — bewusst nicht aus dem Baum: der wirft leere Ordner weg, ein leerer
+  Ticket-Ordner existiert trotzdem). Ist weder das eine noch das andere da (reines Jira-Ticket),
+  steht der Knopf nicht da. Denselben Knopf gibt es in der Kopfzeile des Baums, für den seltenen
+  Fall mehrerer Task-Ordner.
 - **Welcher Ordner zum Ticket gehört** (`TaskAttachments.belongsToTicket`) ist bewusst **lockerer**
   als bei den Dateien (`TaskFileLoader.belongsToTicket` verlangt `_` oder `.` nach dem Schlüssel):
   die Ordner sind nicht so streng benannt. 191 von 193 heissen schlicht `<KEY>`, einer trägt den
@@ -1015,6 +1228,35 @@ Schuld war nicht nur die Null, sondern auch `MarkdownHTML.render`: es fütterte 
 NUL-frei gelesen, **und** der Renderer bekommt jetzt die echte Byte-Länge. Ohne NUL sind beide
 Zahlen gleich, für alle anderen Aufrufer ändert sich also nichts; mit NUL verliert keiner mehr
 lautlos den Rest des Dokuments.
+
+## Markdown-Dateien öffnen („Öffnen mit › Kanban")
+
+Kanban ist beim System als **Betrachter** für `.md` angemeldet; eine so geöffnete Datei bekommt ein
+**eigenes Fenster** (`MarkdownDocumentWindow`), gerendert wie ein Task-File, mit Umschalter auf den
+Quelltext.
+
+- **Rolle `Viewer`, Rang `Alternate`** (`CFBundleDocumentTypes`): Kanban zeigt die Datei und
+  bearbeitet sie nicht — und nimmt dem Editor die Standard-Zuordnung für `.md` nicht weg. Auf dieser
+  Maschine steht Kanban damit in „Öffnen mit", Standard bleibt Xcode.
+- **Der Typ wird `imported`, nicht `exported`** (`UTImportedTypeDeclarations`):
+  `net.daringfireball.markdown` gehört nicht uns. Ohne die Deklaration kennt eine Maschine, auf der
+  keine andere Markdown-App installiert ist, den Typ gar nicht — und der Eintrag bliebe aus.
+- **`lsregister -f` läuft im `build-app.sh`** gleich nach dem Signieren: sonst kennt der Finder die
+  Zuordnung erst nach einem Neustart, oder er behält den alten Eintrag.
+- **Ein eigenes Fenster, kein Tab im Board**: die Datei gehört zu keinem Ticket, und das Board hätte
+  keinen Platz für sie, an dem sie nicht etwas anderes verdrängt. Titel und `representedURL` sind
+  gesetzt, also funktionieren Proxy-Symbol und ⌘-Klick auf den Titel wie bei jedem Dokumentfenster.
+- **Ein Fenster je Datei**, nach aufgelöstem Pfad — derselbe Aufruf holt das vorhandene nach vorn
+  (der Finder schickt beim wiederholten „Öffnen mit" ständig dieselbe Datei), und ein **Symlink** auf
+  dieselbe Datei öffnet kein zweites.
+- **Gerendert wie ein Task-File** (`MarkdownWebView` + `TaskFileLoader.rewriteImagePaths`, damit
+  Bilder neben der Datei erscheinen; `loadHTMLString` gibt dem Dokument keinen Dateizugriff), der
+  Quelltext-Schalter zeigt `CodeEditorView` nicht-schreibbar — dieselben zwei Ansichten wie in der
+  Knowledgebase. Grenze 4 MB, ebenfalls wie dort.
+- **Die Datei wird beobachtet** (`TaskFileWatcher`, 150 ms entprellt) und beim Schliessen abgemeldet
+  — samt `NotificationCenter`-Token, der sonst je geöffneter Datei stehen bliebe.
+- Wird die App **durch** eine Datei gestartet, geht das Board-Fenster mit auf (die `Window`-Szene
+  öffnet immer); läuft sie schon, erscheint nur das Dokumentfenster.
 
 ## Knowledgebase lesen (📚 neben Sprint/Frei)
 
@@ -1422,7 +1664,30 @@ die das Modell nicht antwortete, beim nächsten Lauf stillschweigend übersprung
 `claude -p` läuft mit `--strict-mcp-config --mcp-config '{"mcpServers":{}}'` und verbotenen
 Datei-/Ausführ-Werkzeugen. Ein Hintergrund-Lauf kann so kein Repo anfassen, nicht sekundenlang den
 MCP-Stack laden und keine Freigabe-Abfrage auslösen; alles, worüber er urteilt, steht im Prompt.
-Ein Timeout (240 s) beendet das Kind, sonst hinge die Schleife an einem stehenden Unterprozess.
+
+### Ein Lauf dauert Minuten — und das Zeitlimit war kürzer
+
+Der Spinner drehte sich scheinbar endlos. Er tat genau das, was er sollte, nur zu lange und
+vergeblich: gemessen an den laufenden Prozessen braucht ein voller Lauf (25 Sessions, 160 Signale,
+Sonnet) **5½ bis 6 Minuten**, das Limit stand auf **240 s**. Also schlug es jedes Mal zu, warf die
+bezahlte Antwort weg und hinterliess im Stand `letzterFehler: "claude hat nach 240s nicht
+geantwortet."` — vier Minuten Spinner nach jedem App-Start, für nichts.
+
+- **Vorgabe 900 s**, einstellbar (`watchdog.timeoutSeconds`, 60–3600). Wem das zu lange dauert,
+  stellt ein schnelleres Modell ein, nicht ein kürzeres Limit.
+- **Der Modellaufruf läuft ausserhalb des Actors.** `scan` war synchron, der Unterprozess lief also
+  minutenlang *im* `WatchdogScanner` — und damit stand alles still, was über ihn geht: `state()`,
+  „Erledigt", „Aussortieren", „Papierkorb leeren". Wer während eines Laufs etwas wegwarf, sah nichts
+  passieren.
+- **Kein verwaistes Kind mehr.** Beim Beenden der App überlebte ein laufendes `claude -p` als Waise
+  (beobachtet: `ppid=1`, 5½ Minuten Restlaufzeit, 300 MB) — sein Zeitlimit lebte im Elternprozess
+  und starb mit ihm. `ClaudeHeadless` führt die laufenden Prozesse in einer Liste;
+  `applicationWillTerminate` beendet sie.
+- **Der Spinner sagt jetzt, worauf er wartet**: verstrichene Zeit daneben und ein ✕, das den Lauf
+  abbricht (beendet den Unterprozess). Ein selbst abgebrochener Lauf zählt **nicht** als Fehlschlag —
+  sonst stünde „Letzter Lauf gescheitert", weil jemand auf ✕ gedrückt hat.
+- Geprüft gegen ein echtes Programm (`ClaudeHeadlessProcessTests`): das Limit greift, ein laufender
+  Aufruf lässt sich von aussen beenden, und die Liste ist danach leer.
 
 ### Dateien
 

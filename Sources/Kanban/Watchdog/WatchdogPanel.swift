@@ -79,18 +79,19 @@ struct WatchdogPanel: View {
                 Label("Session-Watchdog", systemImage: "waveform.path.ecg")
                     .font(.headline)
                 Spacer()
-                Button {
-                    Task { await watchdog.jetztScannen() }
-                } label: {
-                    if watchdog.laeuft {
-                        ProgressView().controlSize(.small)
-                    } else {
+                // Ein Lauf dauert hier gemessen 5–6 Minuten. Ein Spinner, der nur dreht, sieht
+                // dabei aus wie „hängt" — also steht daneben, seit wann, und ein ✕ beendet ihn.
+                if watchdog.laeuft {
+                    laufAnzeige
+                } else {
+                    Button {
+                        Task { await watchdog.jetztScannen() }
+                    } label: {
                         Image(systemName: "arrow.clockwise")
                     }
+                    .buttonStyle(.borderless)
+                    .help("Sessions jetzt scannen — dauert einige Minuten")
                 }
-                .buttonStyle(.borderless)
-                .disabled(watchdog.laeuft)
-                .help("Sessions jetzt scannen")
             }
 
             Picker("", selection: $filter) {
@@ -106,6 +107,35 @@ struct WatchdogPanel: View {
             .labelsHidden()
         }
         .padding(12)
+    }
+
+    /// Läuft gerade: Spinner, verstrichene Zeit, Abbruch.
+    private var laufAnzeige: some View {
+        HStack(spacing: 6) {
+            ProgressView().controlSize(.small)
+            TimelineView(.periodic(from: .now, by: 1)) { context in
+                Text(dauer(seit: watchdog.laeuftSeit, bis: context.date))
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+            }
+            Button {
+                watchdog.abbrechen()
+            } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .help("Laufenden Scan abbrechen")
+        }
+        .help("Scan läuft — ein voller Lauf braucht einige Minuten")
+    }
+
+    private func dauer(seit: Date?, bis: Date) -> String {
+        guard let seit else { return "…" }
+        let sekunden = max(Int(bis.timeIntervalSince(seit)), 0)
+        return String(format: "%d:%02d", sekunden / 60, sekunden % 60)
     }
 
     private var fuss: some View {
@@ -148,6 +178,7 @@ struct WatchdogPanel: View {
 
     private var statusZeile: String {
         if let fehler = watchdog.letzterFehler { return "Letzter Lauf gescheitert: \(fehler)" }
+        if watchdog.laeuft { return "Scan läuft — Sessions werden ausgewertet." }
         guard let letzter = watchdog.letzterScan else { return "Noch kein Lauf." }
         var zeile = "Gescannt \(letzter.formatted(date: .omitted, time: .shortened))"
         if let sessions = watchdog.sessionsGescannt {

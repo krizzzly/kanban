@@ -13,7 +13,7 @@ import Foundation
 /// Einträge sollen nicht stillschweigend verschwinden. Umgekehrt gilt für Keys, die die Registry
 /// kennt: fehlt dort ein Modul-Block, verschwindet der zugehörige Eintrag — dafür ist sie ja Owner.
 public enum ProjectProjection {
-    private static let jiraOwnedKeys = ["prefix", "tasksPath", "repoDir", "baseUrl"]
+    private static let jiraOwnedKeys = ["prefix", "tasksPath", "repoDir", "baseUrl", "useJira"]
     private static let gitlabOwnedKeys = ["path"]
     private static let confluenceOwnedKeys = ["space", "path"]
     private static let vertecOwnedKeys = ["project", "phase", "task", "additionalKeys"]
@@ -33,12 +33,18 @@ public enum ProjectProjection {
     /// Entfernen eines Projekts müssen sie aber mit weg, sonst bliebe ein verwaister Eintrag stehen.
     static let kanbanOnlySections = ["knowledgebase"]
 
+    /// Sections ausserhalb von `modules` — ihr Pfad lässt sich nicht aus einem Modulnamen bauen.
+    /// Bisher nur `appearance.projects` (Bild und Kopfzeilenfarben): reine Oberfläche, die in
+    /// Hermes' Config nichts zu suchen hat und deshalb nie unter `modules` stand.
+    static let topLevelProjectMaps = [["appearance", "projects"]]
+
     /// Löscht ein Projekt aus **allen** Sections. Bewusst getrennt von `apply(_:to:)`: das Entfernen
     /// ist eine ausdrückliche Nutzeraktion, während die Projektion selbst nie löscht.
     public static func remove(_ key: String, from config: JSONValue) -> JSONValue {
         var result = config
-        for module in moduleNames + kanbanOnlySections {
-            let path = projectsPath(module) + [key]
+        let pfade = (moduleNames + kanbanOnlySections).map(projectsPath) + topLevelProjectMaps
+        for pfad in pfade {
+            let path = pfad + [key]
             if result.value(at: path) != nil { result.set(nil, at: path) }
         }
         return result
@@ -67,6 +73,7 @@ public enum ProjectProjection {
                 record.tasksPath = entry["tasksPath"]?.stringValue
                 record.repoDir = entry["repoDir"]?.stringValue
                 record.jiraBaseUrl = entry["baseUrl"]?.stringValue
+                record.usesJira = entry["useJira"]?.boolValue
             }
             if let path = gitlab[key]?.objectValue?["path"]?.stringValue {
                 record.gitlab = .init(path: path)
@@ -129,6 +136,9 @@ public enum ProjectProjection {
             fields["tasksPath"] = record.tasksPath.map(JSONValue.string)
             fields["repoDir"] = record.repoDir.map(JSONValue.string)
             fields["baseUrl"] = record.jiraBaseUrl.map(JSONValue.string)
+            // Nur die Abschaltung wird geschrieben: `true` ist die Vorgabe, und ein Schlüssel,
+            // der nur den Normalfall wiederholt, stünde in jedem Projekt herum.
+            if record.usesJira == false { fields["useJira"] = .bool(false) }
             jira = fields
         }
         write(jira, ownedKeys: jiraOwnedKeys, at: projectsPath("jira") + [key], in: &config)

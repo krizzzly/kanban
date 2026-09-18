@@ -56,7 +56,19 @@ public struct ClaudeHeadless: Sendable {
 
     public static var verfuegbar: Bool { findeCLI() != nil }
 
-    public func frage(_ prompt: String, timeout: TimeInterval = 240) throws -> Antwort {
+    /// Die gerade laufenden Aufrufe. Ein `claude -p` überlebt das Beenden der App sonst als
+    /// **Waise** (beobachtet: `ppid=1`, 5½ Minuten Restlaufzeit, 300 MB) — sein Zeitlimit lebte im
+    /// Elternprozess und stirbt mit ihm. Über die Liste beendet die App ihre Kinder beim Schliessen
+    /// und der Mensch einen laufenden Scan von Hand.
+    private static let laufende = Prozessliste()
+
+    /// Beendet alle laufenden Aufrufe. Liefert, wie viele es waren.
+    @discardableResult
+    public static func alleBeenden() -> Int { laufende.alleBeenden() }
+
+    public static var laeuftGerade: Bool { laufende.anzahl > 0 }
+
+    public func frage(_ prompt: String, timeout: TimeInterval = 900) throws -> Antwort {
         guard let claude = executable ?? Self.findeCLI() else { throw Fehler.cliFehlt }
 
         let process = Process()
@@ -81,6 +93,8 @@ public struct ClaudeHeadless: Sendable {
         do { try process.run() } catch {
             throw Fehler.fehlgeschlagen("claude liess sich nicht starten: \(error.localizedDescription)")
         }
+        Self.laufende.dazu(process)
+        defer { Self.laufende.weg(process) }
 
         // Die Frist muss **vor** dem Lesen stehen: `readDataToEndOfFile` blockiert, bis das Kind
         // seine Pipe schliesst — was erst das Beenden auslöst.
@@ -162,6 +176,40 @@ public struct ClaudeHeadless: Sendable {
         guard let ende = rumpf.range(of: "```") else { return nil }
         let inhalt = String(rumpf[..<ende.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
         return inhalt.isEmpty ? nil : inhalt
+    }
+}
+
+/// Die laufenden `claude -p`-Prozesse. Kein Actor, aus demselben Grund wie beim Flag: die
+/// Aufrufer sind synchrone GCD-Kontexte, und `alleBeenden()` muss auch aus
+/// `applicationWillTerminate` heraus gehen, wo niemand mehr `await`en kann.
+private final class Prozessliste: @unchecked Sendable {
+    private let lock = NSLock()
+    private var prozesse: [Process] = []
+
+    func dazu(_ process: Process) {
+        lock.lock(); prozesse.append(process); lock.unlock()
+    }
+
+    func weg(_ process: Process) {
+        lock.lock(); prozesse.removeAll { $0 === process }; lock.unlock()
+    }
+
+    var anzahl: Int {
+        lock.lock(); defer { lock.unlock() }
+        return prozesse.count
+    }
+
+    @discardableResult
+    func alleBeenden() -> Int {
+        lock.lock()
+        let kopie = prozesse
+        lock.unlock()
+        var beendet = 0
+        for process in kopie where process.isRunning {
+            process.terminate()
+            beendet += 1
+        }
+        return beendet
     }
 }
 

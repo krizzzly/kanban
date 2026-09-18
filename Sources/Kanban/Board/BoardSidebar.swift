@@ -26,8 +26,10 @@ struct BoardSidebar: View {
                 if model.boardMode == .free { newTaskButton }
                 if model.cards.isEmpty {
                     emptyState
+                } else if model.visibleColumns.isEmpty {
+                    noMatchState
                 } else {
-                    ForEach(model.columns, id: \.column) { entry in
+                    ForEach(model.visibleColumns, id: \.column) { entry in
                         ColumnSection(
                             column: entry.column,
                             cards: entry.cards,
@@ -82,6 +84,25 @@ struct BoardSidebar: View {
         .padding(.horizontal, 12)
         .padding(.top, 4)
         .padding(.bottom, 12)
+    }
+
+    /// Es gibt Karten, nur keine, die zur Suche passt. Bewusst ein eigener Text statt `emptyState`:
+    /// „Keine Tickets im Sprint" wäre hier schlicht gelogen — die Tickets sind da, der Filter ist es
+    /// auch. Der Knopf ist der Weg zurück, ohne das Feld oben suchen zu müssen.
+    private var noMatchState: some View {
+        VStack(spacing: 8) {
+            Text("Kein Ticket passt zu „\(model.ticketSearch)“.")
+                .font(.app(.callout))
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+            Button("Suche leeren") { model.ticketSearch = "" }
+                .buttonStyle(.plain)
+                .font(.app(.caption))
+                .foregroundStyle(.tint)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.horizontal, 12)
+        .padding(.top, 40)
     }
 
     @ViewBuilder

@@ -60,6 +60,15 @@ public struct ProjectFieldSpec: Identifiable, Sendable {
     public enum Kind: Sendable {
         case string, secret, stringList
         case choice([String])   // Picker; leere Auswahl entfernt den Schlüssel (= Modul-Default)
+        /// Schalter. `defaultOn` ist der Wert, der ohne Schlüssel gilt — bestehende Configs, in
+        /// denen er fehlt, verhalten sich damit unverändert.
+        case bool(defaultOn: Bool)
+        /// Farbwähler, gespeichert als `#rrggbb`. Immer mit einem Weg zurück zu „nicht gesetzt" —
+        /// ein Farbwähler allein kann nichts leer lassen, und leer ist hier der Normalfall.
+        case color
+        /// Bilddatei: wird beim Auswählen in Kanbans Datenordner kopiert (`ProjectImageStore`),
+        /// gespeichert wird der Pfad der Kopie.
+        case image
     }
 
     public let key: String

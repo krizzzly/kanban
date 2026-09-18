@@ -10,6 +10,8 @@ struct TerminalTabsView: View {
     @State private var selected: Tab = .claude
     /// The prompt timeline slides in over the terminal (see `PromptTimelinePanel`).
     @State private var showPrompts = false
+    /// Das Verfassen-Fenster (siehe `PromptComposerSheet`).
+    @State private var composing = false
 
     private static let promptPanelWidth: CGFloat = 380
 
@@ -50,6 +52,9 @@ struct TerminalTabsView: View {
             .onChange(of: worktreeSession) {
                 if worktreeSession == nil, selected == .worktree { selected = .claude }
             }
+            .sheet(isPresented: $composing) {
+                PromptComposerSheet(model: model)
+            }
         } else {
             TerminalPlaceholderView(ticketKey: model.selectedTicketKey)
         }
@@ -73,6 +78,7 @@ struct TerminalTabsView: View {
             }
             addButton
             Spacer()
+            composeButton
             promptsButton
         }
         .padding(.horizontal, 10).padding(.vertical, 6)
@@ -93,6 +99,27 @@ struct TerminalTabsView: View {
             }
             .buttonStyle(.plain)
             .help("Prompts dieser Session — klicken springt im Terminal dorthin")
+        }
+    }
+
+    /// Links neben den Prompts: einen eigenen Prompt verfassen, statt ihn in die enge Eingabezeile
+    /// des TUI zu tippen.
+    ///
+    /// `plus.bubble` und nicht `plus`: derselbe Balken trägt links schon ein `plus` für ein weiteres
+    /// Terminal, und zwei gleiche Zeichen mit verschiedener Wirkung in einer Leiste wären eine
+    /// Verwechslung mit Ansage. Die Sprechblase bindet es zusätzlich an den Prompt-Knopf daneben.
+    @ViewBuilder
+    private var composeButton: some View {
+        if selected == .claude {
+            Button { composing = true } label: {
+                Image(systemName: "plus.bubble")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 8).padding(.vertical, 6)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Prompt in Markdown verfassen und in die Console geben")
         }
     }
 

@@ -13,17 +13,27 @@ public struct WatchdogSettings: Sendable, Equatable {
     /// verdichten, und der Aufruf wäre bezahlte Leerlaufzeit.
     public var minSignale: Int
     public var modell: String
+    /// Wie lange der Auswertungsaufruf dauern darf.
+    ///
+    /// Stand auf **240 s** und war damit zu knapp: ein echter Lauf (25 Sessions, 160 Signale,
+    /// Sonnet) braucht hier gemessen **5½ bis 6 Minuten**. Das Zeitlimit schlug also jedes Mal zu,
+    /// warf die bezahlte Antwort weg und hinterliess „claude hat nach 240s nicht geantwortet" —
+    /// vier Minuten Spinner für nichts. Die Vorgabe hat jetzt Luft; wem das zu lange dauert, der
+    /// stellt ein schnelleres Modell ein, nicht ein kürzeres Limit.
+    public var timeoutSekunden: Int
 
     public static let modellVorgabe = "claude-sonnet-5"
 
     public init(aktiv: Bool = false, intervallMinuten: Int = 60, rueckblickStunden: Int = 72,
-                maxSessions: Int = 25, minSignale: Int = 4, modell: String = WatchdogSettings.modellVorgabe) {
+                maxSessions: Int = 25, minSignale: Int = 4,
+                modell: String = WatchdogSettings.modellVorgabe, timeoutSekunden: Int = 900) {
         self.aktiv = aktiv
         self.intervallMinuten = intervallMinuten
         self.rueckblickStunden = rueckblickStunden
         self.maxSessions = maxSessions
         self.minSignale = minSignale
         self.modell = modell
+        self.timeoutSekunden = timeoutSekunden
     }
 }
 
@@ -59,7 +69,12 @@ public actor WatchdogScanner {
 
     // MARK: - Scan
 
-    public func scan(_ settings: WatchdogSettings, jetzt: Date = Date()) throws -> Ergebnis {
+    /// `async`, damit der Modellaufruf den **Actor nicht blockiert**.
+    ///
+    /// Vorher war `scan` synchron: der Unterprozess lief minutenlang *im* Actor, und damit stand
+    /// alles andere still, was über ihn geht — `state()`, „Erledigt", „Aussortieren", „Papierkorb
+    /// leeren". Wer während eines Laufs etwas wegwarf, sah schlicht nichts passieren.
+    public func scan(_ settings: WatchdogSettings, jetzt: Date = Date()) async throws -> Ergebnis {
         var state = store.laden()
         let bekannt = Set(state.befunde.map(\.id))
 
@@ -115,7 +130,10 @@ public actor WatchdogScanner {
         let prompt = WatchdogPrompt.bauen(digests: digests, bekannte: state.befunde)
         let antwort: ClaudeHeadless.Antwort
         do {
-            antwort = try macheClient(settings.modell).frage(prompt)
+            // Ausserhalb des Actors: der Aufruf wartet minutenlang auf einen Unterprozess.
+            let client = macheClient(settings.modell)
+            let frist = TimeInterval(settings.timeoutSekunden)
+            antwort = try await Task.detached { try client.frage(prompt, timeout: frist) }.value
         } catch {
             // Eine gescheiterte Auswertung darf die Cursors **nicht** vorrücken — sonst wären genau
             // diese Sessions beim nächsten Lauf stillschweigend übersprungen.

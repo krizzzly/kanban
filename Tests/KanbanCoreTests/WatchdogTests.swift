@@ -416,6 +416,16 @@ final class WatchdogConfigTests: XCTestCase {
         XCTAssertEqual(config.watchdog.modell, WatchdogSettings.modellVorgabe)
     }
 
+    /// Unter 60 s schlüge das Limit garantiert zu, bevor irgendein Lauf fertig ist.
+    func testZeitlimitHatEineUntergrenze() throws {
+        let klein = try KanbanConfig.resolve(Data(#"{"watchdog":{"timeoutSeconds":"5"}}"#.utf8), docsRoot: "/tmp/docs")
+        XCTAssertEqual(klein.watchdog.timeoutSekunden, 60)
+        let gross = try KanbanConfig.resolve(Data(#"{"watchdog":{"timeoutSeconds":"99999"}}"#.utf8), docsRoot: "/tmp/docs")
+        XCTAssertEqual(gross.watchdog.timeoutSekunden, 3600)
+        let ohne = try KanbanConfig.resolve(Data("{}".utf8), docsRoot: "/tmp/docs")
+        XCTAssertEqual(ohne.watchdog.timeoutSekunden, WatchdogSettings().timeoutSekunden)
+    }
+
     func testWerteWerdenGelesenUndBegrenzt() throws {
         let json = """
         {"watchdog":{"enabled":true,"intervalMinutes":"15","lookbackHours":"9999",

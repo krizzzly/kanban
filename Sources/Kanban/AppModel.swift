@@ -100,6 +100,27 @@ final class AppModel {
     // Board
     private(set) var cards: [CardVM] = []
     private(set) var columns: [(column: KanbanColumn, cards: [CardVM])] = []
+
+    /// Die Sucheingabe aus der Leiste — siehe `visibleColumns`. Reiner Anzeigezustand: sie siebt,
+    /// was links steht, und rührt weder an `cards` noch an der Auswahl. Ein Ticket, das gerade
+    /// rechts offen ist, bleibt offen, auch wenn die Suche es links ausblendet.
+    var ticketSearch: String = ""
+
+    /// Die Spalten, wie sie links stehen: `columns`, durch `ticketSearch` gesiebt.
+    ///
+    /// Spalten ohne Treffer fallen ganz weg statt als leere Überschriften stehenzubleiben — bei der
+    /// Suche nach *einem* Ticket wäre eine Liste aus vier leeren Spaltenköpfen nur Rauschen.
+    var visibleColumns: [(column: KanbanColumn, cards: [CardVM])] {
+        guard !ticketSearch.trimmingCharacters(in: .whitespaces).isEmpty else { return columns }
+        return columns.compactMap { entry in
+            let treffer = entry.cards.filter {
+                TicketFilter.matches(key: $0.ticket.key,
+                                     summary: $0.ticket.summary,
+                                     query: ticketSearch)
+            }
+            return treffer.isEmpty ? nil : (entry.column, treffer)
+        }
+    }
     private(set) var worktrees: [Worktree] = []
     private var lastMergeRequests: [MergeRequestRef] = []   // cached to re-derive a card locally
 
@@ -114,6 +135,11 @@ final class AppModel {
     /// Der Inhalt des Task-Ordners (`<tasksPath>/<TICKET>/`) als Baum — siehe `TaskAttachments`.
     /// Leer heisst: es gibt nichts, und der Knopf in der Tableiste bleibt aus.
     private(set) var taskAttachments: [KBNode] = []
+    /// Die Task-Ordner des Tickets auf der Platte (fast immer genau einer) — das Ziel des
+    /// 📁-Knopfs. Getrennt von `taskAttachments` gehalten, weil der Baum leere Ordner wegwirft: ein
+    /// Ticket-Ordner, in dem nur `avatars/` steht oder der gerade geleert wurde, gibt keinen Baum,
+    /// existiert aber und soll sich öffnen lassen.
+    private(set) var taskFolders: [URL] = []
     /// Die im Dateibaum gewählte Datei (absoluter Pfad). Nicht-nil heisst zugleich: rechts steht die
     /// Vorschau statt des Task-Tabs.
     var taskAttachmentSelection: String?
@@ -327,7 +353,7 @@ final class AppModel {
     private static let preferredOrder = [
         "beschreibung", "kommentare", "analyse", "impact", "history",
         "umsetzungsplan", "lösungsplan", "loesungsplan", "stages",
-        "fragen", "lösung", "loesung", "abschluss-checkliste",
+        "fragen", "lösung", "loesung", "commit", "abschluss-checkliste",
     ]
 
     func bootstrap() {
@@ -421,12 +447,18 @@ final class AppModel {
             else { loadKnowledgebase() }
         }
         SelectionStore.projectKey = project.key   // restored on the next launch
-        boardMode = SelectionStore.boardMode(forProject: project.key) ?? .sprint
+        // Ein Projekt ohne Jira kennt nur den freien Modus — auch wenn für den Key noch eine alte
+        // Sprint-Wahl gespeichert ist (die Anbindung kann nachträglich abgeschaltet worden sein).
+        boardMode = project.usesJira
+            ? (SelectionStore.boardMode(forProject: project.key) ?? .sprint)
+            : .free
         sprints = []
         selectedChoice = nil
         board = nil
         cards = []
         columns = []
+        // Sonst stünde das neue Projekt hinter dem Filter des alten und sähe aus, als wäre es leer.
+        ticketSearch = ""
         newTaskConsoleSession = nil
         claudeCommands = ClaudeCommandScanner.scan(repoDir: project.repoDir,
                                                    only: Self.ticketCommandNames,
@@ -451,12 +483,17 @@ final class AppModel {
     /// Neustart — genau wie der gewählte Sprint.
     func setBoardMode(_ mode: BoardMode) {
         guard mode != boardMode else { return }
+        // Die Leiste bietet den Sprint-Modus ohne Jira gar nicht erst an; hier steht der Riegel
+        // trotzdem, damit kein anderer Weg (wiederhergestellte Wahl, späterer Aufrufer) Sprints
+        // für ein Projekt lädt, das keine hat.
+        guard mode == .free || selectedProject?.usesJira == true else { return }
         boardMode = mode
         if let project = selectedProject {
             SelectionStore.setBoardMode(mode, forProject: project.key)
         }
         cards = []
         columns = []
+        ticketSearch = ""   // wie beim Projektwechsel: der alte Filter passt zum neuen Inhalt nicht
         Task { await loadForCurrentMode() }
     }
 
@@ -524,8 +561,12 @@ final class AppModel {
 
             let dir = project.tasksPathAbsolute
             // Wer bin ich auf dieser Instanz? Einmal je Sitzung geholt; ohne Auskunft ist eben kein
-            // Ticket „meins" und die Ableitung bleibt, wie sie war.
-            let myAccountId = await jiraSelf(baseUrl: project.jiraBaseUrl)?.accountId
+            // Ticket „meins" und die Ableitung bleibt, wie sie war. Ohne Jira-Anbindung wird gar
+            // nicht erst gefragt: die Karten kommen dann aus Task-Files und Branches, die keinen
+            // Bearbeiter kennen — die Anfrage wäre nur eine Verzögerung ohne Antwortnutzen.
+            let myAccountId = project.usesJira
+                ? await jiraSelf(baseUrl: project.jiraBaseUrl)?.accountId
+                : nil
             var sessionMap: [String: String] = [:]
             cards = issues.map { ticket in
                 var info = TaskFileLoader.statusMarker(ticketKey: ticket.key, in: dir)
@@ -761,16 +802,15 @@ final class AppModel {
         return cards.first { $0.ticket.key == key }?.ticket.epic
     }
 
-    /// The task-file path relative to the main repo root (Claude's cwd), e.g.
-    /// `docs/tasks/EVEN-3530_foo.md`. Falls back to the bare filename if it's outside the repo.
+    /// Was der Kopier-Knopf in die Zwischenablage legt — Pfad relativ zum Repo (Claudes cwd), sonst
+    /// absolut. Siehe `ClipboardPath`; dieselbe Regel gilt für jede Datei im Task-Ordner.
+    func clipboardPath(for url: URL) -> String {
+        ClipboardPath.forCopying(url, repoDir: selectedProject?.repoDir)
+    }
+
     var relativeTaskFilePath: String? {
         guard let url = taskFile?.url else { return nil }
-        if let repo = selectedProject?.repoDir {
-            let full = url.standardizedFileURL.path
-            let base = repo.hasSuffix("/") ? repo : repo + "/"
-            if full.hasPrefix(base) { return String(full.dropFirst(base.count)) }
-        }
-        return url.lastPathComponent
+        return clipboardPath(for: url)
     }
 
     /// Status can only be set on tickets that have a task file (that's where the marker lives).
@@ -825,6 +865,7 @@ final class AppModel {
         reviewMarkdowns = []
         fallbackSections = []
         taskAttachments = []
+        taskFolders = []
         taskAttachmentSelection = nil
         worktreeStatusText = ""
         worktreeCommandOutput = ""
@@ -1103,6 +1144,35 @@ final class AppModel {
             Self.typeText(text, session: session)
         } else {
             pendingConsoleText = (ticketKey, text)
+        }
+    }
+
+    /// Ein frei verfasster Prompt aus dem Verfassen-Fenster geht in die Claude-Console des
+    /// gewählten Tickets.
+    ///
+    /// **Gepastet, nicht getippt** (`TmuxController.pasteText`): mehrzeiliges Markdown würde als
+    /// Tastendruck schon beim ersten Zeilenumbruch abgeschickt — die Bracketed-Paste-Marker
+    /// verhindern genau das.
+    ///
+    /// `submit` ist die Ausnahme von der Hausregel „eingefügt, nicht abgeschickt": hier hat der
+    /// Mensch den Text eben selbst geschrieben und gegengelesen, ein zweites Gegenlesen in der
+    /// Console wäre nur ein Klick mehr. Der Weg ohne Absenden bleibt trotzdem daneben stehen.
+    ///
+    /// Das Enter kommt mit Abstand hinterher: Paste und Tastendruck sind zwei tmux-Aufrufe, und der
+    /// TUI braucht einen Moment, um den eingefügten Block übernommen zu haben. Ohne die Pause ginge
+    /// im ungünstigen Fall ein halber Prompt raus.
+    func sendComposedPrompt(_ markdown: String, submit: Bool) {
+        let text = markdown.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty, let session = activeTerminalSession else { return }
+        claudeTerminalFocusRequest += 1
+        Task.detached {
+            let tmux = TmuxController()
+            guard tmux.isAvailable else { return }
+            tmux.cancelCopyMode(session)
+            tmux.pasteText(session, text)
+            guard submit else { return }
+            try? await Task.sleep(for: .milliseconds(250))
+            tmux.sendKeys(session, "Enter")
         }
     }
 
@@ -1966,6 +2036,7 @@ final class AppModel {
         displaySections = []
         questionSectionIDs = []; decisionSectionIDs = []
         taskAttachments = []
+        taskFolders = []
         taskAttachmentSelection = nil
         worktreeStatusText = ""
         worktreeCommandOutput = ""
@@ -2048,6 +2119,7 @@ final class AppModel {
     /// Liest den Task-Ordner neu ein. Eine Auswahl, deren Datei es nicht mehr gibt, fällt weg —
     /// sonst stünde rechts die Vorschau einer gelöschten Datei.
     private func rescanAttachments(for key: String, in dir: String) {
+        taskFolders = TaskAttachments.folders(ticketKey: key, in: dir)
         taskAttachments = TaskAttachments.tree(ticketKey: key, in: dir)
         if let selection = taskAttachmentSelection,
            KnowledgebaseTree.node(at: selection, in: taskAttachments) == nil {
@@ -2059,6 +2131,24 @@ final class AppModel {
     func reloadTaskAttachments() {
         guard let key = selectedTicketKey, let project = selectedProject else { return }
         rescanAttachments(for: key, in: project.tasksPathAbsolute)
+    }
+
+    /// Was der 📁-Knopf in der Tableiste im Finder aufmacht.
+    ///
+    /// Der **Task-Ordner** des Tickets, sobald es einen gibt — dort liegt alles, was `get-task`
+    /// mitgeholt hat. Gibt es keinen (die Mehrheit der Tickets hat keine Anhänge), wird statt dessen
+    /// das **Task-File** im Tasks-Verzeichnis ausgewählt: der Ordner ist derselbe, und „hier liegt
+    /// deine Datei" ist eine bessere Antwort als ein toter Knopf. Gibt es beides nicht (reines
+    /// Jira-Ticket), gibt es auch den Knopf nicht — er zeigte auf nichts.
+    enum FinderTarget: Equatable {
+        case folder(URL)   // wird geöffnet (man will die Dateien sehen)
+        case file(URL)     // wird im Finder ausgewählt (der Ordner enthält 643 Task-Files)
+    }
+
+    var taskFinderTarget: FinderTarget? {
+        if let folder = taskFolders.first { return .folder(folder) }
+        if let url = taskFile?.url { return .file(url) }
+        return nil
     }
 
     /// Der Ordner, gegen den relative Pfade in den Anhängen gelten: das Tasks-Verzeichnis, **nicht**
@@ -2686,8 +2776,13 @@ final class AppModel {
 
     /// Every card that has unbooked ⏱ time, most first — the list the "Alle offenen buchen" sheet
     /// shows and books.
+    ///
+    /// Ohne Jira-Anbindung ist die Liste leer, und damit verschwindet auch der Buchen-Knopf in der
+    /// Leiste: gebucht würde in ein Jira, das dieses Projekt nicht hat. Die Zeit wird trotzdem
+    /// weiter gemessen und angezeigt — nur eben nirgends hingeschrieben.
     var openBookings: [OpenBooking] {
-        cards.compactMap { card in
+        guard selectedProject?.usesJira == true else { return [] }
+        return cards.compactMap { card in
             let days = dailyBookings(ticketKey: card.ticket.key)
             guard !days.isEmpty else { return nil }
             return OpenBooking(key: card.ticket.key, summary: card.ticket.summary,

@@ -16,6 +16,7 @@ struct ContentView: View {
                 // quetschen. Die Leiste bleibt — über sie geht es zurück.
                 KnowledgebaseView(model: model)
                     .toolbar { TopBarToolbar(model: model) }
+                    .headerChrome(model.selectedProject?.appearance ?? .none)
             } else {
                 HSplitView {
                     BoardSidebar(model: model)
@@ -24,6 +25,9 @@ struct ContentView: View {
                         .frame(minWidth: 460)
                 }
                 .toolbar { TopBarToolbar(model: model) }
+                // Hintergrund und unterer Rand der Kopfzeile — beides nur, wo konfiguriert. Die
+                // Knowledgebase bekommt es ebenso: sie tauscht das Board aus, nicht die Leiste.
+                .headerChrome(model.selectedProject?.appearance ?? .none)
             }
         }
         .task {

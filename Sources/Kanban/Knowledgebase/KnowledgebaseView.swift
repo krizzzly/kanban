@@ -260,12 +260,17 @@ struct KBRows: View {
     let nodes: [KBNode]
     @Binding var expanded: Set<String>
     var icon: (KBNode) -> String = Self.kbIcon
+    /// Der Pfad, den das Kontextmenü der Zeile kopiert. **nil = kein Kontextmenü** — im Task-Ordner
+    /// will man den Pfad einer Datei haben, ohne sie zu öffnen; die Knowledgebase wird gelesen, dort
+    /// gibt es nichts zu kopieren.
+    var clipboardPath: ((KBNode) -> String)?
 
     var body: some View {
         ForEach(nodes) { node in
             if node.isDirectory {
                 DisclosureGroup(isExpanded: binding(for: node.id)) {
-                    KBRows(nodes: node.children, expanded: $expanded, icon: icon)
+                    KBRows(nodes: node.children, expanded: $expanded, icon: icon,
+                           clipboardPath: clipboardPath)
                 } label: {
                     HStack(spacing: 7) {
                         Image(systemName: "folder.fill")
@@ -274,6 +279,7 @@ struct KBRows: View {
                         Text("\(node.fileCount)")
                             .font(.app(.caption)).foregroundStyle(.secondary)
                     }
+                    .contextMenu { rowMenu(node) }
                 }
             } else {
                 HStack(spacing: 7) {
@@ -290,7 +296,24 @@ struct KBRows: View {
                 .padding(.vertical, 1)
                 .contentShape(Rectangle())
                 .help(node.name)
+                .contextMenu { rowMenu(node) }
                 .tag(node.path)
+            }
+        }
+    }
+
+    /// Pfad kopieren und im Finder zeigen — die beiden Dinge, die man mit einer Zeile eines
+    /// Dateibaums sonst nur über Umwege tut. Leer, solange kein `clipboardPath` gesetzt ist:
+    /// `contextMenu` mit leerem Inhalt zeigt kein Menü.
+    @ViewBuilder
+    private func rowMenu(_ node: KBNode) -> some View {
+        if let clipboardPath {
+            Button("Pfad kopieren") {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(clipboardPath(node), forType: .string)
+            }
+            Button("Im Finder zeigen") {
+                NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: node.path)])
             }
         }
     }
@@ -340,6 +363,8 @@ private struct KBFileView: View {
     /// KB-Inhalt. Innerhalb der KB umgekehrt, dort ist die Darstellung der Zweck. Der Knopf in der
     /// Kopfzeile schaltet beides um.
     @State private var showSource = false
+    @State private var suche = MarkdownFind()
+    @FocusState private var sucheFokussiert: Bool
 
     private var url: URL { URL(fileURLWithPath: node.path) }
 
@@ -364,6 +389,14 @@ private struct KBFileView: View {
         // `id:` statt `onAppear`: bei einem Wechsel der Auswahl bleibt der View stehen und würde
         // sonst den alten Inhalt behalten.
         .task(id: node.path) { load() }
+        .onChange(of: suche.query) { suche.eingabeGeaendert(text ?? "") }
+        .onChange(of: text ?? "") { suche.inhaltGeaendert(text ?? "") }
+        .onKeyPress(keys: ["f"], phases: .down) { druck in
+            guard druck.modifiers.contains(.command), node.kind == .markdown else { return .ignored }
+            showSource = false
+            sucheFokussiert = true
+            return .handled
+        }
     }
 
     private var header: some View {
@@ -400,6 +433,14 @@ private struct KBFileView: View {
                 .textSelection(.enabled)
                 .help(node.path)
             Spacer(minLength: 4)
+            // Die KB-Dateien sind lang und verweisen quer durcheinander — hier wird gesucht, nicht
+            // gescrollt. Nur für gerendertes Markdown: den Quelltext durchsucht der Code-Editor,
+            // und ein HTML-Artefakt bringt seine eigene Seite mit.
+            if node.kind == .markdown, !showSource {
+                MarkdownFindBar(query: $suche.query, treffer: suche.treffer, aktuell: suche.index,
+                                zaehlbar: suche.zaehlbar, weiter: { suche.weiter($0) },
+                                fokussiert: $sucheFokussiert, breite: 110)
+            }
             if node.kind == .markdown || node.kind == .html {
                 Button {
                     showSource.toggle()
@@ -471,7 +512,8 @@ private struct KBFileView: View {
                     // (gegen den Ordner ergäbe er den Ordner selbst plus Marke).
                     baseURL: url,
                     onLinkClick: onLinkClick,
-                    scrollToFragment: jumpTo)
+                    scrollToFragment: jumpTo,
+                    search: suche.suche)
             } else {
                 placeholder
             }

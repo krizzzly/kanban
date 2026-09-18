@@ -45,11 +45,50 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
     <key>LSMinimumSystemVersion</key><string>15.0</string>
     <key>NSHighResolutionCapable</key><true/>
     <key>NSPrincipalClass</key><string>NSApplication</string>
+
+    <!-- Markdown-Dateien öffnen (Finder: „Öffnen mit › Kanban"). Rolle ist bewusst `Viewer`
+         und Rang `Alternate`: Kanban zeigt die Datei, bearbeitet sie nicht, und soll dem
+         Editor die Standard-Zuordnung für .md nicht wegnehmen. -->
+    <key>CFBundleDocumentTypes</key>
+    <array>
+      <dict>
+        <key>CFBundleTypeName</key><string>Markdown</string>
+        <key>CFBundleTypeRole</key><string>Viewer</string>
+        <key>LSHandlerRank</key><string>Alternate</string>
+        <key>LSItemContentTypes</key>
+        <array><string>net.daringfireball.markdown</string></array>
+        <key>CFBundleTypeExtensions</key>
+        <array><string>md</string><string>markdown</string><string>mdown</string></array>
+      </dict>
+    </array>
+
+    <!-- Der Typ gehört nicht uns (Daring Fireball hat ihn geprägt, mehrere Apps deklarieren ihn),
+         deshalb `imported` statt `exported`. Ohne die Deklaration kennt eine Maschine, auf der
+         keine andere Markdown-App installiert ist, den Typ nicht — und „Öffnen mit" bliebe leer. -->
+    <key>UTImportedTypeDeclarations</key>
+    <array>
+      <dict>
+        <key>UTTypeIdentifier</key><string>net.daringfireball.markdown</string>
+        <key>UTTypeDescription</key><string>Markdown</string>
+        <key>UTTypeConformsTo</key>
+        <array><string>public.plain-text</string></array>
+        <key>UTTypeTagSpecification</key>
+        <dict>
+          <key>public.filename-extension</key>
+          <array><string>md</string><string>markdown</string><string>mdown</string></array>
+        </dict>
+      </dict>
+    </array>
 </dict>
 </plist>
 PLIST
 
 echo "==> ad-hoc signing"
 codesign --force --deep --sign - "$APP"
+
+# Launch Services die neue Info.plist unterschieben: ohne das kennt der Finder die
+# Markdown-Zuordnung erst nach einem Neustart (oder gar nicht, wenn der alte Eintrag noch steht).
+LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+[ -x "$LSREGISTER" ] && "$LSREGISTER" -f "$APP" || true
 
 echo "==> done: $APP"

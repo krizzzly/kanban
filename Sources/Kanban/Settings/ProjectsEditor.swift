@@ -15,6 +15,10 @@ struct ProjectsEditor: View {
 
     @State private var newKey = ""
     @State private var draft = ProjectRecord()
+    /// Was ein abgeschaltetes Modul zuletzt enthielt. Ohne das wäre ein versehentlich umgelegter
+    /// Schalter ein Datenverlust — so kommt beim Wiedereinschalten zurück, was dastand (Vorschlag
+    /// oder selbst getippt), statt eines leeren Blocks.
+    @State private var geparkt = ProjectRecord()
     @State private var removalCandidate: String?
 
     var body: some View {
@@ -95,7 +99,9 @@ struct ProjectsEditor: View {
     /// nur durch Blättern durch sechs Bereiche zu sehen.
     private func badges(for record: ProjectRecord) -> [String] {
         var badges: [String] = []
-        if record.prefix != nil { badges.append("Jira") }
+        // Der Präfix allein sagt nicht mehr „Jira": ein Projekt ohne Anbindung hat ihn auch, nur
+        // steht dahinter kein Board. „lokal" ist hier die ehrlichere Auskunft.
+        if record.prefix != nil { badges.append(record.usesJira == false ? "lokal" : "Jira") }
         if record.gitlab != nil { badges.append("GitLab") }
         if record.confluence != nil { badges.append("Confluence") }
         if record.vertec != nil { badges.append("Vertec") }
@@ -114,6 +120,7 @@ struct ProjectsEditor: View {
             TextField("Projekt-Key", text: $newKey, prompt: Text("even"))
                 .onChange(of: newKey) { _, key in
                     draft = settings.projectSuggestion(for: key)
+                    geparkt = ProjectRecord()   // die Parkplätze gehören zum alten Key
                 }
             if keyTaken {
                 Label("Diesen Key gibt es schon.", systemImage: "exclamationmark.triangle")
@@ -126,6 +133,18 @@ struct ProjectsEditor: View {
                     .font(.caption).foregroundStyle(.secondary)
 
                 group("Grunddaten") {
+                    // Steht vor allem anderen, weil es die Felder darunter umdeutet: aus ist das
+                    // Projekt rein lokal, und der Jira-Host darunter läuft ins Leere.
+                    Toggle("An Jira angebunden", isOn: Binding(
+                        get: { draft.usesJira ?? true },
+                        set: { draft.usesJira = $0 ? nil : false }))
+                    if draft.usesJira == false {
+                        Text("Ohne Jira: kein Board, keine Sprints, keine Worklog-Buchung. Das "
+                             + "Board zeigt nur den freien Modus aus Task-Files, Worktrees und "
+                             + "Merge Requests. Der Ticket-Präfix wird trotzdem gebraucht — er "
+                             + "benennt Task-Files und Branches.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
                     TextField("Ticket-Präfix", text: binding(\.prefix), prompt: Text("EVEN"))
                     TextField("Tasks-Pfad", text: binding(\.tasksPath),
                               prompt: Text("…/Kanban/tasks/even"))
@@ -135,14 +154,14 @@ struct ProjectsEditor: View {
                               prompt: Text("https://andere-instanz.atlassian.net"))
                 }
 
-                group("GitLab") {
+                modul("GitLab", \.gitlab, leer: .init(path: "")) {
                     TextField("Projekt-Pfad", text: optional(
                         get: { $0.gitlab?.path },
-                        set: { record, value in record.gitlab = value.map { .init(path: $0) } }),
+                        set: { record, value in record.gitlab = .init(path: value ?? "") }),
                               prompt: Text("applications/even"))
                 }
 
-                group("Confluence") {
+                modul("Confluence", \.confluence, leer: .init()) {
                     TextField("Space-Key", text: optional(
                         get: { $0.confluence?.space },
                         set: { record, value in
@@ -155,7 +174,7 @@ struct ProjectsEditor: View {
                         }), prompt: Text("…/Kanban/docs/even"))
                 }
 
-                group("Vertec") {
+                modul("Vertec", \.vertec, leer: .init()) {
                     TextField("Projekt", text: optional(
                         get: { $0.vertec?.project },
                         set: { record, value in
@@ -173,7 +192,7 @@ struct ProjectsEditor: View {
                         }), prompt: Text("PROGRAMMIERUNG"))
                 }
 
-                group("Jenkins") {
+                modul("Jenkins", \.jenkins, leer: .init(jobs: [])) {
                     TextField("Jobs (kommagetrennt)", text: Binding(
                         get: { draft.jenkins?.jobs.joined(separator: ", ") ?? "" },
                         set: { text in
@@ -184,7 +203,7 @@ struct ProjectsEditor: View {
                         }), prompt: Text("even - DEV - Build"))
                 }
 
-                group("DockerHub") {
+                modul("DockerHub", \.dockerhub, leer: .init()) {
                     TextField("Namespace", text: optional(
                         get: { $0.dockerhub?.namespace },
                         set: { record, value in
@@ -200,11 +219,13 @@ struct ProjectsEditor: View {
                 HStack {
                     Spacer()
                     Button("Projekt anlegen") {
-                        settings.createProject(key: trimmedKey, record: draft)
+                        settings.createProject(key: trimmedKey,
+                                               record: draft.strippingEmptyModules())
                         newKey = ""
                         draft = ProjectRecord()
+                        geparkt = ProjectRecord()
                     }
-                    .disabled(draft.isEmpty)
+                    .disabled(draft.strippingEmptyModules().isEmpty)
                 }
             }
         }
@@ -216,6 +237,39 @@ struct ProjectsEditor: View {
         VStack(alignment: .leading, spacing: 6) {
             Text(title).font(.caption).foregroundStyle(.secondary)
             content()
+        }
+        .padding(.top, 4)
+    }
+
+    /// Eine Modulgruppe mit Schalter: an heisst „dieses Projekt hat den Block", aus heisst „gar
+    /// nicht erst anlegen".
+    ///
+    /// Vorher entschied das die Frage, ob zufällig ein Feld ausgefüllt war — und weil die Vorschläge
+    /// aus den bestehenden Projekten **alle** Module vorfüllen, musste man wegräumen, was man nicht
+    /// wollte. Der Schalter dreht das um: er steht von sich aus so, wie der Vorschlag es meint, und
+    /// ein Klick nimmt das ganze Modul heraus.
+    ///
+    /// Die Felder verschwinden mit — ein abgeschaltetes Modul, das noch Eingabefelder zeigt, wäre
+    /// eine Einladung, ins Leere zu tippen.
+    @ViewBuilder
+    private func modul<T, Content: View>(_ title: String,
+                                         _ keyPath: WritableKeyPath<ProjectRecord, T?>,
+                                         leer: T,
+                                         @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Toggle(isOn: Binding(
+                get: { draft[keyPath: keyPath] != nil },
+                set: { an in
+                    if an {
+                        draft[keyPath: keyPath] = geparkt[keyPath: keyPath] ?? leer
+                    } else {
+                        geparkt[keyPath: keyPath] = draft[keyPath: keyPath]
+                        draft[keyPath: keyPath] = nil
+                    }
+                })) {
+                Text(title).font(.caption).foregroundStyle(.secondary)
+            }
+            if draft[keyPath: keyPath] != nil { content() }
         }
         .padding(.top, 4)
     }
@@ -242,13 +296,16 @@ struct ProjectsEditor: View {
         return trimmed.isEmpty ? nil : trimmed
     }
 
-    /// Ändert einen Modul-Block und wirft ihn weg, sobald er leer ist — ein leerer Block würde sonst
-    /// einen leeren Eintrag in der Config erzeugen. `empty` ist der Vergleichswert *und* der
-    /// Startwert, wenn es den Block noch nicht gibt.
+    /// Ändert einen Modul-Block. Ob es ihn **gibt**, entscheidet seit den Modulschaltern allein der
+    /// Schalter — deshalb wird hier nichts mehr weggeworfen, auch kein leer getippter Block.
+    ///
+    /// Täte er es weiter, spränge der Schalter beim Leeren des letzten Feldes von selbst auf „aus"
+    /// und das halb ausgefüllte Modul wäre verschwunden. Leere Blöcke fängt stattdessen
+    /// `strippingEmptyModules()` beim Anlegen ab — einmal, am Ende, statt bei jedem Tastendruck.
     private func adjust<T: Equatable>(_ block: T?, _ empty: T,
                                       _ change: (inout T) -> Void) -> T? {
         var value = block ?? empty
         change(&value)
-        return value == empty ? nil : value
+        return value
     }
 }

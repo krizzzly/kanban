@@ -56,6 +56,14 @@ struct ProjectMapEditor: View {
                 Text("Standard").tag("")
                 ForEach(options, id: \.self) { Text($0).tag($0) }
             }
+        case .bool(let defaultOn):
+            Toggle(field.label, isOn: settings.boolBinding(path, defaultOn: defaultOn))
+        case .color:
+            ColorField(label: label(for: field), hex: settings.stringBinding(path))
+        case .image:
+            // Braucht den Projekt-Key: das Bild wird unter diesem Namen abgelegt.
+            ProjectImageField(label: label(for: field), projectKey: key,
+                              path: settings.stringBinding(path))
         }
     }
 

@@ -21,6 +21,13 @@ public struct ProjectRecord: Codable, Sendable, Equatable {
     public var repoDir: String?
     /// Nur bei Abweichung vom Default-Host (`zvmsupport`).
     public var jiraBaseUrl: String?
+    /// `false` = Projekt **ohne Jira-Anbindung**: kein Board, keine Sprints, keine Worklogs, nur
+    /// freier Modus. nil oder `true` = wie bisher.
+    ///
+    /// Nicht zu verwechseln mit `prefix == nil`: der Präfix benennt Task-Files und Branches und
+    /// bleibt auch ohne Jira gesetzt. Ein Projekt ohne Präfix wäre eins, das Kanban gar nicht als
+    /// Ticketquelle führt — das hier ist eins, dessen Tickets nur nirgends in Jira stehen.
+    public var usesJira: Bool?
 
     public var gitlab: GitlabInfo?
     public var confluence: ConfluenceInfo?
@@ -97,6 +104,27 @@ public struct ProjectRecord: Codable, Sendable, Equatable {
         prefix == nil && tasksPath == nil && repoDir == nil && jiraBaseUrl == nil
             && gitlab == nil && confluence == nil && vertec == nil
             && jenkins == nil && dockerhub == nil
+    }
+
+    /// Wirft Modulblöcke weg, die zwar **da**, aber leer sind.
+    ///
+    /// Im Anlege-Formular entscheidet ein Schalter, ob es einen Block gibt — nicht mehr die Frage,
+    /// ob zufällig ein Feld ausgefüllt ist. Damit kann ein eingeschalteter Block leer bleiben, und
+    /// genau der darf nicht in die Config: ein GitLab-Eintrag mit leerem Pfad würde später gegen
+    /// ein Projekt „" abgefragt, ein leerer Confluence-Block stünde nur als Rauschen da.
+    ///
+    /// Bewusst erst beim Anlegen und nicht bei jedem Tastendruck: sonst verschwände der Block
+    /// mitten im Tippen unter dem Schalter weg, sobald man ein Feld einmal leert.
+    public func strippingEmptyModules() -> ProjectRecord {
+        var record = self
+        if record.gitlab?.path.trimmingCharacters(in: .whitespaces).isEmpty ?? false {
+            record.gitlab = nil
+        }
+        if record.confluence == ConfluenceInfo() { record.confluence = nil }
+        if record.vertec == VertecInfo() { record.vertec = nil }
+        if record.dockerhub == DockerHubInfo() { record.dockerhub = nil }
+        if record.jenkins?.jobs.isEmpty ?? false { record.jenkins = nil }
+        return record
     }
 }
 

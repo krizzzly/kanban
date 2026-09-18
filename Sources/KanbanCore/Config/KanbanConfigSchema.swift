@@ -9,7 +9,7 @@ import Foundation
 /// Wer weitere Hermes-Module pflegen will, tut das in Hermes.
 public enum KanbanConfigSchema {
     public static let sections: [ConfigSectionSpec] = [general, jira, gitlab, confluence,
-                                                       knowledgebase, watchdog, hermes]
+                                                       knowledgebase, appearance, watchdog, hermes]
 
     /// Nur sinnvoll, solange eine `~/.hermes/config.json` existiert — die Einstellungen blenden die
     /// Sektion sonst aus (`HermesSync.isAvailable`).
@@ -47,6 +47,15 @@ public enum KanbanConfigSchema {
             path: ["modules", "jira", "projects"],
             keyPlaceholder: "even",
             fields: [
+                // Steht vorn, weil es die Bedeutung aller Felder darunter mitbestimmt: aus ist das
+                // Projekt rein lokal, und Base-URL wie Sprint-Auswahl laufen ins Leere.
+                ProjectFieldSpec("useJira", "An Jira angebunden", kind: .bool(defaultOn: true),
+                                 required: false,
+                                 help: "Aus = Projekt ohne Jira: kein Board, keine Sprints, keine "
+                                     + "Worklog-Buchung. Das Board läuft dann nur im freien Modus "
+                                     + "aus Task-Files, Worktrees und Merge Requests. Der "
+                                     + "Ticket-Präfix bleibt trotzdem nötig — er benennt Task-Files "
+                                     + "und Branches, nicht die Jira-Anbindung."),
                 ProjectFieldSpec("prefix", "Ticket-Präfix", required: true, placeholder: "EVEN"),
                 ProjectFieldSpec("tasksPath", "Tasks-Pfad", required: true,
                                  placeholder: "~/Library/Application Support/Kanban/tasks/even",
@@ -127,6 +136,43 @@ public enum KanbanConfigSchema {
                                  help: "Absolut, ~ oder relativ zum Basis-Pfad."),
             ]))
 
+    /// Woran man auf einen Blick sieht, in welchem Projekt man steht: ein Bild links in der
+    /// Kopfzeile und deren Farben. Kein Modul — reine Oberfläche, wandert nie nach Hermes.
+    ///
+    /// **Alles optional, und nichts davon ist voreingestellt.** Ohne Eintrag sieht die Kopfzeile aus
+    /// wie bisher; das ist kein Sonderfall, sondern der Normalfall. Deshalb gibt es zu jedem Feld
+    /// auch einen Weg zurück auf „nicht gesetzt" statt nur auf eine andere Farbe.
+    static let appearance = ConfigSectionSpec(
+        id: "appearance", title: "Darstellung", icon: "paintpalette",
+        intro: "Optional — gibt jedem Projekt ein eigenes Gesicht in der Kopfzeile: ein Bild links "
+             + "neben der Projektauswahl und die Farben der Zeile selbst. Das gewählte Bild wird "
+             + "nach ~/Library/Application Support/Kanban/images kopiert, damit es nicht "
+             + "verschwindet, wenn die Quelldatei umzieht. Nichts gesetzt = Kopfzeile wie immer.",
+        fields: [],
+        projectMap: ProjectMapSpec(
+            path: ["appearance", "projects"],
+            keyPlaceholder: "even",
+            fields: [
+                ProjectFieldSpec("image", "Bild", kind: .image, required: false,
+                                 help: "Erscheint links neben der Projektauswahl, auf Zeilenhöhe "
+                                     + "skaliert. SVG, PDF, PNG, JPEG, GIF, HEIC, TIFF oder BMP — "
+                                     + "SVG und PDF bleiben dabei scharf, weil sie als Vektor "
+                                     + "gezeichnet werden."),
+                ProjectFieldSpec("headerBackground", "Hintergrund der Kopfzeile",
+                                 kind: .color, required: false),
+                ProjectFieldSpec("headerForeground", "Textfarbe der Kopfzeile",
+                                 kind: .color, required: false,
+                                 help: "Gilt für Kanbans eigene Knöpfe und Beschriftungen in der "
+                                     + "Zeile. Fenstertitel und Ampelknöpfe zeichnet macOS."),
+                ProjectFieldSpec("headerBorderColor", "Farbe des unteren Randes",
+                                 kind: .color, required: false),
+                ProjectFieldSpec("headerBorderWidth", "Dicke des unteren Randes",
+                                 kind: .choice(["0", "1", "2", "3", "4", "6", "8"]),
+                                 required: false,
+                                 help: "In Punkten. Ohne Farbe passiert nichts — beides gehört "
+                                     + "zusammen."),
+            ]))
+
     /// Der Session-Watchdog. Kein Modul und kein Projekt-Kram — ein Schalter plus vier Stellschrauben
     /// für einen Hintergrund-Lauf, der Geld kostet. Deshalb steht hier auch, was er kostet: eine
     /// Vorgabe, die unbemerkt Tokens verbrennt, wäre ein schlechter Tausch für „praktisch".
@@ -160,6 +206,11 @@ public enum KanbanConfigSchema {
                             kind: .choice(["2", "4", "8", "15"]),
                             help: "Standard = 4. Darunter wird das Modell gar nicht erst gefragt — "
                                 + "es gäbe nichts zu verdichten."),
+            ConfigFieldSpec(["watchdog", "timeoutSeconds"], "Zeitlimit je Lauf (Sekunden)",
+                            kind: .choice(["300", "600", "900", "1800"]),
+                            help: "Standard = 900. Gemessen braucht ein voller Lauf 5–6 Minuten; "
+                                + "mit 240 s lief er jedes Mal in die Frist und die bezahlte "
+                                + "Antwort war weg."),
             ConfigFieldSpec(["watchdog", "maxSessions"], "Sessions je Lauf",
                             kind: .choice(["10", "25", "50", "100"]),
                             help: "Standard = 25. Deckelt einen Rückstau, damit ein Lauf nicht "

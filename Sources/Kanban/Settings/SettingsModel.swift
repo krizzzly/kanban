@@ -177,9 +177,11 @@ final class SettingsModel {
         mutate { $0 = ProjectProjection.apply(record, key: trimmed, to: $0) }
     }
 
-    /// Entfernt ein Projekt aus allen Sections auf einmal.
+    /// Entfernt ein Projekt aus allen Sections auf einmal — samt seinem Kopfzeilen-Bild, das sonst
+    /// als Datei im Datenordner zurückbliebe, auf die keine Einstellung mehr zeigt.
     func removeProjectEverywhere(key: String) {
         mutate { $0 = ProjectProjection.remove(key, from: $0) }
+        ProjectImageStore.remove(projectKey: key)
     }
 
     // MARK: - Raw JSON escape hatch

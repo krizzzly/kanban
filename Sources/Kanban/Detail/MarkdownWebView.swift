@@ -48,9 +48,14 @@ struct MarkdownWebView: NSViewRepresentable {
                              injectionTime: .atDocumentEnd, forMainFrameOnly: true))
         }
         let webView = WKWebView(frame: .zero, configuration: configuration)
-        // Transparent background so the SwiftUI pane shows through.
+        // Die Fläche gehört jetzt der Palette (`markdown.*`), nicht mehr dem SwiftUI-Bereich
+        // darunter. `underPageBackgroundColor` mitzufärben verhindert das kurze Aufblitzen der
+        // alten Fläche, bevor das Dokument steht — und färbt den Überzieh-Bereich beim Scrollen.
+        let flaeche = HTMLTemplate.theme.background
         webView.setValue(false, forKey: "drawsBackground")
-        webView.underPageBackgroundColor = .clear
+        webView.underPageBackgroundColor = NSColor(srgbRed: CGFloat(flaeche.r) / 255,
+                                                   green: CGFloat(flaeche.g) / 255,
+                                                   blue: CGFloat(flaeche.b) / 255, alpha: 1)
         webView.navigationDelegate = context.coordinator
         return webView
     }
@@ -207,46 +212,62 @@ enum HTMLTemplate {
         document(body: body, extraCSS: editorCSS(placeholder: placeholder), script: "")
     }
 
+    /// Die aktive Palette. Über dieselbe `KanbanSettings`-Instanz wie die Terminal-Farben — einmal
+    /// geladen, nicht je Aufruf von der Platte.
+    static var theme: MarkdownTheme { KanbanTerminalView.settings.markdown }
+
+    /// Punktwerte ohne Nachkomma-Rauschen: `15.0px` schreibt niemand, `15.5px` soll aber gehen.
+    private static func zahl(_ wert: Double) -> String {
+        wert == wert.rounded() ? String(Int(wert)) : String(format: "%.1f", wert)
+    }
+
     private static func document(body: String, extraCSS: String, script: String) -> String {
-        """
+        let theme = Self.theme
+        return """
         <!DOCTYPE html>
         <html>
         <head>
         <meta charset="utf-8">
         <meta name="viewport" content="width=device-width, initial-scale=1">
         <style>
-        /* Palette ported 1:1 from MarkdownUI's `.gitHub` theme (kanban-code uses it). */
+        /* Die Farben stehen in der Config (`markdown.*`, siehe `MarkdownTheme`) — **eine** Palette,
+           deckend, statt wie vorher durchsichtig und mit dem System-Erscheinungsbild wechselnd:
+           eine gerenderte Datei ist ein Blatt Papier, kein Fensterteil. */
         :root {
-          color-scheme: light dark;
-          --text: #060606;
-          --secondary-text: #6b6e7b;
-          --bg2: #f7f7f9;        /* inline code, code blocks, table header/alt rows */
-          --link: #2c65cf;
-          --border: #e4e4e8;
-          --divider: #d0d0d3;
+          color-scheme: \(theme.colorScheme);
+          --bg: \(MarkdownTheme.hex(theme.background));
+          --text: \(MarkdownTheme.hex(theme.text));
+          --secondary-text: \(MarkdownTheme.hex(theme.secondaryText));
+          --bg2: \(MarkdownTheme.hex(theme.codeBackground));   /* code, Tabellenköpfe, Frontmatter */
+          --link: \(MarkdownTheme.hex(theme.link));
+          --border: \(MarkdownTheme.hex(theme.border));
+          --divider: \(MarkdownTheme.hex(theme.divider));
         }
-        @media (prefers-color-scheme: dark) {
-          :root {
-            --text: #fbfbfc;
-            --secondary-text: #9294a0;
-            --bg2: #25262a;
-            --link: #4c8ef8;
-            --border: #42444e;
-            --divider: #333438;
-          }
-        }
-        html, body { background: transparent; margin: 0; }
+        html, body { background: var(--bg); margin: 0; }
         body {
           font-family: -apple-system, system-ui, "Helvetica Neue", sans-serif;
-          font-size: 15px; line-height: 1.5; color: var(--text); padding: 16px;
+          font-size: \(zahl(theme.fontSizes.body))px; line-height: 1.5; color: var(--text); padding: 16px;
           -webkit-text-size-adjust: 100%; word-wrap: break-word;
         }
-        /* kanban-code keeps headings at body size, differentiated by weight only. */
-        h1, h2, h3, h4, h5, h6 { font-size: 15px; line-height: 1.3; margin: 12px 0 6px; }
-        h1 { font-weight: 700; }
-        h2 { font-weight: 600; }
-        h3 { font-weight: 500; }
-        h4, h5, h6 { font-weight: 600; }
+        /* Grössen aus dem Theme (`markdown.headings.*`). Vorher standen alle sechs Ebenen auf
+           Textgrösse und unterschieden sich nur an der Strichstärke — auf einem Task-File mit `#`,
+           `##` und `###` war die Gliederung damit praktisch nicht zu sehen. */
+        /* Abstände in **em**, also relativ zur eigenen Schriftgrösse: eine 26-px-Überschrift
+           bekommt mehr Luft als eine 13-px-, und die Staffel hält, wenn jemand die Grössen in der
+           Config ändert. Vorher standen feste 6 px darunter — nach einer H1 derselbe Zwischenraum
+           wie zwischen zwei Absätzen, weshalb die Überschrift am Text klebte.
+           Oben mehr als unten (2,3 : 1): eine Überschrift gehört zu dem, was **unter** ihr steht. */
+        h1, h2, h3, h4, h5, h6 { line-height: 1.25; margin: 1.15em 0 0.5em; font-weight: 600; }
+        h1 { font-size: \(zahl(theme.fontSizes.h1))px; font-weight: 700; }
+        h2 { font-size: \(zahl(theme.fontSizes.h2))px; }
+        h3 { font-size: \(zahl(theme.fontSizes.h3))px; }
+        h4 { font-size: \(zahl(theme.fontSizes.h4))px; }
+        /* Unterhalb der Textgrösse gliedert die Farbe mit, sonst sähe H5 nur nach Kleingedrucktem
+           aus (dieselbe Staffel wie GitHub). */
+        h5 { font-size: \(zahl(theme.fontSizes.h5))px; }
+        h6 { font-size: \(zahl(theme.fontSizes.h6))px; color: var(--secondary-text); }
+        /* Eine H1/H2 am Textanfang braucht keinen Abstand nach oben. */
+        h1:first-child, h2:first-child, h3:first-child { margin-top: 0; }
         p { margin: 6px 0; }
         ul, ol { margin: 6px 0; padding-left: 22px; }
         li { margin: 2px 0; }

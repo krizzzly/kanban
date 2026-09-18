@@ -8,16 +8,41 @@ import KanbanCore
 struct TopBarToolbar: ToolbarContent {
     var model: AppModel
 
+    /// Was das Projekt der Kopfzeile vorgibt — fast immer `.none`.
+    private var appearance: ProjectAppearance { model.selectedProject?.appearance ?? .none }
+
+    /// Die Textfarbe der Zeile, sofern gesetzt. Siehe `chrome(_:)` dazu, worauf sie **nicht** wirkt.
+    private var headerForeground: Color? {
+        appearance.headerForeground.flatMap(Color.init(hex:))
+    }
+
+    /// Färbt ein Element der Leiste ein — aber nur, wenn eine Farbe konfiguriert ist. Ohne Eintrag
+    /// bleibt die Ansicht unangetastet, statt auf `.primary` gesetzt zu werden: die Leiste ist voll
+    /// von Elementen, die ihre Farbe absichtlich selbst wählen (`.secondary` an den Zählern).
+    @ViewBuilder
+    private func chrome<V: View>(_ view: V) -> some View {
+        if let headerForeground { view.foregroundStyle(headerForeground) } else { view }
+    }
+
     var body: some ToolbarContent {
-        ToolbarItem(placement: .navigation) { projectMenu }
-        ToolbarItem(placement: .navigation) { sprintMenu }
-        // Gruppe statt zwei Einträgen: `ToolbarContent` nimmt nur zehn Elemente, und die Leiste ist
-        // voll. Der Knowledgebase-Knopf steht **neben** Sprint/Frei, weil er dieselbe Frage
-        // beantwortet: was füllt gerade das Fenster.
+        // Bild und Projektauswahl in **einer** Gruppe: das Bild steht links daneben, und
+        // `ToolbarContent` nimmt nur zehn Einträge — die sind vergeben.
+        ToolbarItemGroup(placement: .navigation) {
+            projectImage
+            chrome(projectMenu)
+        }
+        ToolbarItem(placement: .navigation) { chrome(sprintMenu) }
+        // Gruppe statt drei Einträgen: `ToolbarContent` nimmt nur zehn Elemente, und die Leiste ist
+        // voll. Alle drei beantworten dieselbe Frage — was füllt gerade das Fenster: Sprint/Frei
+        // sagt, woher die Karten kommen, die Suche siebt sie, der Knowledgebase-Knopf tauscht das
+        // Board ganz aus.
         ToolbarItemGroup(placement: .navigation) {
             modePicker
-            knowledgebaseButton
+            searchField
+            chrome(knowledgebaseButton)
         }
+        // Ohne `chrome`: der Status färbt sich selbst — orange heisst Warnung. Die Textfarbe des
+        // Projekts darüberzulegen würde genau das Signal löschen, wegen dem er da steht.
         ToolbarItem(placement: .navigation) { statusView }
         ToolbarItem(placement: .navigation) { sprintTimeView }
         // Gruppe statt zwei Einträge: `ToolbarContent` nimmt nur zehn Elemente, und beide sind
@@ -26,15 +51,33 @@ struct TopBarToolbar: ToolbarContent {
             bookButton
             stackSweepButton
         }
-        ToolbarItem(placement: .primaryAction) { refreshButton }
+        ToolbarItem(placement: .primaryAction) { chrome(refreshButton) }
         // Wieder eine Gruppe statt zwei Einträgen: `ToolbarContent` nimmt nur zehn, und die sind
         // vergeben. Passt auch inhaltlich — beide drehen an dem, was Claude in den Sessions tut.
         ToolbarItemGroup(placement: .primaryAction) {
             watchdogButton
-            claudeWorkflowButton
+            chrome(claudeWorkflowButton)
         }
-        ToolbarItem(placement: .primaryAction) { dataFolderButton }
-        ToolbarItem(placement: .primaryAction) { settingsButton }
+        ToolbarItem(placement: .primaryAction) { chrome(dataFolderButton) }
+        ToolbarItem(placement: .primaryAction) { chrome(settingsButton) }
+    }
+
+    /// Das Projektbild, links neben der Projektauswahl — auf Zeilenhöhe skaliert, Seitenverhältnis
+    /// erhalten. Ohne konfiguriertes (oder mit verschwundenem) Bild entsteht gar keine Ansicht: eine
+    /// leere Fläche neben der Auswahl wäre ein Platzhalter für nichts.
+    ///
+    /// Gelesen wird bei jedem Aufbau von der Platte. Das ist hier in Ordnung — AppKit hält geladene
+    /// Bilder selbst vor, und die Datei wechselt nur, wenn jemand in den Einstellungen eine andere
+    /// wählt. SVG und PDF kommen als Vektor an und bleiben auf jeder Zeilenhöhe scharf.
+    @ViewBuilder
+    private var projectImage: some View {
+        if let bild = NSImage.projectImage(atPath: appearance.imagePath) {
+            Image(nsImage: bild)
+                .resizable()
+                .scaledToFit()
+                .frame(height: 18)
+                .accessibilityLabel(model.selectedProject?.key ?? "Projekt")
+        }
     }
 
     /// Schaltet die Knowledgebase des Projekts auf: Ordnerbaum links, Datei rechts, anstelle von
@@ -80,18 +123,68 @@ struct TopBarToolbar: ToolbarContent {
 
     /// Sprint- oder freier Modus. Steht direkt neben der Sprint-Auswahl, die im freien Modus
     /// verschwindet — dort gibt kein Sprint vor, was auf dem Board steht.
+    ///
+    /// Bei einem Projekt **ohne Jira-Anbindung** entfällt der Umschalter ganz: es gibt nur den
+    /// freien Modus. Ein ausgegrauter Umschalter wäre die falsche Auskunft — er sähe aus wie „gerade
+    /// nicht verfügbar", dabei ist es eine Eigenschaft des Projekts.
+    @ViewBuilder
     private var modePicker: some View {
-        Picker("Modus", selection: Binding(get: { model.boardMode },
-                                           set: { model.setBoardMode($0) })) {
-            ForEach(BoardMode.allCases) { mode in
-                Label(mode.label, systemImage: mode.icon).tag(mode)
+        if model.selectedProject?.usesJira != false {
+            Picker("Modus", selection: Binding(get: { model.boardMode },
+                                               set: { model.setBoardMode($0) })) {
+                ForEach(BoardMode.allCases) { mode in
+                    Label(mode.label, systemImage: mode.icon).tag(mode)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .fixedSize()
+            .disabled(model.selectedProject == nil)
+            .help("Sprint: die Tickets des gewählten Jira-Sprints. Frei: alles, was lokal existiert.")
+        }
+    }
+
+    /// Sucht über Ticketnummer **und** Titel und siebt damit die Karten links (`visibleColumns`).
+    /// Steht rechts neben Sprint/Frei, weil beide dasselbe bestimmen: was links steht.
+    ///
+    /// Aussehen und Tastatur wie die Suchleiste der Markdown-Ansichten (`MarkdownFindBar`) — esc
+    /// leert. Trefferzähler und ⏎-Sprung fehlen bewusst: hier *ist* das Ergebnis die Liste links,
+    /// es gibt nichts anzuspringen.
+    private var searchField: some View {
+        HStack(spacing: 4) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+            TextField("Ticket", text: Binding(get: { model.ticketSearch },
+                                              set: { model.ticketSearch = $0 }))
+                .textFieldStyle(.plain)
+                .font(.system(size: 12))
+                .frame(width: 140)
+                .onKeyPress(.escape, phases: .down) { _ in
+                    guard !model.ticketSearch.isEmpty else { return .ignored }
+                    model.ticketSearch = ""
+                    return .handled
+                }
+            if !model.ticketSearch.isEmpty {
+                Button {
+                    model.ticketSearch = ""
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 14, height: 14)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("Suche leeren (esc)")
             }
         }
-        .pickerStyle(.segmented)
-        .labelsHidden()
+        .padding(.horizontal, 7).padding(.vertical, 3)
+        .background(Color(nsColor: .textBackgroundColor), in: Capsule())
+        .overlay(Capsule().strokeBorder(Color.secondary.opacity(0.35), lineWidth: 1))
         .fixedSize()
         .disabled(model.selectedProject == nil)
-        .help("Sprint: die Tickets des gewählten Jira-Sprints. Frei: alles, was lokal existiert.")
+        .help("Karten links nach Ticketnummer oder Titel filtern — mehrere Begriffe gelten zusammen")
     }
 
     @ViewBuilder

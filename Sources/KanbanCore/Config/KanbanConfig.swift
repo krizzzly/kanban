@@ -20,13 +20,24 @@ public struct ProjectConfig: Identifiable, Sendable, Hashable {
     /// Welcher Coding-Agent dieses Projekt bedient (`agent` in der Config, Default Claude).
     /// Entscheidet über Startbefehl, Asset-Ort und das Präfix, mit dem Kanban Commands tippt.
     public let agent: AgentKind
+    /// Bild und Farben der Kopfzeile. Im Regelfall `.none` — dann sieht die Zeile aus wie immer.
+    public let appearance: ProjectAppearance
+    /// Hängt dieses Projekt an Jira? `false` heisst: es gibt kein Board und keine Sprints, die
+    /// Karten kommen ausschliesslich aus dem, was lokal existiert — also **nur freier Modus**.
+    ///
+    /// Der `prefix` bleibt auch dann gesetzt: er ist die Ticket-Nummerierung (Task-File-Namen,
+    /// Branchnamen), nicht die Jira-Anbindung. Beides zu verwechseln hiesse, einem Projekt ohne
+    /// Jira auch seine Task-Files zu nehmen.
+    public let usesJira: Bool
 
     public var id: String { key }
 
     public init(key: String, prefix: String, jiraBaseUrl: String, tasksPathAbsolute: String,
                 docsPathAbsolute: String = "", kbPathAbsolute: String? = nil,
                 repoDir: String, gitlabProjectPath: String?,
-                agent: AgentKind = .claude) {
+                agent: AgentKind = .claude,
+                appearance: ProjectAppearance = .none,
+                usesJira: Bool = true) {
         self.key = key
         self.prefix = prefix
         self.jiraBaseUrl = jiraBaseUrl
@@ -36,6 +47,8 @@ public struct ProjectConfig: Identifiable, Sendable, Hashable {
         self.repoDir = repoDir
         self.gitlabProjectPath = gitlabProjectPath
         self.agent = agent
+        self.appearance = appearance
+        self.usesJira = usesJira
     }
 }
 
@@ -145,6 +158,7 @@ public enum KanbanConfig {
         let gitlab = raw.modules?.gitlab
         let confluence = raw.modules?.confluence
         let knowledgebase = raw.modules?.knowledgebase
+        let appearance = raw.appearance
 
         var projects: [ProjectConfig] = []
         for (key, p) in (jira?.projects ?? [:]) {
@@ -173,7 +187,12 @@ public enum KanbanConfig {
                 kbPathAbsolute: kbAbsolute,
                 repoDir: repoDir,
                 gitlabProjectPath: gitlab?.projects?[key]?.path,
-                agent: AgentKind(configValue: p.agent) ?? .fallback
+                agent: AgentKind(configValue: p.agent) ?? .fallback,
+                // Fehlt der Abschnitt ganz (der Normalfall), kommt `.none` heraus — kein Bild,
+                // keine Farben, Kopfzeile wie immer.
+                appearance: appearanceFor(key, appearance),
+                // Fehlt der Schlüssel, ist es ein Jira-Projekt — alles Bestehende bleibt, wie es war.
+                usesJira: p.useJira ?? true
             ))
         }
         projects.sort { $0.key < $1.key }
@@ -189,6 +208,18 @@ public enum KanbanConfig {
             watchdog: watchdogSettings(raw.watchdog),
             excludeClaudeProjectFileFromCommit: raw.commit?.excludeClaudeProjectFile ?? true
         )
+    }
+
+    /// Bild und Farben eines Projekts aus `appearance.projects.<key>`. Der Bildpfad wird **nicht**
+    /// gegen `basePath` aufgelöst: er zeigt immer in Kanbans eigenen `images/`-Ordner, weil das Bild
+    /// beim Auswählen dorthin kopiert wurde (siehe `ProjectImageStore`).
+    static func appearanceFor(_ key: String, _ raw: RawAppearance?) -> ProjectAppearance {
+        guard let entry = raw?.projects?[key] else { return .none }
+        return ProjectAppearance.make(imagePath: entry.image,
+                                      background: entry.headerBackground,
+                                      foreground: entry.headerForeground,
+                                      borderColor: entry.headerBorderColor,
+                                      borderWidth: entry.headerBorderWidth)
     }
 
     /// Die Zahlenfelder stehen als Text in der Config, weil der Settings-Editor nur Text, Wahrheits-
@@ -209,7 +240,10 @@ public enum KanbanConfig {
             rueckblickStunden: zahl(raw.lookbackHours, vorgabe.rueckblickStunden, min: 1, max: 720),
             maxSessions: zahl(raw.maxSessions, vorgabe.maxSessions, min: 1, max: 200),
             minSignale: zahl(raw.minSignals, vorgabe.minSignale, min: 1, max: 100),
-            modell: (modell?.isEmpty ?? true) ? vorgabe.modell : modell!)
+            modell: (modell?.isEmpty ?? true) ? vorgabe.modell : modell!,
+            // Untergrenze 60 s: darunter schlägt das Limit garantiert zu, bevor irgendein Lauf
+            // fertig ist — gemessen braucht einer hier 5½ bis 6 Minuten.
+            timeoutSekunden: zahl(raw.timeoutSeconds, vorgabe.timeoutSekunden, min: 60, max: 3600))
     }
 
     private static func expand(_ path: String) -> String {
@@ -236,6 +270,23 @@ private struct RawConfig: Decodable {
     /// Wie `commit` ein Kanban-eigener Abschnitt, kein Hermes-Modul — steht deshalb nicht in
     /// `ProjectProjection.moduleNames` und wandert nie in Hermes' Config.
     let watchdog: RawWatchdog?
+    /// Bild und Kopfzeilenfarben je Projekt. Ebenfalls Kanban-eigen: Hermes hat keine Oberfläche,
+    /// der Abschnitt hätte dort nichts zu suchen.
+    let appearance: RawAppearance?
+}
+
+struct RawAppearance: Decodable {
+    let projects: [String: RawAppearanceProject]?
+}
+
+/// Alle Felder optional — „gar nichts definiert" ist der Normalfall und muss es bleiben.
+struct RawAppearanceProject: Decodable {
+    let image: String?
+    let headerBackground: String?
+    let headerForeground: String?
+    let headerBorderColor: String?
+    /// Als Text, wie die Zahlen des Watchdogs — der Einstellungs-Editor schreibt nur Strings.
+    let headerBorderWidth: String?
 }
 
 struct RawWatchdog: Decodable {
@@ -245,6 +296,7 @@ struct RawWatchdog: Decodable {
     let maxSessions: String?
     let minSignals: String?
     let model: String?
+    let timeoutSeconds: String?
 }
 
 /// `commit` — Kanban-eigener Abschnitt, kein Hermes-Modul. Steht deshalb nicht in
@@ -277,6 +329,9 @@ private struct RawJiraProject: Decodable {
     let baseUrl: String?
     let repoDir: String?   // optionaler Override — sonst erstes Segment von tasksPath
     let agent: String?     // "claude" (Default) oder "codex"
+    /// `false` = Projekt ohne Jira-Anbindung. Fehlt der Schlüssel, gilt `true` — jedes bestehende
+    /// Projekt bleibt damit unverändert ein Jira-Projekt.
+    let useJira: Bool?
 }
 
 private struct RawGitlab: Decodable {

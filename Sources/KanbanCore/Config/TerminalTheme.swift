@@ -115,6 +115,8 @@ public struct KanbanSettings: Sendable {
     /// When false (default), the ⌥ Option key produces composed characters (needed on Swiss/German
     /// layouts for `# @ { } [ ] |` …). Set true to treat Option as the Meta key instead.
     public let optionAsMeta: Bool
+    /// Farben der gerenderten Markdown-Ansichten (`markdown.*`) — siehe `MarkdownTheme`.
+    public let markdown: MarkdownTheme
 }
 
 /// Reads (and, on first launch, seeds) the terminal part of Kanban's config. Same file as
@@ -143,7 +145,8 @@ public enum KanbanSettingsStore {
         KanbanSettings(activeTerminalTheme: .solarizedDark,
                        terminalThemes: [.solarizedDark, .kanbanDark],
                        font: .default,
-                       optionAsMeta: false)
+                       optionAsMeta: false,
+                       markdown: .standard)
     }
 
     private static func resolve(_ raw: RawSettings) -> KanbanSettings {
@@ -155,7 +158,47 @@ public enum KanbanSettingsStore {
             ?? themes.first!
         return KanbanSettings(activeTerminalTheme: active, terminalThemes: themes,
                               font: resolveFont(raw.terminal?.font),
-                              optionAsMeta: raw.terminal?.optionAsMeta ?? false)
+                              optionAsMeta: raw.terminal?.optionAsMeta ?? false,
+                              markdown: resolveMarkdown(raw.markdown))
+    }
+
+    /// Jede Farbe einzeln: ein unlesbarer Wert fällt auf die Vorgabe zurück, statt die ganze
+    /// Palette (oder die Config) zu Fall zu bringen — eine falsche Farbe soll man sehen und
+    /// korrigieren, nicht daran scheitern.
+    static func resolveMarkdown(_ raw: RawMarkdown?) -> MarkdownTheme {
+        let vorgabe = MarkdownTheme.standard
+        guard let raw else { return vorgabe }
+        func farbe(_ hex: String?, _ fallback: TerminalRGB) -> TerminalRGB {
+            hex.flatMap(TerminalRGB.init(hex:)) ?? fallback
+        }
+        return MarkdownTheme(
+            background: farbe(raw.background, vorgabe.background),
+            text: farbe(raw.text, vorgabe.text),
+            secondaryText: farbe(raw.secondaryText, vorgabe.secondaryText),
+            codeBackground: farbe(raw.codeBackground, vorgabe.codeBackground),
+            link: farbe(raw.link, vorgabe.link),
+            border: farbe(raw.border, vorgabe.border),
+            fontSizes: resolveFontSizes(body: raw.fontSize, headings: raw.headings))
+    }
+
+    /// Grössen wie die Farben: einzeln, mit Rückfallwert, und **begrenzt** (8–72 pt). Eine 0 oder
+    /// eine 900 in der Config macht die Ansicht sonst unbenutzbar, ohne dass man sähe, warum.
+    static func resolveFontSizes(body: String?, headings: RawHeadings?) -> MarkdownFontSizes {
+        let vorgabe = MarkdownFontSizes.standard
+        func punkt(_ text: String?, _ fallback: Double) -> Double {
+            guard let text, let wert = Double(text.trimmingCharacters(in: .whitespaces)) else {
+                return fallback
+            }
+            return Swift.min(Swift.max(wert, 8), 72)
+        }
+        return MarkdownFontSizes(
+            body: punkt(body, vorgabe.body),
+            h1: punkt(headings?.h1, vorgabe.h1),
+            h2: punkt(headings?.h2, vorgabe.h2),
+            h3: punkt(headings?.h3, vorgabe.h3),
+            h4: punkt(headings?.h4, vorgabe.h4),
+            h5: punkt(headings?.h5, vorgabe.h5),
+            h6: punkt(headings?.h6, vorgabe.h6))
     }
 
     private static func resolveFont(_ raw: RawFont?) -> TerminalFontSettings {
@@ -171,6 +214,29 @@ public enum KanbanSettingsStore {
 
 private struct RawSettings: Decodable {
     let terminal: RawTerminal?
+    let markdown: RawMarkdown?
+}
+
+struct RawMarkdown: Decodable {
+    let background: String?
+    let text: String?
+    let secondaryText: String?
+    let codeBackground: String?
+    let link: String?
+    let border: String?
+    let fontSize: String?
+    let headings: RawHeadings?
+}
+
+/// Die Überschriftengrössen stehen verschachtelt (`markdown.headings.h1`), damit die Datei nicht
+/// sechs `h…`-Schlüssel neben den Farben trägt.
+struct RawHeadings: Decodable {
+    let h1: String?
+    let h2: String?
+    let h3: String?
+    let h4: String?
+    let h5: String?
+    let h6: String?
 }
 
 private struct RawTerminal: Decodable {

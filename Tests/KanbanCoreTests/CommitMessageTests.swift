@@ -2,7 +2,7 @@ import XCTest
 @testable import KanbanCore
 
 final class CommitMessageTests: XCTestCase {
-    /// The documented shape solve-task writes (Schritt 7b).
+    /// The shape solve-task wrote until 2026-09-17 — still on 220 task files.
     private let real = """
     <!-- kanban-claude-session: abc -->
     # BFEZVM-4464 - Kennzahlen
@@ -20,6 +20,51 @@ final class CommitMessageTests: XCTestCase {
     ## Nächste Schritte
     - [ ] Code Review
     """
+
+    /// The documented shape solve-task writes today (Kapitel 15): `## Commit`, next to the
+    /// `## Lösung` that now carries Jira's developer solution field.
+    private let heutige = """
+    # CORETEST-4275 - OMGE-Abzug
+
+    ## Lösung
+
+    Wurde behoben.
+
+    ## Commit
+
+    **Commit-Message:** `CORETEST-4275 | Apply dossier OMGE deduction to certificate reporting`
+
+    **Verifikationsziel:** https://core-4275.test — Dossier → GF → Report
+    """
+
+    func testReadsMessageFromCommitSection() {
+        XCTAssertEqual(CommitMessage.suggestion(in: heutige),
+                       "CORETEST-4275 | Apply dossier OMGE deduction to certificate reporting")
+    }
+
+    func testJiraSolutionTextIsNotMistakenForAMessage() {
+        // `## Lösung` holds Jira prose now; without a message there it must not win over `## Commit`.
+        let content = """
+        ## Lösung
+
+        Wurde behoben.
+
+        ## Commit
+
+        **Commit-Message:** `CORETEST-4251 | Fix NOGA code lookup on location import`
+        """
+        XCTAssertEqual(CommitMessage.suggestion(in: content),
+                       "CORETEST-4251 | Fix NOGA code lookup on location import")
+    }
+
+    func testCommitMessageHeadingIsNotTheCommitSection() {
+        // The skill's console block `## Commit-Message` is a different heading and carries no line.
+        let content = """
+        ## Commit-Message
+        CORETEST-4275 | nur die Konsolenausgabe
+        """
+        XCTAssertNil(CommitMessage.suggestion(in: content))
+    }
 
     func testReadsMessageFromLoesungSection() {
         XCTAssertEqual(CommitMessage.suggestion(in: real),

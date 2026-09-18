@@ -6,7 +6,6 @@ import KanbanCore
 struct TaskTabsView: View {
     @Bindable var model: AppModel
     @State private var selectedTitle: String?
-    @State private var copiedPath = false
     /// Der Dateibaum des Task-Ordners, links eingeschoben (siehe `attachmentsButton`).
     @State private var showAttachments = false
     @State private var attachmentsExpanded: Set<String> = []
@@ -23,6 +22,7 @@ struct TaskTabsView: View {
     @State private var hitIndex = 0
     /// Steigt bei jedem Sprung, damit auch derselbe Treffer erneut angesprungen werden kann.
     @State private var searchToken = 0
+    @FocusState private var sucheFokussiert: Bool
 
     private var sections: [TaskSection] { model.displaySections }
 
@@ -47,6 +47,11 @@ struct TaskTabsView: View {
             hits = []
             hitIndex = 0
             searchIndexStale = true
+        }
+        .onKeyPress(keys: ["f"], phases: .down) { druck in
+            guard druck.modifiers.contains(.command), !sections.isEmpty else { return .ignored }
+            sucheFokussiert = true
+            return .handled
         }
         .onChange(of: query) { sucheAuffrischen(springen: true) }
         // Das Task-File ändert sich unter der Suche (Watcher, neues Review) — dann stimmt weder der
@@ -95,66 +100,14 @@ struct TaskTabsView: View {
 
     // MARK: - Suche im Task-File
 
-    /// Das Feld rechts neben dem Dateinamen. Gesucht wird über **alle** Tabs — Status, Review und
-    /// jede H2-Sektion —, und ein Sprung wechselt dafür den Tab.
+    /// Das Feld rechts neben dem Dateinamen — dieselbe Leiste wie im Dokumentfenster und in der
+    /// Knowledgebase (`MarkdownFindBar`). Der Zustand bleibt hier, weil er etwas anderes ist:
+    /// gesucht wird über **alle** Tabs, und ein Sprung wechselt dafür den Tab.
     private var sucheFeld: some View {
-        HStack(spacing: 4) {
-            Image(systemName: "magnifyingglass")
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
-            TextField("Suchen", text: $query)
-                .textFieldStyle(.plain)
-                .font(.system(size: 12))
-                .frame(width: 130)
-                // ⏎ weiter, ⇧⏎ zurück — wie die Suche in jedem Editor.
-                .onSubmit { weiter(1) }
-                .onKeyPress(.return, phases: .down) { druck in
-                    guard druck.modifiers.contains(.shift) else { return .ignored }
-                    weiter(-1)
-                    return .handled
-                }
-                .onKeyPress(.escape, phases: .down) { _ in
-                    guard !query.isEmpty else { return .ignored }
-                    query = ""
-                    return .handled
-                }
-            if !query.isEmpty {
-                Text(trefferText)
-                    .font(.system(size: 11, design: .monospaced))
-                    .foregroundStyle(hits.isEmpty ? Color.red : Color.secondary)
-                    .fixedSize()
-                if !hits.isEmpty {
-                    schrittKnopf("chevron.up", "Vorheriger Treffer (⇧⏎)") { weiter(-1) }
-                    schrittKnopf("chevron.down", "Nächster Treffer (⏎)") { weiter(1) }
-                }
-                schrittKnopf("xmark.circle.fill", "Suche leeren (esc)") { query = "" }
-            }
-        }
-        .padding(.horizontal, 7).padding(.vertical, 3)
-        .background(Color(nsColor: .textBackgroundColor), in: Capsule())
-        .overlay(Capsule().strokeBorder(Color.secondary.opacity(0.35), lineWidth: 1))
-        .fixedSize()
-    }
-
-    private func schrittKnopf(_ symbol: String, _ hilfe: String,
-                              _ aktion: @escaping () -> Void) -> some View {
-        Button(action: aktion) {
-            Image(systemName: symbol)
-                .font(.system(size: 10, weight: .semibold))
-                .foregroundStyle(.secondary)
-                .frame(width: 14, height: 14)
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .help(hilfe)
-    }
-
-    /// „3/12" — und der Grund, warum nichts markiert ist, wenn es nichts zu markieren gibt.
-    private var trefferText: String {
-        if query.trimmingCharacters(in: .whitespaces).count < TaskSearch.minQueryLength {
-            return "…"
-        }
-        return hits.isEmpty ? "0" : "\(hitIndex + 1)/\(hits.count)"
+        MarkdownFindBar(query: $query, treffer: hits.count, aktuell: hitIndex,
+                        zaehlbar: query.trimmingCharacters(in: .whitespaces).count
+                            >= TaskSearch.minQueryLength,
+                        weiter: { weiter($0) }, fokussiert: $sucheFokussiert)
     }
 
     /// Trefferliste neu rechnen. `springen` steuert, ob danach auch angesprungen wird — beim Tippen
@@ -295,6 +248,7 @@ struct TaskTabsView: View {
         let showTabs = sections.count > 1
         if model.taskFile != nil || showTabs || !model.taskAttachments.isEmpty {
             HStack(spacing: 8) {
+                finderButton
                 attachmentsButton
                 if model.taskFile != nil { copyPathButton }
                 if showTabs {
@@ -310,6 +264,39 @@ struct TaskTabsView: View {
                 }
             }
             .padding(.horizontal, 10).padding(.vertical, 6)
+        }
+    }
+
+    /// Zeigt die Dateien des Tickets im **Finder** — links neben der Büroklammer, weil es dieselbe
+    /// Frage beantwortet wie sie („wo liegt das, was zu dem Ticket geholt wurde?"), nur draussen
+    /// statt drinnen. Ziel ist der Task-Ordner, sonst das Task-File selbst (siehe
+    /// `AppModel.taskFinderTarget`); ohne beides steht der Knopf nicht da.
+    @ViewBuilder
+    private var finderButton: some View {
+        if let target = model.taskFinderTarget {
+            Button {
+                switch target {
+                // Ein Ordner wird **geöffnet**, nicht bloss ausgewählt: man will die Bilder sehen.
+                case .folder(let url): NSWorkspace.shared.open(url)
+                // Eine Datei dagegen ausgewählt — im Tasks-Verzeichnis liegen Hunderte davon.
+                case .file(let url): NSWorkspace.shared.activateFileViewerSelecting([url])
+                }
+            } label: {
+                Image(systemName: "folder")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(Color.secondary)
+                    .frame(width: 20, height: 20)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.borderless)
+            .help(finderHelp(target))
+        }
+    }
+
+    private func finderHelp(_ target: AppModel.FinderTarget) -> String {
+        switch target {
+        case .folder(let url): "Task-Ordner im Finder öffnen: \(url.path)"
+        case .file(let url): "Task-File im Finder zeigen: \(url.path)"
         }
     }
 
@@ -344,22 +331,13 @@ struct TaskTabsView: View {
                  : "\(count) Datei\(count == 1 ? "" : "en") im Task-Ordner — Bilder, Anhänge, comments.json"))
     }
 
-    /// Copies the task-file path relative to the repo root to the clipboard.
+    /// Legt den Pfad des Task-Files in die Zwischenablage (`ClipboardPath`: relativ zum Repo, sonst
+    /// absolut). Dieselben Knöpfe stehen an jeder Datei des Task-Ordners — in der Kopfzeile ihrer
+    /// Vorschau und im Kontextmenü des Baums.
     private var copyPathButton: some View {
-        Button {
-            guard let path = model.relativeTaskFilePath else { return }
-            NSPasteboard.general.clearContents()
-            NSPasteboard.general.setString(path, forType: .string)
-            copiedPath = true
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { copiedPath = false }
-        } label: {
-            Image(systemName: copiedPath ? "checkmark" : "doc.on.doc")
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(copiedPath ? Color.green : Color.secondary)
-                .frame(width: 20, height: 20)
-        }
-        .buttonStyle(.borderless)
-        .help("Relativen Pfad zum Task-File kopieren")
+        CopyPathButton(path: model.relativeTaskFilePath, help: "Pfad zum Task-File kopieren")
+            .font(.system(size: 12, weight: .medium))
+            .frame(width: 20, height: 20)
     }
 
     private func tabButton(_ section: TaskSection) -> some View {
@@ -433,6 +411,7 @@ struct TaskTabsView: View {
         if let node = selectedAttachment {
             TaskAttachmentPreview(node: node,
                                   baseDirectory: model.taskAttachmentBaseDirectory,
+                                  clipboardPath: model.clipboardPath(for: URL(fileURLWithPath: node.path)),
                                   onClose: { model.taskAttachmentSelection = nil })
         } else if model.detailLoading {
             VStack { ProgressView().controlSize(.small); Text("Lade…").font(.caption).foregroundStyle(.secondary) }

@@ -12,6 +12,12 @@ public enum MarkdownHTML {
     public static func render(_ markdown: String) -> String {
         cmark_gfm_core_extensions_ensure_registered()
 
+        // Der YAML-Kopf wird zum Codeblock, **bevor** cmark ihn sieht — sonst macht es daraus eine
+        // Trennlinie plus Setext-Überschrift (siehe `Frontmatter`). Hier und nicht bei den
+        // Aufrufern, damit jede gerenderte Ansicht dasselbe zeigt und `TaskSearch.visibleText`
+        // (das durch denselben Renderer geht) mit dem DOM gleich zählt.
+        let markdown = Frontmatter.alsCodeblock(markdown)
+
         // CMARK_OPT_UNSAFE (1<<17) | CMARK_OPT_VALIDATE_UTF8 (1<<9)
         let options: Int32 = (1 << 17) | (1 << 9)
 

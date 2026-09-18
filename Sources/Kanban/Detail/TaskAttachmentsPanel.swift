@@ -18,7 +18,10 @@ struct TaskAttachmentsTree: View {
             header
             Divider()
             List(selection: $model.taskAttachmentSelection) {
-                KBRows(nodes: model.taskAttachments, expanded: $expanded, icon: Self.icon)
+                // Der Pfad je Zeile ist derselbe, den der Knopf am Task-File kopiert
+                // (`ClipboardPath`) — man muss eine Datei nicht erst öffnen, um ihn zu bekommen.
+                KBRows(nodes: model.taskAttachments, expanded: $expanded, icon: Self.icon,
+                       clipboardPath: { model.clipboardPath(for: URL(fileURLWithPath: $0.path)) })
             }
             .listStyle(.sidebar)
         }
@@ -59,7 +62,8 @@ struct TaskAttachmentsTree: View {
 
             if let folder = model.taskAttachments.first.map(folderOf) {
                 Button {
-                    NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: folder)])
+                    // Öffnen, nicht bloss auswählen — wie der 📁-Knopf in der Tableiste.
+                    NSWorkspace.shared.open(URL(fileURLWithPath: folder))
                 } label: {
                     Image(systemName: "folder")
                 }
@@ -109,6 +113,9 @@ struct TaskAttachmentPreview: View {
     /// Bezugspunkt relativer Pfade in den Dateien: das **Tasks-Verzeichnis**, nicht der Ticket-
     /// Ordner. `comments.json` verweist auf seine Profilbilder als `<KEY>/avatars/…`.
     let baseDirectory: URL?
+    /// Was der Kopier-Knopf in die Zwischenablage legt (`ClipboardPath`, vom Aufrufer gerechnet —
+    /// dort steht das Projekt mit seinem `repoDir`).
+    let clipboardPath: String
     /// Zurück zu den Task-Tabs — die Vorschau steht an deren Platz.
     let onClose: () -> Void
 
@@ -173,6 +180,7 @@ struct TaskAttachmentPreview: View {
                 .buttonStyle(.plain)
                 .help(showSource ? "Gerendert anzeigen" : "Quelltext anzeigen")
             }
+            CopyPathButton(path: clipboardPath, help: "Pfad kopieren")
             Button {
                 NSWorkspace.shared.activateFileViewerSelecting([url])
             } label: {
