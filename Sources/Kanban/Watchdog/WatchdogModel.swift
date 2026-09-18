@@ -8,9 +8,15 @@ import KanbanCore
 /// Der Takt ist bewusst kurz und entscheidet **selbst**, ob ein Lauf fällig ist, statt das ganze
 /// Intervall zu verschlafen: so wirkt das Ausschalten in den Einstellungen nach Sekunden und nicht
 /// erst nach einer Stunde.
+///
+/// **Einer für den ganzen Prozess** (`shared`), nicht einer je Fenster: seit „ein Fenster je
+/// Projekt" gibt es N `AppModel`s, und jedes eigene hätte seinen eigenen Takt — der Scan startet
+/// `claude -p` und kostet Geld, N-fach also N-mal so viel. Er arbeitet ohnehin projektübergreifend
+/// (alle Sessions, eine Datei), deshalb zeigen alle Fenster denselben Stand.
 @Observable
 @MainActor
 final class WatchdogModel {
+    static let shared = WatchdogModel()
 
     private(set) var befunde: [WatchdogFinding] = []
     private(set) var laeuft = false
@@ -47,10 +53,20 @@ final class WatchdogModel {
     /// das Aufwachen nichts kostet.
     private let takt: Duration = .seconds(20)
 
+    /// Wurde schon übernommen? Jedes aufgehende Fenster ruft `uebernehmen` — beim zweiten gibt es
+    /// nichts mehr zu tun, und ein zweiter Takt wäre genau der doppelte Scan, der hier nicht
+    /// entstehen darf.
+    private var uebernommen = false
+
     init() {}
 
     /// Gespeicherte Befunde laden, damit das Panel schon vor dem ersten Lauf etwas zeigt.
+    ///
+    /// Beim zweiten und jedem weiteren Fenster absichtlich wirkungslos: Befunde und Einstellungen
+    /// sind prozessweit dieselben, und der Takt liest die Config ohnehin bei jedem Durchgang neu.
     func uebernehmen(config: AppConfig?) async {
+        guard !uebernommen else { return }
+        uebernommen = true
         settings = config?.watchdog ?? WatchdogSettings()
         cliVerfuegbar = ClaudeHeadless.verfuegbar
         anwenden(await scanner.state())

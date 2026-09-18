@@ -72,9 +72,12 @@ final class AppModel {
     private(set) var config: AppConfig?
     private(set) var configError: String?
 
-    /// Der Session-Watchdog. Hängt am Model, damit die Leiste ihn erreicht; er lebt aber für sich
-    /// (eigener Takt, eigene Datei) und weiss nichts vom Board.
-    let watchdog = WatchdogModel()
+    /// Das Projekt, für das dieses Fenster aufgegangen ist (der Szenenwert bzw. das beim Start
+    /// aufgelöste). Gemerkt, damit `reloadConfig` dasselbe Fenster beim selben Projekt lässt.
+    private var szenenProjektKey: String?
+    /// Gesetzt, wenn das Projekt dieses Fensters nicht mehr in der Config steht — dann zeigt das
+    /// Fenster das statt eines Boards (siehe `ProjectGoneView`).
+    private(set) var fehlendesProjekt: String?
     /// Nothing configured yet (fresh install, no Hermes to adopt from) — the app shows its setup
     /// screen. Deliberately separate from `configError`: an empty config is a starting point, the
     /// user did nothing wrong.
@@ -356,9 +359,19 @@ final class AppModel {
         "fragen", "lösung", "loesung", "commit", "abschluss-checkliste",
     ]
 
-    func bootstrap() {
+    /// Fährt das Fenster hoch: Config lesen, Clients bauen — und das Projekt wählen, für das dieses
+    /// Fenster aufgegangen ist.
+    ///
+    /// `projectKey` ist der Wert der Szene. nil heisst „Fenster ohne Wert" (Programmstart, ⌘N);
+    /// dann entscheidet `ProjectWindows.vorschlag`. Die gemerkte Auswahl bestimmt seit „ein Fenster
+    /// je Projekt" nicht mehr, **welches** Projekt ein Fenster zeigt, sondern nur noch, **welche**
+    /// Fenster beim Start aufgehen.
+    ///
+    /// Die prozessweiten Rückkanäle (Terminal-Klick, Benachrichtigung) hängen nicht mehr hier: mit
+    /// mehreren Fenstern gewänne sonst das zuletzt gestartete Model, und ein Klick in Fenster A
+    /// landete in Fenster B. Sie laufen über `ProjectWindows`.
+    func bootstrap(projectKey: String?) {
         guard config == nil, configError == nil else { return }
-        TerminalCache.shared.onTerminalClick = { [weak self] in self?.terminalClickTick &+= 1 }
         do {
             // First start on a machine that has Hermes: adopt its Jira/GitLab config once. Without
             // Hermes this does nothing at all — Kanban is standalone, the setup screen takes over.
@@ -381,25 +394,38 @@ final class AppModel {
             AvatarCache.shared.configure(
                 authHeader: "Basic \(creds)",
                 jiraBaseUrls: [cfg.jiraDefaultBaseUrl] + cfg.projects.map(\.jiraBaseUrl))
-            // Optional deep-link: `Kanban --select BFEZVM-4259` opens that ticket on launch and wins
-            // over the remembered selection.
-            if let key = Self.launchArg("--select"),
-               let project = projects.first(where: { key.uppercased().hasPrefix($0.prefix.uppercased()) }) {
-                selectProject(project)
-                selectTicket(key)
-            } else if let project = projects.first(where: { $0.key == SelectionStore.projectKey })
-                        ?? projects.first {
-                selectProject(project)   // last session's project, else the first one
+            // Optional deep-link: `Kanban --select BFEZVM-4259` opens that ticket on launch — und
+            // bestimmt beim Fenster ohne Wert zugleich, welches Projekt es zeigt.
+            let deepLink = Self.launchArg("--select")
+            guard let project = projekt(fuer: projectKey, deepLink: deepLink) else {
+                // Szenenwert gesetzt, Projekt weg: das Fenster gehörte diesem einen Projekt.
+                fehlendesProjekt = projectKey
+                return
+            }
+            szenenProjektKey = project.key
+            selectProject(project)
+            if let deepLink, TicketRouting.projekt(fuerTicket: deepLink, in: [project]) != nil {
+                selectTicket(deepLink)
+            } else if let gewuenscht = ProjectWindows.shared.gewuenschtesTicket(fuer: project.key) {
+                // Das Fenster ist auf Klick einer Benachrichtigung aufgegangen — mit Ticket.
+                selectTicket(gewuenscht)
             }
             startPolling()
             startAttentionWatch()
-            AttentionNotifier.shared.configure { [weak self] ticketKey in
-                guard let self, self.cards.contains(where: { $0.ticket.key == ticketKey }) else { return }
-                self.selectTicket(ticketKey)
-            }
         } catch {
             configError = error.localizedDescription
         }
+    }
+
+    /// Welches Projekt dieses Fenster zeigt: der Szenenwert, sonst das Projekt des Deep-Links,
+    /// sonst der Vorschlag der Fenster-Zuordnung (beim Start das zuletzt benutzte, bei ⌘N das erste
+    /// ohne Fenster). Ein gesetzter, aber unbekannter Szenenwert gibt nil — das Projekt ist weg.
+    private func projekt(fuer projectKey: String?, deepLink: String?) -> ProjectConfig? {
+        if let projectKey { return projects.first { $0.key == projectKey } }
+        if let deepLink, let project = TicketRouting.projekt(fuerTicket: deepLink, in: projects) {
+            return project
+        }
+        return ProjectWindows.shared.vorschlag(projekte: projects)
     }
 
     var hasGitlab: Bool { gitlab != nil }
@@ -418,7 +444,10 @@ final class AppModel {
         gitlab = nil
         projects = []
         selectedProject = nil
-        bootstrap()
+        fehlendesProjekt = nil
+        // Mit dem Projekt dieses Fensters, nicht mit der gemerkten Auswahl: ein Speichern in den
+        // Einstellungen lädt **alle** Fenster neu, und jedes bleibt bei seinem Projekt.
+        bootstrap(projectKey: szenenProjektKey ?? previousProject)
         if let previousProject,
            let project = projects.first(where: { $0.key == previousProject }),
            project.id != selectedProject?.id {
@@ -438,6 +467,8 @@ final class AppModel {
     func selectProject(_ project: ProjectConfig) {
         guard project.id != selectedProject?.id else { return }
         selectedProject = project
+        // Das Fenster gehört ab jetzt diesem Projekt — auch über ein `reloadConfig` hinweg.
+        szenenProjektKey = project.key
         // Die Knowledgebase gehört dem Projekt: der Baum des alten Projekts wäre nach dem Wechsel
         // schlicht falsch. Offen bleibt die Ansicht, wenn das neue Projekt auch eine hat.
         kbNodes = []
@@ -446,7 +477,7 @@ final class AppModel {
             if project.kbPathAbsolute == nil { knowledgebaseOpen = false }
             else { loadKnowledgebase() }
         }
-        SelectionStore.projectKey = project.key   // restored on the next launch
+        SelectionStore.projectKey = project.key   // zuletzt benutzt: Rückfallebene beim nächsten Start
         // Ein Projekt ohne Jira kennt nur den freien Modus — auch wenn für den Key noch eine alte
         // Sprint-Wahl gespeichert ist (die Anbindung kann nachträglich abgeschaltet worden sein).
         boardMode = project.usesJira
@@ -2350,6 +2381,17 @@ final class AppModel {
     /// the user goes back to typing. A counter rather than a flag — consecutive clicks must each
     /// trigger `onChange`.
     private(set) var terminalClickTick = 0
+
+    /// Ein Klick in ein Terminal **dieses** Fensters. Die Zuordnung macht `ProjectWindows`: den
+    /// Klick meldet der prozessweite `TerminalCache`, und er gehört dem Fenster, in dem die
+    /// Terminal-Ansicht gerade hängt.
+    func noteTerminalClick() { terminalClickTick &+= 1 }
+
+    /// Steht das Ticket auf dem Board dieses Fensters? Die Frage stellt die Benachrichtigung, bevor
+    /// sie ein Ticket auswählt — im falschen Fenster wäre die Auswahl nur Unruhe.
+    func zeigtTicket(_ ticketKey: String) -> Bool {
+        cards.contains { $0.ticket.key == ticketKey }
+    }
 
     /// The selected ticket's prompts, oldest first — the timeline's bubbles.
     var selectedPrompts: [ClaudeTurn] { selectedTiming?.turns ?? [] }

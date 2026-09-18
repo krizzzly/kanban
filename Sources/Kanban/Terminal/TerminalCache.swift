@@ -18,7 +18,11 @@ final class TerminalCache {
 
     /// Called when the user clicks inside a terminal. The click is **not** consumed — the terminal
     /// still takes it (focus, selection); this only lets the UI react, e.g. close the prompt overlay.
-    var onTerminalClick: (() -> Void)?
+    ///
+    /// Mit dem Fenster, in dem geklickt wurde: den Cache gibt es einmal im Prozess, Board-Fenster
+    /// aber mehrere — ohne die Zuordnung (`ProjectWindows`) tickte ein Klick in Fenster A das Model
+    /// von Fenster B.
+    var onTerminalClick: ((NSWindow?) -> Void)?
 
     private var scrollMonitor: Any?
     private var keyMonitor: Any?
@@ -100,10 +104,39 @@ final class TerminalCache {
     /// Passes every click through untouched and only reports the ones that landed in a terminal.
     private func handleClick(_ event: NSEvent) -> NSEvent? {
         if let window = event.window, sessionUnderPoint(event.locationInWindow, in: window) != nil {
-            onTerminalClick?()
+            onTerminalClick?(window)
         }
         return event
     }
+
+    // MARK: - Eine lebende Ansicht, mehrere Fenster
+
+    /// Darf dieses Fenster die Ansicht der Session zeigen?
+    ///
+    /// Der Cache hält je Session **eine** `KanbanTerminalView`, und eine `NSView` hat genau einen
+    /// Superview. Mit einem Fenster je Projekt kann dasselbe Ticket normalerweise nicht zweimal
+    /// offen stehen — ausser bei Projekten, die sich ein Repo und damit ihre `!<iid>`-Karten teilen
+    /// (`tp1`/`zvmsupport`/`bfezvm`, `support`/`even`): deren Session heisst in beiden Fenstern
+    /// `kanban-!130`. Ohne diese Frage wanderte die Ansicht beim Fensterwechsel hin und her und das
+    /// Fenster, aus dem sie verschwand, zeigte eine leere Fläche.
+    ///
+    /// Frei ist eine Session, deren Ansicht in keinem Fenster hängt — auch die des Fensters, das
+    /// gerade geschlossen wurde.
+    func darfZeigen(_ name: String, in window: NSWindow?) -> Bool {
+        guard let window else { return false }   // noch nicht im Fenster: erst einhängen, dann holen
+        guard let belegt = terminals[name]?.window, belegt.isVisible else { return true }
+        return belegt === window
+    }
+
+    /// Die Ansicht aus dem anderen Fenster herholen. Das dortige `TerminalContainerNSView` erfährt
+    /// es über die Benachrichtigung und zeigt seinerseits den Hinweis, statt leer zu bleiben.
+    func uebernehmen(_ name: String) {
+        terminals[name]?.removeFromSuperview()
+        NotificationCenter.default.post(name: Self.uebernommen, object: name)
+    }
+
+    /// „Eine Terminal-Ansicht hat das Fenster gewechselt" — `object` ist der Session-Name.
+    static let uebernommen = Notification.Name("KanbanTerminalUebernommen")
 
     private func setCaretHidden(_ hidden: Bool, session: String) {
         terminals[session]?.caretColor = hidden ? .clear : KanbanTerminalView.themedCaretColor

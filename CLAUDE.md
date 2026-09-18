@@ -688,13 +688,68 @@ lesend auf.
 - UI: `EpicColorStripe` (Farbbalken links auf der Karte) + `EpicPill` (Epic ausgeschrieben im
   Detail-Header, direkt nach dem Task-File/Feature-Branch). `--selftest` listet die Epic-Verteilung.
 
-## Gemerkte Auswahl (Projekt + Sprint überleben den Neustart)
+## Mehrere Board-Fenster (+-Knopf links vom Aktualisieren)
 
-`SelectionStore` (UserDefaults, **nicht** die Hermes-Config — das ist lokaler UI-State) hält das
-zuletzt gewählte Projekt und je Projekt den gewählten Sprint. `SprintSelection.resolve` stellt ihn
-wieder her, solange er auf dem Board liegt — auch einen geschlossenen, denn die Wahl war Absicht und
-der Picker markiert ihn „✓"; kennt das Board die Id nicht mehr, gewinnt der aktive Sprint.
-`Kanban --select <TICKET>` sticht die Erinnerung.
+Kanban hatte genau **ein** Board-Fenster; wer das Projekt wechselte, tauschte dessen Inhalt aus.
+Heute deklariert `KanbanApp` eine `WindowGroup(for: String.self)` über den Projekt-Key, und der
++-Knopf in der Kopfzeile macht ein weiteres Fenster auf — für das erste Projekt, das noch keines hat
+(steht jedes schon irgendwo, ist der Knopf aus). Zwei Projekte laufen damit nebeneinander statt
+nacheinander: in einem läuft ein Claude-Lauf, im anderen wird gelesen.
+
+Das **Projekt-Menü schaltet weiterhin im eigenen Fenster um** — die Auswahl allein macht kein Fenster
+auf. Ein Projekt, das auch woanders offen steht, trägt im Menü ein Fenstersymbol statt des Häkchens;
+wer es dort haben will, wechselt dorthin. Dasselbe Projekt darf also zweimal dastehen.
+
+Die halbe Arbeit war schon getan, und zwar die aufwendige: **`AppModel` ist kein Singleton**
+(`ContentView` hält es als `@State`), jedes Fenster bringt seinen Zustand also selbst mit — Board,
+Auswahl, Sprint, Worktrees, Console. Zu klären waren die Stellen, an denen sonst „das letzte Fenster
+gewinnt" herauskäme; sie laufen in **`ProjectWindows`** zusammen (Zuordnung Fenster ↔ Model ↔
+Projekt, `@Observable`, damit die Leiste mitbekommt, was offen ist):
+
+| Prozessweit | Zuordnung |
+|---|---|
+| `TerminalCache.onTerminalClick` | meldet das **Fenster** mit; der Klick tickt das Model, dessen Fenster er traf |
+| `AttentionNotifier` | der Klick auf die Benachrichtigung sucht das Fenster, dessen Board das Ticket zeigt, holt es nach vorn und wählt dort; kennt keines es, entscheidet der Präfix (`TicketRouting`) — und ein Fenster geht dafür auf |
+| `WatchdogModel` | **eine** Instanz für den Prozess (`.shared`). Je Fenster eine hiesse N-mal `claude -p`, und das kostet Geld. `uebernehmen` ist deshalb ab dem zweiten Fenster wirkungslos; alle Fenster zeigen denselben Gesamtstand, weil der Watchdog ohnehin projektübergreifend scannt |
+| `CommitWindow` | **je Fenster** eines (Schlüssel ist das `AppModel`, wie bei `MarkdownDocumentWindow` der Dateipfad) — zwei Projekte dürfen gleichzeitig committen, und der Titel trägt den Projekt-Key |
+| `ClaudeWorkflowWindow` | **eines** für die App: Commands/Skills/Rules sind projektunabhängig, zwei Editoren auf denselben Dateien wären zwei Stände desselben Textes. Zumachen darf nur, wer aufgemacht hat |
+| Einstellungen speichern | lädt **alle** Fenster neu (`ProjectWindows.configNeuLaden`), nicht nur das, in dem gespeichert wurde |
+
+**Der Fenstertitel bleibt leer**, wie beim früheren `Window("", id: "main")`: welches Projekt ein
+Fenster zeigt, steht im Projekt-Menü der Kopfzeile. Ihn nur aus der Leiste zu nehmen und im
+Fenstermenü zu behalten (`toolbar(removing: .title)`), ging nicht — mit dem Titel-Element fällt auch
+der Zwischenraum weg, der die rechten Knöpfe nach rechts drückt.
+
+**Eine lebende Terminal-Ansicht, zwei Fenster.** `TerminalCache` hält je tmux-Session genau eine
+`KanbanTerminalView`, und eine `NSView` hat nur einen Superview. Dasselbe Ticket kann in zwei
+Fenstern stehen — bei Projekten, die sich ein Repo teilen (`support`/`even`,
+`tp1`/`zvmsupport`/`bfezvm`): deren `!<iid>`-Karten kommen aus demselben MR-Bestand und heissen in
+beiden `kanban-!130`. Das zweite Fenster zeigt deshalb einen Hinweis mit Knopf „Hierher holen" statt
+einer leeren Fläche; die Session läuft weiter, sichtbar ist sie nur an einer Stelle.
+
+## Gemerkte Auswahl (offene Fenster + Sprint überleben den Neustart)
+
+`SelectionStore` (UserDefaults, **nicht** die Hermes-Config — das ist lokaler UI-State) hält die
+offenen Projekte, das zuletzt benutzte und je Projekt den gewählten Sprint. `SprintSelection.resolve`
+stellt ihn wieder her, solange er auf dem Board liegt — auch einen geschlossenen, denn die Wahl war
+Absicht und der Picker markiert ihn „✓"; kennt das Board die Id nicht mehr, gewinnt der aktive
+Sprint. `Kanban --select <TICKET>` sticht die Erinnerung.
+
+Der Start macht die Fenster wieder auf, die beim letzten Mal offen waren (`openProjectKeys`, Regel in
+`OpenProjects.wiederherstellen`, gedeckelt bei 6):
+
+- Der **alte Einzelwert** `selectedProjectKey` gilt weiter — ohne Liste wird er als einelementige
+  gelesen; niemand verliert seine Auswahl, weil das Format gewachsen ist.
+- Er bleibt daneben als **zuletzt benutzt** stehen (gepflegt von dem Fenster, das gerade nach vorn
+  kommt): die Rückfallebene bei leerer Liste, und das Fenster, das nach dem Wiederherstellen vorn
+  steht.
+- Ein Projekt, das **nicht mehr in der Config** steht, öffnet kein Fenster; war es beim Entfernen
+  offen, sagt das Fenster das und bietet Einstellungen bzw. Schliessen an, statt ungefragt ein
+  anderes Board zu zeigen.
+- **Alle Fenster zu heisst: Kanban beendet sich** (`applicationShouldTerminateAfterLastWindowClosed`
+  bleibt `true`) — und die Liste ist leer. Der nächste Start kommt dann mit einem Fenster auf dem
+  zuletzt benutzten Projekt hoch; geschlossen ist geschlossen. Beim ⌘Q dagegen bleibt die Liste
+  stehen (`applicationWillTerminate` friert sie ein, bevor die Fenster abgebaut werden).
 
 ## Claude-Assets auf Kanban-Ebene (HERMES-034)
 
@@ -1731,7 +1786,8 @@ Sources/
 │   │                      HermesSync (Projekte zurück; absolute Pfade in Hermes' join-Form) +
 │   │                      ConfigStore/KanbanConfigSchema (Settings) + ProjectRegistry/-Projection
 │   ├── Domain/            Ticket, KanbanColumn, BoardMode (Sprint/Frei), TaskSection, Worktree,
-│   │                      MergeRequestRef, CardBadge,
+│   │                      MergeRequestRef, CardBadge, OpenProjects (welche Fenster beim Start
+│   │                      aufgehen) + TicketRouting (welchem Projekt ein Ticket-Key gehört),
 │   │                      EpicRef + EpicColors (Jira-Palette) + EpicResolution (Sub-Task erbt Epic)
 │   ├── Jira/              JiraClient (Board/Sprints/Sprint-Issues/Worklog) + SprintSelection +
 │   │                      JiraSolutionField (Feld „Lösung": editmeta-Auflösung, lesen, schreiben)
@@ -1770,14 +1826,17 @@ Sources/
 │                          ClaudeTimingStore (incremental tail + cache), TimeFormatting +
 │                          LiveTurn (tickt der ⏱-Zähler? Lebenszeichen + Alters-Schranke)
 └── Kanban/                SwiftUI/AppKit app
-    ├── App.swift          @main, Window
+    ├── App.swift          @main, WindowGroup(for: String.self) — Board-Fenster je Projekt-Key
+    ├── ProjectWindows.swift  wer welches Projekt zeigt: Terminal-Klick und Benachrichtigung ins
+    │                      richtige Fenster, offene Projekte merken, beim Start wieder aufmachen
     ├── AppModel.swift     @Observable: config/selection/sprints/issues/MRs/worktrees/columns/refresh
-    ├── ContentView.swift  VStack(TopBar, HSplitView(Board, Detail))
+    ├── ContentView.swift  VStack(TopBar, HSplitView(Board, Detail)); nimmt den Projekt-Key der Szene
     ├── TopBar/            project picker + sprint/board picker (nur Sprint-Modus) +
     │                      Modus-Umschalter + 📚-Knopf (Knowledgebase, nur mit kbPath) +
-    │                      refresh + Σ Claude-Zeit
+    │                      +-Knopf (neues Fenster) + refresh + Σ Claude-Zeit
     ├── Knowledgebase/     KnowledgebaseView (Baum | Inhalt) + FileWebView (HTML-Artefakte)
-    ├── Settings/          SettingsSheet (Kanban-Config) + SelectionStore (gemerkte Auswahl)
+    ├── Settings/          SettingsSheet (Kanban-Config) + SelectionStore (gemerkte Auswahl:
+    │                      offene Projekte, zuletzt benutztes, Sprint/Modus je Projekt)
     ├── Board/             BoardSidebar / ColumnSection / TicketCard / EpicViews (Stripe + Pill) /
     │                      AvatarView (+ AvatarCache: Jira-Bilder mit Auth) / IssueTypeIcon /
     │                      NewTaskSheet (freier Modus)
@@ -1789,7 +1848,8 @@ Sources/
     │                      RichTextEditor (contenteditable in WKWebView) / MarkdownWebView +
     │                      HTMLTemplate (Stylesheet, lesend und beschreibbar) /
     │                      TerminalPlaceholderView / NewTaskConsoleView (Projekt-Console)
-    ├── Watchdog/          WatchdogModel (Takt + angezeigter Stand) + WatchdogPanel (Liste + Knopf)
+    ├── Watchdog/          WatchdogModel (Takt + angezeigter Stand, prozessweit `.shared`) +
+    │                      WatchdogPanel (Liste + Knopf)
     ├── Stack/             StackSweepSheet („N Stacks stoppen": Liste + Bestätigung + Ausgabe)
     ├── Timing/            ClaudeTimeBadge (Karte) / ClaudeTimeChip + Popover (Turn-Liste + Buchen) / BookingSheet
     └── Theme/             MarkdownTheme (ported from kanban-code's chatMarkdownTheme)

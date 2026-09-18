@@ -51,7 +51,13 @@ struct TopBarToolbar: ToolbarContent {
             bookButton
             stackSweepButton
         }
-        ToolbarItem(placement: .primaryAction) { chrome(refreshButton) }
+        // Gruppe statt zweier Einträge — das Zehner-Budget von `ToolbarContent` ist voll. Passt
+        // auch inhaltlich: beide holen frischen Stand, der eine für dieses Brett, der andere für
+        // eines, das noch aussteht.
+        ToolbarItemGroup(placement: .primaryAction) {
+            chrome(newWindowButton)
+            chrome(refreshButton)
+        }
         // Wieder eine Gruppe statt zwei Einträgen: `ToolbarContent` nimmt nur zehn, und die sind
         // vergeben. Passt auch inhaltlich — beide drehen an dem, was Claude in den Sessions tut.
         ToolbarItemGroup(placement: .primaryAction) {
@@ -103,6 +109,9 @@ struct TopBarToolbar: ToolbarContent {
         }
     }
 
+    /// Wählt das Projekt **dieses** Fensters — wie immer. Ein neues Fenster gibt es über den
+    /// +-Knopf, nicht als Nebenwirkung der Auswahl. Das Fenstersymbol sagt, dass ein Projekt auch in
+    /// einem anderen Fenster steht; wer es dort haben will, wechselt dorthin.
     private var projectMenu: some View {
         Menu(model.selectedProject?.key.uppercased() ?? "Projekt") {
             ForEach(model.projects) { project in
@@ -111,6 +120,8 @@ struct TopBarToolbar: ToolbarContent {
                 } label: {
                     if project.id == model.selectedProject?.id {
                         Label(project.key.uppercased(), systemImage: "checkmark")
+                    } else if ProjectWindows.shared.zeigtProjekt(project.key) {
+                        Label(project.key.uppercased(), systemImage: "macwindow")
                     } else {
                         Text(project.key.uppercased())
                     }
@@ -297,6 +308,24 @@ struct TopBarToolbar: ToolbarContent {
         }
     }
 
+    /// Ein weiteres Board-Fenster aufmachen — das erste Projekt, das noch keines hat.
+    ///
+    /// Der kurze Weg neben dem Projekt-Menü: dort wählt man ein bestimmtes Projekt, hier will man
+    /// bloss noch ein Brett daneben. Steht jedes Projekt schon in einem Fenster, ist der Knopf aus —
+    /// ein zweites Fenster auf dasselbe Board gibt es nicht.
+    @ViewBuilder
+    private var newWindowButton: some View {
+        let naechstes = ProjectWindows.shared.naechstesOhneFenster(projekte: model.projects)
+        Button {
+            if let naechstes { ProjectWindows.shared.oeffnen(naechstes.key) }
+        } label: {
+            Image(systemName: "plus")
+        }
+        .disabled(naechstes == nil)
+        .help(naechstes.map { "Neues Fenster: \($0.key.uppercased())" }
+              ?? "Jedes Projekt hat bereits ein Fenster")
+    }
+
     private var refreshButton: some View {
         Button {
             Task { await model.refresh() }
@@ -313,8 +342,10 @@ struct TopBarToolbar: ToolbarContent {
     /// Watchdog — ausgeblendet wäre er genau dann weg, wenn man ihn sucht. Er kostet auch keinen
     /// Platz im Zehner-Budget, weil er sich einen `ToolbarItemGroup`-Eintrag mit dem
     /// Workflow-Knopf teilt.
+    /// Prozessweit einer, deshalb in jedem Fenster derselbe Stand — er scannt alle Sessions, nicht
+    /// die des angezeigten Projekts.
     private var watchdogButton: some View {
-        WatchdogToolbarButton(watchdog: model.watchdog)
+        WatchdogToolbarButton(watchdog: .shared)
     }
 
     private var claudeWorkflowButton: some View {
