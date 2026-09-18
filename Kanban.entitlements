@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Bewusst leer. Kommentare stehen innerhalb von `dict`, weil der Entitlements-Parser
+         (AMFIUnserializeXML) welche ausserhalb von `plist` mit einem Syntaxfehler abweist.
+
+         Kein `com.apple.security.app-sandbox`: Kanban startet tmux, `claude`, `git` und
+         `docker`/`iwf`, liest ~/code, ~/Library/Application Support/Kanban und ~/.claude und
+         hängt an einem PTY. Eine Sandbox würde das alles abschneiden.
+
+         Hardened Runtime ist dagegen aktiv (build-app.sh signiert damit). Es verbietet JIT,
+         beschreibbaren Code, DYLD-Variablen, fremd signierte Bibliotheken und das Anhängen
+         eines Debuggers. Nichts davon braucht Kanban heute:
+
+         • Das Programm lädt ausser Systembibliotheken nichts (`otool -L` zeigt nur /System und
+           /usr/lib), also ist `disable-library-validation` unnötig. Vorsorglich gesetzt wäre es
+           eine stillschweigende Schwächung.
+         • WKWebView (gerendertes Markdown) rendert in einem eigenen Systemprozess; das JIT
+           läuft dort, nicht bei uns. `allow-jit` ist unnötig.
+         • Hardened Runtime gilt pro Prozess und wird nicht vererbt: tmux, claude, git und
+           docker laufen unverändert weiter.
+
+         Stockt nach einem Rollout doch etwas, gilt die Reihenfolge: erst im Konsolen-Log
+         nachsehen, welcher Runtime-Schutz greift, dann genau dieses eine Entitlement hier
+         ergänzen, mit Datum und beobachtetem Grund. -->
+</dict>
+</plist>

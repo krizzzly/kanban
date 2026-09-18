@@ -2134,7 +2134,7 @@ swift run Kanban --migrate-jira-line --dry-run          # zeigt, was die Migrati
 swift run Kanban --migrate-jira-line                    # trägt die 🎫-Zeile in Bestands-Task-Files ein
 swift run Kanban --migrate-jira-line --project even     # nur ein Projekt
 
-./build-app.sh      # ausrollen: Release + Bundle + ad-hoc-Signatur → /Applications/Kanban.app
+./build-app.sh      # ausrollen: Release + Bundle + Signatur → /Applications/Kanban.app
 ```
 
 **Ausgerollt wird ausschliesslich über `./build-app.sh`.** `swift run` startet eine zweite,
@@ -2144,6 +2144,75 @@ sehen will, muss das Skript laufen lassen. Das Skript installiert bewusst direkt
 (`ch.iwf.kanban`) ist sie bei macOS für Benachrichtigungen registriert. Ein zweites Bundle mit
 derselben ID hatte Launch Services und die Zustellung durcheinandergebracht, deshalb räumt das
 Skript ein altes `dist/Kanban.app` mit weg.
+
+## Signierung
+
+`build-app.sh` signiert mit der Schlüsselbund-Identität
+`Apple Development: c.hiller@iwf.ch (RVX4CBNYV9)`. `CODESIGN_IDENTITY` überschreibt sie, `-` erzwingt
+ad-hoc. Fehlt die Identität (fremder Rechner, abgelaufenes Zertifikat), fällt das Skript mit einer
+Meldung auf ad-hoc zurück statt abzubrechen; liegt ein abgelaufenes Zertifikat dieses Namens im
+Schlüsselbund, nennt die Meldung das Ablaufdatum.
+
+**Warum überhaupt.** Eine ad-hoc-Signatur hat keinen Team-Identifier. macOS hängt erteilte TCC-Rechte
+dann an den cdhash — und der ändert sich bei jedem Bau. Genau deshalb war die
+Benachrichtigungs-Erlaubnis nach jedem Rollout wieder weg, obwohl die ganze Attention-Kette
+(Hook → Marker → Benachrichtigung → Karte) daran hängt. Mit einer echten Identität lautet die
+Anforderung „Bundle-Id + Zertifikat":
+
+```
+designated => identifier "ch.iwf.kanban" and anchor apple generic
+              and certificate leaf[subject.CN] = "Apple Development: c.hiller@iwf.ch (RVX4CBNYV9)"
+              and certificate 1[field.1.2.840.113635.100.6.2.1]
+```
+
+Die überlebt jeden Neubau. **Einmalig** muss die Erlaubnis nach der Umstellung trotzdem neu erteilt
+werden: Für macOS ist die erste signierte Fassung eine andere App als die ad-hoc-Fassung davor.
+
+Der Team-Identifier in der Signatur lautet `C6X9XR4KXT` — das `OU` des Zertifikats. Das `RVX4CBNYV9`
+im Zertifikatsnamen ist die Kennung des Entwicklers, nicht die des Teams; in `codesign -dv` taucht
+es nur als `Authority` auf.
+
+**Was das Skript beim Signieren tut:**
+
+- Kein `--deep` (Apple rät ausdrücklich davon ab): verschachtelte Bundles zuerst, die App zuletzt.
+  Die beiden Ordner, die SwiftPM ablegt (`Kanban_Kanban.bundle`, `SwiftTerm_SwiftTerm.bundle`),
+  sind reine Ressourcen-Ordner ohne `Info.plist` — codesign erkennt sie nicht als Bundle und die
+  App-Signatur versiegelt sie als gewöhnliche Ressourcen. Geprüft werden sie trotzdem: Eine
+  nachträgliche Änderung darin lässt `codesign --verify --strict` auffliegen.
+- Hardened Runtime (`--options runtime`) mit `Kanban.entitlements`. Die Datei ist bewusst leer und
+  vor allem **ohne** `com.apple.security.app-sandbox`: Kanban startet tmux, `claude`, `git` und
+  `docker`, liest `~/code` und `~/.claude` und hängt an einem PTY — eine Sandbox schnitte das ab.
+  Warum kein einziges Entitlement nötig ist, steht begründet in der Datei selbst.
+- `--timestamp`, mit hörbarem Rückfall auf `--timestamp=none`, wenn der Zeitstempel-Dienst nicht
+  erreichbar ist (kein Netz). Ein anderer codesign-Fehler fällt dagegen durch, statt als
+  Netz-Problem ausgegeben zu werden.
+- Danach `codesign --verify --strict`. Schlägt das fehl, wird das Bundle entfernt und der Bau bricht
+  ab, statt eine kaputte App in `/Applications` zu hinterlassen.
+
+**Für die Weitergabe reicht das nicht.** `spctl -a -t exec` sagt `rejected`; mit einem
+Entwicklungs-Zertifikat ist das der erwartete Befund, deshalb gibt das Skript die Auskunft nur aus
+und bricht nicht ab.
+
+**Der Notarisierungs-Schritt steht schon im Skript, schläft aber.** ZIP via `ditto` →
+`xcrun notarytool submit --wait` → `xcrun stapler staple` läuft nur an, wenn `CODESIGN_IDENTITY`
+mit `Developer ID Application` beginnt — Apple notarisiert keine Entwicklungs-Signaturen. Zum
+Aufwecken braucht es dreierlei:
+
+1. Apple-Developer-Programm (99 $/Jahr) und daraus ein **Developer ID Application**-Zertifikat im
+   Schlüsselbund.
+2. Ein notarytool-Profil im Schlüsselbund — **nicht** im Repo:
+   `xcrun notarytool store-credentials kanban-notary --apple-id <apple-id> --team-id <team-id> --password <app-spezifisches Passwort>`.
+   Ein anderer Profilname geht über `NOTARY_PROFILE`.
+3. Den Bau mit dieser Identität starten:
+   `CODESIGN_IDENTITY="Developer ID Application: … (…)" ./build-app.sh`.
+
+Scheitert die Notarisierung, warnt das Skript und läuft weiter — die App in `/Applications` ist
+signiert und läuft hier, sie taugt nur nicht zur Weitergabe. Gelingt sie, sagt `spctl` danach
+`accepted / source=Notarized Developer ID`.
+
+Offen bleibt dafür die Versionsnummer: `CFBundleVersion` und `CFBundleShortVersionString` stehen in
+`build-app.sh` fest auf `1.0`. Für eine notarisierte Auslieferung müssten sie je Bau steigen, sonst
+ist eine neuere Fassung von der älteren nicht zu unterscheiden.
 
 ## Not in step 1 (deliberately)
 
