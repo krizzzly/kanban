@@ -465,7 +465,14 @@ final class AppModel {
 
     /// Re-reads the config after the settings sheet saved it: rebuilds clients + project list via
     /// `bootstrap()` and restores the previous selection where it still exists.
+    ///
+    /// Die Darstellung hängt mit dran: `KanbanSettingsStore.reload()` holt den neuen Stand, die
+    /// laufenden Terminals ziehen nach, und die gerenderten Markdown-Ansichten zeichnen über die
+    /// Benachrichtigung neu. Ohne das wäre jede Farbe hier eine Einstellung, die erst beim nächsten
+    /// Start sichtbar wird.
     func reloadConfig() {
+        KanbanSettingsStore.reload()
+        TerminalCache.shared.reapplyAppearance()
         let previousProject = selectedProject?.key
         let previousTicket = selectedTicketKey
         pollTask?.cancel()

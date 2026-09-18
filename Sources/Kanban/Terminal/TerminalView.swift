@@ -6,8 +6,11 @@ import KanbanCore
 /// `config.json`; defaults to iTerm2 Solarized Dark). Process lifecycle (tmux attach) is managed by
 /// `TerminalCache`.
 final class KanbanTerminalView: LocalProcessTerminalView {
-    /// Kanban's own settings, loaded once from `~/Library/Application Support/Kanban/config.json`.
-    static let settings: KanbanSettings = KanbanSettingsStore.load()
+    /// Kanbans eigene Einstellungen aus `~/Library/Application Support/Kanban/config.json` —
+    /// **der jeweils aktuelle Stand**, nicht der beim Start gelesene: `KanbanSettingsStore.reload()`
+    /// tauscht ihn nach dem Speichern aus, und `TerminalCache.reapplyAppearance()` zieht die
+    /// bestehenden Ansichten nach.
+    static var settings: KanbanSettings { KanbanSettingsStore.current }
 
     /// The active colour scheme.
     static var theme: TerminalTheme { settings.activeTerminalTheme }
@@ -126,6 +129,14 @@ final class KanbanTerminalView: LocalProcessTerminalView {
     /// setting it here (from `TerminalCache`) is what actually resizes the glyphs.
     func applyFont() {
         font = Self.terminalFont
+    }
+
+    /// Farben, Schriftglättung und die ⌥-Taste aus dem aktuellen Stand übernehmen — auch an einer
+    /// Ansicht, die längst läuft. Der Prozess dahinter merkt davon nichts; es wechselt nur, wie er
+    /// gezeichnet wird.
+    func applyAppearance() {
+        applyTheme()
+        optionAsMetaKey = Self.settings.optionAsMeta
     }
 
     private func applyTheme() {

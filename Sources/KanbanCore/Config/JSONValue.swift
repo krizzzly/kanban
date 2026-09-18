@@ -50,6 +50,17 @@ public extension JSONValue {
     var boolValue: Bool? { if case .bool(let b) = self { return b }; return nil }
     var intValue: Int? { if case .int(let i) = self { return i }; return nil }
     var arrayValue: [JSONValue]? { if case .array(let a) = self { return a }; return nil }
+    /// Zahl, egal ob sie als `15`, `15.5` oder `"15"` in der Datei steht. `1` und `1.0` sind so
+    /// dasselbe Story-Point-Feld, und eine Zahl in Anführungszeichen — wie sie in gewachsenen
+    /// Configs vorkommt — gilt ebenfalls, statt als „nicht gesetzt" durchzugehen.
+    var doubleValue: Double? {
+        switch self {
+        case .double(let d): return d
+        case .int(let i): return Double(i)
+        case .string(let s): return Double(s.trimmingCharacters(in: .whitespaces))
+        default: return nil
+        }
+    }
     var objectValue: [String: JSONValue]? { if case .object(let o) = self { return o }; return nil }
 }
 

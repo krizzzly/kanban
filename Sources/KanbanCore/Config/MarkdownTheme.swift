@@ -57,6 +57,9 @@ public struct MarkdownFontSizes: Sendable, Hashable {
 /// mitwandern. Wer es dunkel will, stellt die sechs Werte dunkel — dann zieht auch
 /// `color-scheme` nach (abgeleitet aus der Helligkeit des Hintergrunds).
 public struct MarkdownTheme: Sendable, Hashable {
+    /// Der Name der Fassung — so steht sie unter `markdown.themes` und so heisst sie in der Auswahl.
+    /// Ein von Hand angelegter flacher `markdown`-Block hat keinen; er wird als `Eigene` gelesen.
+    public let name: String
     /// Die Fläche selbst. Vorgabe **weiss** und **deckend**.
     public let background: TerminalRGB
     public let text: TerminalRGB
@@ -69,10 +72,20 @@ public struct MarkdownTheme: Sendable, Hashable {
     public let border: TerminalRGB
     /// Fliesstext und die sechs Überschriftenebenen (siehe `MarkdownFontSizes`).
     public let fontSizes: MarkdownFontSizes
+    /// Schriftart des Fliesstextes — **nil heisst Systemschrift**, nicht „keine". Der Name ist der,
+    /// den die Schriftsammlung zeigt (`Iowan Old Style`), ohne Anführungszeichen.
+    public let fontFamily: String?
+    /// Schriftart der Überschriften. Gilt für **alle sechs Ebenen**: eine Datei, in der nur H1 aus
+    /// der Reihe tanzt und H2 wieder wie Fliesstext aussieht, liest sich zerrissen. nil = wie der
+    /// Fliesstext.
+    public let headingFont: String?
 
-    public init(background: TerminalRGB, text: TerminalRGB, secondaryText: TerminalRGB,
+    public init(name: String = MarkdownTheme.eigeneName,
+                background: TerminalRGB, text: TerminalRGB, secondaryText: TerminalRGB,
                 codeBackground: TerminalRGB, link: TerminalRGB, border: TerminalRGB,
-                fontSizes: MarkdownFontSizes = .standard) {
+                fontSizes: MarkdownFontSizes = .standard,
+                fontFamily: String? = nil, headingFont: String? = nil) {
+        self.name = name
         self.background = background
         self.text = text
         self.secondaryText = secondaryText
@@ -80,20 +93,80 @@ public struct MarkdownTheme: Sendable, Hashable {
         self.link = link
         self.border = border
         self.fontSizes = fontSizes
+        self.fontFamily = fontFamily
+        self.headingFont = headingFont
+    }
+
+    /// Der CSS-Wert für `font-family`: der konfigurierte Name, gefolgt von der bisherigen Kette als
+    /// Rückfall. Ohne Eintrag bleibt genau die Kette übrig, die vorher fest im Stylesheet stand.
+    ///
+    /// Der Name wird **entschärft**, bevor er dort landet: Anführungszeichen, Semikolon oder
+    /// geschweifte Klammern könnten die Regel verlassen und den Rest des Stylesheets kippen. Das ist
+    /// die eigene Config, also kein Angriff — aber ein Tippfehler soll die Ansicht nicht zerlegen.
+    public static func cssFontStack(_ name: String?) -> String {
+        let fallback = "-apple-system, system-ui, \"Helvetica Neue\", sans-serif"
+        guard let name else { return fallback }
+        let sauber = name.filter { !"\";{}\n\r\\".contains($0) }
+            .trimmingCharacters(in: .whitespaces)
+        guard !sauber.isEmpty else { return fallback }
+        return "\"\(sauber)\", \(fallback)"
     }
 
     private static func rgb(_ hex: String) -> TerminalRGB { TerminalRGB(hex: hex)! }
+
+    /// Der Name, unter dem ein flacher `markdown`-Block ohne `themes` gelesen wird — und unter dem
+    /// er beim ersten Speichern in die Themes-Map übernommen wird.
+    public static let eigeneName = "Eigene"
 
     /// Die Vorgabe: das bisherige helle Farbschema (aus MarkdownUIs `.gitHub`, das kanban-code
     /// benutzt), nur mit **deckendem** Weiss statt Durchsicht und einem etwas kräftigeren Grau für
     /// Codeblöcke — auf Weiss war `#f7f7f9` kaum von der Fläche zu unterscheiden.
     public static let standard = MarkdownTheme(
+        name: "Blatt",
         background: rgb("#ffffff"),
         text: rgb("#060606"),
         secondaryText: rgb("#6b6e7b"),
         codeBackground: rgb("#f1f1f4"),
         link: rgb("#2c65cf"),
         border: rgb("#e4e4e8"))
+
+    /// Das Gegenstück in Dunkel. **Kein** Hell/Dunkel-Paar zu `Blatt`, sondern eine zweite Fassung,
+    /// zwischen denen man von Hand wechselt: eine gerenderte Datei ist ein Blatt Papier und soll
+    /// nicht mit dem System-Erscheinungsbild mitwandern. `color-scheme` leitet sich aus der
+    /// Helligkeit des Hintergrunds ab, die Scrollbalken ziehen also mit.
+    public static let blattDunkel = MarkdownTheme(
+        name: "Blatt Dunkel",
+        background: rgb("#16181c"),
+        text: rgb("#e6e7ea"),
+        secondaryText: rgb("#9aa0ab"),
+        codeBackground: rgb("#22262d"),
+        link: rgb("#7aa7ff"),
+        border: rgb("#2d323b"))
+
+    /// Was mitgeliefert wird, wenn die Datei keine eigene Fassung hat.
+    public static let vorgaben: [MarkdownTheme] = [.standard, .blattDunkel]
+
+    /// Die Fassung als JSON-Objekt — für den Seed, für „neue Fassung als Kopie" und für die
+    /// einmalige Übernahme eines flachen Altblocks.
+    public var werte: JSONValue {
+        var obj: [String: JSONValue] = [
+            "background": .string(MarkdownTheme.hex(background)),
+            "text": .string(MarkdownTheme.hex(text)),
+            "secondaryText": .string(MarkdownTheme.hex(secondaryText)),
+            "codeBackground": .string(MarkdownTheme.hex(codeBackground)),
+            "link": .string(MarkdownTheme.hex(link)),
+            "border": .string(MarkdownTheme.hex(border)),
+            "fontSize": .double(fontSizes.body),
+            "headings": .object([
+                "h1": .double(fontSizes.h1), "h2": .double(fontSizes.h2),
+                "h3": .double(fontSizes.h3), "h4": .double(fontSizes.h4),
+                "h5": .double(fontSizes.h5), "h6": .double(fontSizes.h6),
+            ]),
+        ]
+        if let fontFamily { obj["fontFamily"] = .string(fontFamily) }
+        if let headingFont { obj["headingFont"] = .string(headingFont) }
+        return .object(obj)
+    }
 
     /// `#rrggbb` für CSS.
     public static func hex(_ c: TerminalRGB) -> String {
