@@ -19,8 +19,13 @@ final class ClaudeWorkflowModel {
         let missingName: String?
         /// Kein Repo-Ordner: es gibt keinen Ort, an den verlinkt werden könnte.
         let repoMissing: Bool
-        /// Andere Projekte, die sich dasselbe Repo teilen — sie teilen sich auch `<repo>/.claude/`.
-        let sharesRepoWith: [String]
+        /// Projekte, die sich dasselbe Repo teilen **und auf einem anderen Set stehen**.
+        ///
+        /// Nur dann ist die Teilung ein Problem: `<repo>/.claude/` gibt es einmal, also gewinnt das
+        /// zuletzt verlinkte Set und das andere Projekt sieht stillschweigend fremde Skills. Teilen
+        /// sich zwei Projekte ein Repo und dasselbe Set — bei `even`/`support` und
+        /// `bfezvm`/`tp1`/`zvmsupport` der Normalfall —, gibt es nichts zu melden.
+        let conflictingRepoMates: [String]
 
         var id: String { project.key }
     }
@@ -76,8 +81,12 @@ final class ClaudeWorkflowModel {
                 state: state,
                 missingName: resolution.missingName,
                 repoMissing: !repoDa,
-                sharesRepoWith: projects
-                    .filter { $0.key != project.key && $0.repoDir == project.repoDir }
+                conflictingRepoMates: projects
+                    .filter { anderes in
+                        anderes.key != project.key && anderes.repoDir == project.repoDir
+                            && store.resolve(skillSet: anderes.skillSet,
+                                             default: config?.defaultSkillSet).set?.name != set.name
+                    }
                     .map(\.key)))
         }
         verlinkungen = gruppen.mapValues { $0.sorted { $0.project.key < $1.project.key } }
@@ -422,7 +431,7 @@ struct ClaudeWorkflowSettingsView: View {
 
         let probleme = (model.verlinkungen[set.name] ?? []).filter {
             $0.repoMissing || $0.missingName != nil || $0.state != .linked
-                || !$0.sharesRepoWith.isEmpty
+                || !$0.conflictingRepoMates.isEmpty
         }
         ForEach(probleme) { problemZeile($0) }
     }
@@ -477,9 +486,10 @@ struct ClaudeWorkflowSettingsView: View {
         if let fehlend = verlinkung.missingName {
             teile.append("gewähltes Set „\(fehlend)“ gibt es nicht — das Standard-Set gilt")
         }
-        if !verlinkung.sharesRepoWith.isEmpty {
-            teile.append("teilt das Repo mit \(verlinkung.sharesRepoWith.joined(separator: ", "))"
-                         + " — es gilt das zuletzt verlinkte Set")
+        if !verlinkung.conflictingRepoMates.isEmpty {
+            teile.append("teilt das Repo mit \(verlinkung.conflictingRepoMates.joined(separator: ", "))"
+                         + ", und die stehen auf einem anderen Set — `<repo>/.claude/` gibt es "
+                         + "einmal, es gilt das zuletzt verlinkte")
         }
         if case .foreign(let was) = verlinkung.state { teile.append(was) }
         return teile.isEmpty ? nil : teile.joined(separator: " · ")

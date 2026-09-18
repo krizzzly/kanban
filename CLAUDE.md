@@ -914,9 +914,11 @@ Fuss steht „Set anlegen…".
 Drei Fälle stehen als Hinweis an der Zeile, statt still zu wirken:
 
 - **Kein Repo-Ordner** → es gibt keinen Ort zu verlinken; der Knopf ist aus.
-- **Zwei Projekte teilen ein Repo** (`support` in `even`, `tp1`/`zvmsupport` in `bfezvm`) → sie
-  teilen sich auch `<repo>/.claude/`. Stehen sie auf verschiedenen Sets, gewinnt das zuletzt
-  verlinkte. Das war bei `project.json` schon so, gehört aber sichtbar hierher.
+- **Zwei Projekte teilen ein Repo und stehen auf verschiedenen Sets** → `<repo>/.claude/` gibt es
+  einmal, also gewinnt das zuletzt verlinkte und das andere Projekt sieht stillschweigend fremde
+  Skills. Gemeldet wird **nur dieser** Fall: dass `support` in `even` und `tp1`/`zvmsupport` in
+  `bfezvm` liegen, ist der Normalfall und stünde sonst dauerhaft als Warnung da, obwohl nichts
+  kaputt ist.
 - **Das gewählte Set gibt es nicht** → das Standard-Set greift, der gesuchte Name steht daneben.
 
 Weggefallen sind mit dem Umbau: der Markdown-Editor über den Bestand, „Neues Asset", „Einlesen…",
