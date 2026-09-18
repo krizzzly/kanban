@@ -758,6 +758,13 @@ GitLab). Ein zweites entsteht, wenn es gebraucht wird; der Umbau macht es mögli
   keins bestimmt, das erste, und die Übersicht sagt „Standard (nicht gesetzt)". Ein Projekt, dessen
   Set es nicht (mehr) gibt, fällt aufs Standard-Set zurück, **mit Hinweis** statt stillschweigend
   (`ClaudeAssetStore.resolve` liefert dafür `missingName`).
+- **Das Command-Menü am Ticket zeigt, was das Set anbietet** — alles davon, nicht eine Liste im
+  Code (`ClaudeCommandScanner.commands(in:first:)`). Vorn stehen die vier Workflow-Skills in der
+  Reihenfolge, die ein Ticket nimmt (`get-` → `start-` → `solve-` → `review-task`), dahinter der
+  Rest alphabetisch. Ein Skill, der einem Set dazukommt, steht damit ohne Codeänderung im Menü.
+  Gelesen wird das **Set**, nicht der Scan der Zielorte: was ein Projekt sieht, ist sein Set, nicht
+  die Vereinigung aus Projekt-Ebene und Agent-Home. Gibt es gar kein Set, fällt das Menü auf den
+  Scan zurück — die Symlinks von gestern funktionieren ja weiter.
 - **Der Name des aufgelösten Sets steht in `.claude/project.json`** (`skillSet`) — ein Skill soll
   wissen, mit welchem Satz er gerade läuft, und nicht, was jemand einmal in die Config geschrieben
   hat. Geschrieben wird beides an einer Stelle (`AppModel.linkSkillSet`), beim Projektwechsel und

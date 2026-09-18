@@ -278,6 +278,40 @@ final class ClaudeAssetsTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: alt.path))
     }
 
+    // MARK: Command-Menü
+
+    /// Das Menü am Ticket zeigt **alles**, was das Set anbietet — die Workflow-Skills vorn, der
+    /// Rest alphabetisch. Vorher entschied das eine fest verdrahtete Liste aus vier Namen; ein
+    /// neuer Skill im Set wäre nie aufgetaucht.
+    func testCommandMenuZeigtAllesAusDemSet() throws {
+        let iwf = try set("iwf")
+        let befehle = ClaudeCommandScanner.commands(in: iwf, first: ["solve-task", "gibts-nicht"])
+        XCTAssertEqual(befehle.map(\.name), ["solve-task", "get-task"])
+        // Ein Set ohne den bevorzugten Namen verliert dadurch nichts.
+        XCTAssertEqual(ClaudeCommandScanner.commands(in: try set("swift"),
+                                                     first: ["solve-task"]).map(\.name),
+                       ["get-task"])
+    }
+
+    /// Frontmatter kommt mit: `description` steht als zweite Zeile im Menüeintrag.
+    func testCommandMenuLiestDasFrontmatter() throws {
+        let datei = setsRoot.appendingPathComponent("iwf/skills/get-task/SKILL.md")
+        try """
+        ---
+        name: get-task
+        description: Ticket holen
+        argument-hint: <TICKET>
+        ---
+
+        Rumpf
+        """.write(to: datei, atomically: true, encoding: .utf8)
+        let befehl = try XCTUnwrap(ClaudeCommandScanner.commands(in: try set("iwf"))
+            .first { $0.name == "get-task" })
+        XCTAssertEqual(befehl.description, "Ticket holen")
+        XCTAssertEqual(befehl.argumentHint, "<TICKET>")
+        XCTAssertEqual(befehl.level, .project)
+    }
+
     // MARK: Auflösung
 
     func testProjektSetSonstStandardSet() throws {

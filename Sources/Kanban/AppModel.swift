@@ -464,9 +464,10 @@ final class AppModel {
 
     // MARK: - Selection
 
-    /// The ticket-workflow commands offered in the header menu, in workflow order.
-    /// `create-task` is deliberately absent — it starts from a description, not a ticket.
-    private static let ticketCommandNames = ["get-task", "start-task", "solve-task", "review-task"]
+    /// Die Reihenfolge, in der die Workflow-Skills vorn stehen — der Weg, den ein Ticket nimmt.
+    /// Alles andere, was das Set anbietet, folgt dahinter alphabetisch: welche Skills ein Projekt
+    /// hat, entscheidet sein Skill-Set, nicht eine Liste im Code.
+    private static let ticketCommandOrder = ["get-task", "start-task", "solve-task", "review-task"]
 
     func selectProject(_ project: ProjectConfig) {
         guard project.id != selectedProject?.id else { return }
@@ -493,14 +494,27 @@ final class AppModel {
         // Sonst stünde das neue Projekt hinter dem Filter des alten und sähe aus, als wäre es leer.
         ticketSearch = ""
         newTaskConsoleSession = nil
-        claudeCommands = ClaudeCommandScanner.scan(repoDir: project.repoDir,
-                                                   only: Self.ticketCommandNames,
-                                                   agent: project.agent)
+        claudeCommands = Self.commands(for: project, defaultSkillSet: config?.defaultSkillSet)
         // Projektwerte und den Satz Skills bereitstellen, den dieses Projekt sehen soll.
         // Still: ein fehlendes Repo darf den Projektwechsel nicht stören.
         linkSkillSet(for: project, defaultSkillSet: config?.defaultSkillSet)
         clearDetail()
         Task { await loadForCurrentMode() }
+    }
+
+    /// Was im Command-Menü des Tickets steht: **alles**, was das Skill-Set dieses Projekts anbietet,
+    /// die Workflow-Skills vorn.
+    ///
+    /// Gibt es kein Set (Sets-Ordner verschoben, Bestand leer), fällt es auf den Scan der Zielorte
+    /// zurück — dann steht dort, was tatsächlich verlinkt ist. Ein leeres Menü wäre die schlechtere
+    /// Antwort: die Symlinks von gestern funktionieren ja weiter.
+    private static func commands(for project: ProjectConfig,
+                                 defaultSkillSet: String?) -> [ClaudeCommand] {
+        let store = ClaudeAssetStore.configured()
+        if let set = store.resolve(skillSet: project.skillSet, default: defaultSkillSet).set {
+            return ClaudeCommandScanner.commands(in: set, first: ticketCommandOrder)
+        }
+        return ClaudeCommandScanner.scan(repoDir: project.repoDir, agent: project.agent)
     }
 
     /// Stellt für ein Projekt her, was ein Agent in seinem Repo vorfinden soll: die generierten
