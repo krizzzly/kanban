@@ -1996,7 +1996,10 @@ Sources/
 │   │                      Verlinkung ins Projekt bzw. in die Agent-Homes, keine Kopie) +
 │   │                      ClaudeAssetName (kebab-case: Datei-, Symlink- und Aufrufname) +
 │   │                      ClaudeProjectFile (generiert <repo>/.claude/project.json)
-│   ├── Config/            KanbanConfig (eigene Config → AppConfig/ProjectConfig, repoDir +
+│   ├── Config/            KanbanPaths (**die** Stelle, die den Datenordner kennt: profilgebunden
+│   │                      vs. global) + ProfileStore (profiles.json, Migration, Slugs) +
+│   │                      ProfileDefaults (UserDefaults-Schlüssel je Profil) +
+│   │                      KanbanConfig (eigene Config → AppConfig/ProjectConfig, repoDir +
 │   │                      docsPath, Pfade normalisiert) + HermesImport (einmalige Übernahme) +
 │   │                      HermesSync (Projekte zurück; absolute Pfade in Hermes' join-Form) +
 │   │                      ConfigStore/KanbanConfigSchema (Settings) + ProjectRegistry/-Projection
@@ -2050,6 +2053,7 @@ Sources/
 │                          LiveTurn (tickt der ⏱-Zähler? Lebenszeichen + Alters-Schranke)
 └── Kanban/                SwiftUI/AppKit app
     ├── App.swift          @main, WindowGroup(for: String.self) — Board-Fenster je Projekt-Key
+    ├── ProfileRuntime.swift  was „dieses Profil gilt jetzt" im Prozess heisst, und der Wechsel
     ├── ProjectWindows.swift  wer welches Projekt zeigt: Terminal-Klick und Benachrichtigung ins
     │                      richtige Fenster, offene Projekte merken, beim Start wieder aufmachen,
     │                      die Boards ins Fenster-Menü von macOS melden (`WindowTitles`)
@@ -2245,6 +2249,129 @@ Hermes keins hat. Damit hängt kein Board-Feature mehr an einem laufenden Daemon
 - Ein Teil dieser Fläche hat vorerst **nur Tests als Aufrufer** (Kommentare, Worklog-Historie,
   MR-Threads, Diffs, Activity). Das ist so entschieden — die UI-Anbindung kommt pro Feature; es ist
   kein toter Code zum Aufräumen.
+
+## Profile: eine Kanban-Welt je Kontext
+
+Ein Profil ist **alles**, was sich einstellen lässt — Zugangsdaten, Hosts, Projekte, Module,
+Watchdog, Themes, Skill-Sets, Darstellung. Es gibt keine globale Einstellungsebene daneben; global
+bleibt nur die Frage, **welche** Profile es gibt und welches gerade gilt (`profiles.json`).
+
+Der Anlass ist keine Bequemlichkeit: `AppConfig` trägt **ein** Paar `jiraEmail`/`jiraApiToken` für
+alle Hosts (`ModuleHTTPClient.jira(email:apiToken:baseUrls:)`). Der `baseUrl` darf je Projekt
+abweichen — das Konto nicht. Ein zweites Atlassian-Konto war damit nicht unbequem, sondern unmöglich.
+
+### Ein Profil ist ein Ordner — und der gewachsene Bestand ist eines
+
+```
+~/Library/Application Support/Kanban/        ← zugleich der Ordner des Profils „arbeit"
+  profiles.json          ← das einzige Globale: Liste (Slug, Name, **Ordner**) + aktives Profil
+  config.json  tasks/  docs/  claude/  images/  sessions.json  worklog.json  watchdog.json  .locks/
+  attention/                  ← global (Ziel des Hooks)
+  kanban-attention-hook.sh    ← global (steht mit absolutem Pfad in ~/.claude/settings.json)
+  profiles/
+    privat/  config.json  tasks/  docs/  claude/  images/  sessions.json  …
+```
+
+**Die Migration verschiebt nichts.** Sie schreibt genau eine Datei: `profiles.json` mit einem Profil,
+dessen Ordner der bestehende Datenordner **ist**. Ein Umzug wäre nicht bloss teurer, sondern falsch —
+gemessen am echten Bestand dieser Maschine:
+
+- **12 von 13 Projekten** führen `tasksPath` als **absoluten** Pfad in diesen Ordner (nur `hermes`
+  ist relativ), dazu 4 Confluence-Pfade und 4 Projektbilder. Verschöbe man die Ordner ohne die Config
+  umzuschreiben, wären 643 Task-Files, die Doku und jedes Bild weg.
+- **`claude/` ist schlimmer:** `claude.setsPath` ist gar nicht gesetzt, es gilt die berechnete
+  Vorgabe. Auf die Sets dort zeigen **absolute Symlinks** aus `~/.claude`, `~/.codex`, jedem Repo und
+  jedem Worktree — ein Verschieben liesse sie alle ins Leere zeigen, einschliesslich der Skills des
+  Laufs, der den Umzug ausführt.
+
+Deshalb steht der Ordner **ausdrücklich** in `profiles.json` und wird nicht aus dem Slug gerechnet.
+Nur so ist der flache Bestand ein normales Profil statt ein Sonderfall im Code — und nur so lässt ein
+Umbenennen den Ordner in Ruhe.
+
+**Entfernen nimmt den Eintrag, nie den Ordner** — dieselbe Haltung wie bei den Skill-Sets („entfernt
+wird die Zuordnung, nicht die Arbeit"). In einem Profilordner liegen Task-Files, gebuchte Zeiten und
+Zugangsdaten; ein Klick, der das mitnimmt, wäre der teuerste Fehlklick der App.
+
+### Was zum Profil gehört, und was global bleibt
+
+`KanbanPaths` ist die einzige Stelle, die den Datenordner kennt; die neun früheren
+`applicationSupportDirectory`-Aufrufe gehen alle dorthin. Profilgebunden sind `config.json`,
+`tasks/`, `docs/`, `claude/`, `images/`, `sessions.json`, `worklog.json`, `watchdog.json` und
+`.locks/`. Global bleiben drei Dinge:
+
+- **`profiles.json`** — die Frage, welche Profile es gibt, kann nicht in einem Profil stehen.
+- **`attention/`** und **`kanban-attention-hook.sh`** — `~/.claude/settings.json` ruft das Skript mit
+  **absolutem** Pfad auf. Ein Hook je Profil hiesse, diese fremde Datei bei jedem Wechsel
+  umzuschreiben; viel Risiko für nichts. Die Marker tragen ohnehin Claude-`session_id`s, also UUIDs —
+  kollidieren können sie zwischen Profilen nicht.
+
+Der Ordner des aktiven Profils wird beim **ersten Zugriff** aufgelöst, nicht in einem Startschritt:
+`KanbanApp.init()` läuft vor dem `AppDelegate` und braucht die Pfade dort schon (Selftest,
+Task-File-Migration, Verlinkung der Skill-Sets in die Agent-Homes).
+
+### Umschalten statt nebeneinander (Stufe 1)
+
+Ein Wechsel (`ProfileRuntime.wechseln`) stellt in dieser Reihenfolge um: aktives Profil festhalten →
+Pfade, gemerkte Auswahl und tmux-Namensraum anwenden → Terminal-Ansichten loslassen → Darstellung neu
+laden → Skill-Set in die Agent-Homes → Watchdog neu aufsetzen → Fenster umstellen.
+
+- **Die Fenster werden umgestellt, nicht zu- und wieder aufgemacht.** Ginge das letzte alte Fenster
+  zu, bevor das erste neue steht, beendete sich die App — `applicationShouldTerminateAfterLastWindowClosed`
+  ist `true` und soll es bleiben (KANBAN-006) —, und `openWindow` käme aus dem Environment einer
+  Ansicht, die es dann nicht mehr gibt. So bleibt immer mindestens ein Fenster stehen; ein leeres
+  Zielprofil zeigt darin den Einrichtungs-Bildschirm.
+- **Ein Riegel (`ProfileRuntime.wechselLaeuft`) hält zwei Dinge auf**: die Terminate-Regel (der
+  Zwischenzustand „kein Fenster" ist kein Endzustand — die Regel wird ausgesetzt, nicht
+  zurückgenommen) und `ProjectWindows.listeSchreiben` (der Abbau der alten Fenster schriebe sonst
+  erst deren Liste und dann eine leere in die Schlüssel des **neuen** Profils und löschte genau die
+  Erinnerung, die der Wechsel wiederherstellt).
+- **Die Einstellungen gehen vorher zu.** `SettingsModel` hält seinen `ConfigStore` mit dem Pfad, der
+  bei der Konstruktion galt; nach dem Wechsel schriebe „Speichern" in die Config des alten Profils —
+  und ausgelöst wird der Wechsel meistens genau aus dieser Ansicht.
+- **Läuft ein Turn, wird gefragt.** Die tmux-Sitzung überlebt den Wechsel, das Brett nicht.
+
+### Die vier Dinge, die sonst ins andere Profil blueten
+
+1. **`SelectionStore`** liegt in `UserDefaults`. Jeder Schlüssel trägt jetzt den Profil-Slug
+   (`privat.openProjectKeys`); ohne ihn machte der Start im privaten Profil die Fenster der Arbeit
+   auf. Das **migrierte** Profil liest zusätzlich die alten, unpräfixierten Schlüssel, solange die
+   eigenen leer sind — niemand verliert seine Fenster, weil das Format gewachsen ist. Ein zweites
+   Profil erbt sie **nicht**; das ist der Zweck.
+2. **Das Standard-Skill-Set** hängt in `~/.claude/skills` und `~/.codex/skills`, einem Ort, den alle
+   Profile teilen. Beim Wechsel wird neu verlinkt — und die Links des alten Profils gelten dabei als
+   **unsere** (`ClaudeAssetStore.otherProfileSetsRoots` füllt `formerRoots`). Ohne das hielte
+   `isOurs` sie für fremd: `cleanUp` liesse sie stehen, `installSymlink` meldete den Zielort als
+   belegt, und das neue Profil bekäme dort gar keine Skills. ⚠️ `defaultLegacyRoot` bleibt deshalb am
+   **globalen** Ordner — er ist per Definition der Ort von früher. Hat ein Profil gar kein Set, wird
+   trotzdem abgeräumt (`unlinkHomes`); früher stieg die Verlinkung in dem Fall wirkungslos aus.
+3. **Die Hermes-Rückschreibung** ist ein Config-Schalter und damit ohnehin je Profil; ein neu
+   angelegtes Profil bekommt `hermes.syncProjects: false` mitgegeben. Und die **Übernahme** in die
+   andere Richtung (`HermesImport`) läuft nur noch fürs migrierte Profil: sie greift genau dann, wenn
+   eine Config noch keine `modules` hat — also bei jedem frischen Profil, das sich damit den
+   Firmen-Token geholt hätte.
+4. **tmux-Sitzungen** heissen `kanban-<TICKET>`. Jedes Profil ausser dem Vorgabe-Profil trägt seinen
+   Slug im Namen (`kanban-privat-EVEN-1`), in allen vier Formen (`-wt`, `-new`, `-term-<n>`). Die
+   Regel hängt am **Profil**, nicht an der Anzahl der Profile: hinge sie daran, änderte das Anlegen
+   eines zweiten Profils die Namen des ersten und liesse jede laufende Sitzung verwaisen.
+
+Dazu zwei prozessweite Instanzen, die einen Wechsel sonst mit altem Stand überlebten:
+`WatchdogModel.shared` samt `WatchdogScanner` (dessen `WatchdogStore` den Pfad **bei der
+Konstruktion** bindet — sonst landeten die Befunde des privaten Profils in der `watchdog.json` der
+Arbeit, und Befunde tragen wörtliche Transcript-Ausschnitte) und `TerminalCache` (lebende Ansichten
+auf Sitzungen, die dem neuen Namensraum nicht gehören).
+
+**Ein neues Profil startet leer** und landet im vorhandenen Einrichtungs-Bildschirm (`needsSetup`):
+kein Kopieren der Arbeitseinstellungen, sonst stünde der Firmen-Token im privaten Profil.
+
+**Gewählt wird im Projekt-Menü** der Kopfzeile (unten, als eigener Abschnitt — Profil und Projekt
+sind dieselbe Art Auswahl, das Profil nur eine Ebene höher; und in die Leiste passt ohnehin kein
+elfter Knopf, `ToolbarContent` nimmt zehn und die Leiste steht auf zehn). Verwaltet wird in
+**Einstellungen › Profile**; die Sektion wirkt **sofort**, nicht über den Speichern-Fuss — wie die
+Skill-Sets daneben und aus demselben Grund.
+
+**Profile gleichzeitig offen** gibt es bewusst nicht. Das hiesse, jede prozessweite Instanz
+(`WatchdogModel.shared`, `ClaudeAssetStore`, `SessionIdStore`, `WorklogLedger`, `AttentionNotifier`)
+profilfähig zu machen — machbar, aber ein eigener Task.
 
 ## Config (`~/Library/Application Support/Kanban/config.json`)
 

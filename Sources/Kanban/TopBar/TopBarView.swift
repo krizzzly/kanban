@@ -122,9 +122,38 @@ struct TopBarToolbar: ToolbarContent {
                     }
                 }
             }
+            profilAbschnitt
         }
-        .disabled(model.projects.isEmpty)
-        .help("Projekt wählen")
+        .disabled(model.projects.isEmpty && model.profile.count < 2)
+        .help("Projekt und Profil wählen")
+    }
+
+    /// Die Profile — im Projekt-Menü, nicht als eigener Knopf.
+    ///
+    /// Inhaltlich gehören sie hierher: Profil und Projekt sind dieselbe Art Auswahl, das Profil nur
+    /// eine Ebene höher. Praktisch geht es auch gar nicht anders — `ToolbarContent` nimmt zehn
+    /// Einträge, und die Leiste steht genau auf zehn.
+    ///
+    /// Der Abschnitt bleibt weg, solange es **ein** Profil gibt: eine Auswahl mit einem Eintrag ist
+    /// keine Auswahl, sondern Erklärungsbedarf. Angelegt werden Profile in den Einstellungen.
+    @ViewBuilder
+    private var profilAbschnitt: some View {
+        if model.profile.count > 1 {
+            Divider()
+            Section("Profil") {
+                ForEach(model.profile) { profil in
+                    Button {
+                        model.profilWechseln(zu: profil)
+                    } label: {
+                        if profil.slug == model.aktivesProfil?.slug {
+                            Label(profil.name, systemImage: "checkmark")
+                        } else {
+                            Text(profil.name)
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /// Sprint- oder freier Modus. Steht direkt neben der Sprint-Auswahl, die im freien Modus
@@ -346,9 +375,7 @@ struct TopBarToolbar: ToolbarContent {
     /// Öffnet Kanbans Datenordner (tasks/, claude/, config.json) in PhpStorm.
     private var dataFolderButton: some View {
         Button {
-            let dir = FileManager.default
-                .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-                .appendingPathComponent("Kanban", isDirectory: true)
+            let dir = KanbanPaths.root
             StatusLinkOpener.open(URL(string: StatusLinks.ideURL(forPath: dir.path))!)
         } label: {
             Image(systemName: "folder")

@@ -1,4 +1,5 @@
 import Foundation
+import KanbanCore
 
 /// Records how much of each ticket's ⏱ time has already been booked to Jira, so a later booking logs
 /// only the new delta and the same time can never be booked twice. Local UI state, like
@@ -24,11 +25,9 @@ enum WorklogLedger {
     }
 
     private static var fileURL: URL {
-        let base = FileManager.default
-            .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("Kanban", isDirectory: true)
-        try? FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
-        return base.appendingPathComponent("worklog.json")
+        try? FileManager.default.createDirectory(at: KanbanPaths.root,
+                                                 withIntermediateDirectories: true)
+        return KanbanPaths.worklogFile
     }
 
     static func load() -> [String: Entry] {

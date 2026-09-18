@@ -78,6 +78,19 @@ struct ContentView: View {
         .onChange(of: model.selectedProject?.key) { _, key in
             if let key { ProjectWindows.shared.anmelden(model: model, key: key) }
         }
+        // Ein Profilwechsel macht die Bretter des alten Profils zu. Läuft irgendwo ein Turn, wird
+        // vorher gefragt — die tmux-Sitzung läuft zwar weiter, aber wer auf eine Antwort wartet,
+        // soll sein Fenster nicht kommentarlos verlieren.
+        .confirmationDialog("Profil wechseln?",
+                            isPresented: Binding(get: { model.profilWechselFrage != nil },
+                                                 set: { if !$0 { model.profilWechselFrage = nil } }),
+                            presenting: model.profilWechselFrage) { frage in
+            Button("Trotzdem wechseln") { model.profilJetztWechseln(zu: frage.profil) }
+            Button("Abbrechen", role: .cancel) { model.profilWechselFrage = nil }
+        } message: { frage in
+            Text("Es läuft gerade ein Turn: \(frage.laufendeTickets.joined(separator: ", ")). "
+               + "Die Terminal-Sitzung läuft weiter, das Board dieses Profils geht aber zu.")
+        }
         .sheet(isPresented: $model.settingsPresented) {
             // Die Config gehört allen Fenstern, nicht nur dem, in dem gespeichert wurde.
             SettingsSheet { ProjectWindows.shared.configNeuLaden() }

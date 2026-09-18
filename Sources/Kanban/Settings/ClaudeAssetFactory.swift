@@ -20,7 +20,14 @@ enum ClaudeAssetFactory {
     /// Modells auf das Set um (`ClaudeSymlinkState.otherSet`); Fremdes bleibt liegen.
     static func linkDefaultSetIntoHomes(_ name: String?,
                                         store: ClaudeAssetStore = .configured()) {
-        guard let set = store.defaultSet(configured: name) else { return }
+        guard let set = store.defaultSet(configured: name) else {
+            // Kein Set heisst **nicht** „nichts tun": die Homes gehören allen Profilen gemeinsam,
+            // und die Links des zuvor aktiven Profils blieben sonst stehen — bei Namensgleichheit
+            // sticht die User-Ebene die Projektebene, das neue Profil sähe also weiter die Skills
+            // des alten.
+            store.unlinkHomes(AgentKind.allCases)
+            return
+        }
         store.link(set, toHomes: AgentKind.allCases)
     }
 

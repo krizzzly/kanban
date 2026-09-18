@@ -19,7 +19,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Dokument-Programm — ist das letzte Brett zu, gibt es nichts mehr zu tun, und ein Programm
     /// ohne Fenster im Dock wäre nur ein Zustand, aus dem niemand herausfindet. `--select` und
     /// „Öffnen mit" starten die App ohnehin neu.
-    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+    ///
+    /// Die eine Ausnahme ist ein laufender **Profilwechsel**: dort ist „kein Fenster offen" ein
+    /// Zwischenschritt, kein Endzustand. Die Regel wird dafür ausgesetzt, nicht zurückgenommen.
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        MainActor.assumeIsolated { !ProfileRuntime.wechselLaeuft }
+    }
 
     /// Beim Beenden die eigenen `claude -p`-Kinder mitnehmen. Ohne das überlebt ein laufender
     /// Watchdog-Scan die App als Waise (`ppid=1`, beobachtet: 5½ Minuten Restlaufzeit, 300 MB) —
@@ -48,6 +53,9 @@ struct KanbanApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
 
     init() {
+        // Ganz zuerst: welches Profil gilt, und damit wo der Datenordner liegt. Alles darunter —
+        // Selftest, Task-File-Migration, die Verlinkung der Skill-Sets — liest ihn bereits.
+        MainActor.assumeIsolated { ProfileRuntime.beimStart() }
         if CommandLine.arguments.contains("--selftest") {
             SelfTest.runAndExit()
         }

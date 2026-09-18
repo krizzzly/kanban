@@ -73,6 +73,14 @@ struct StartWorkNotice: Equatable {
     let isWarning: Bool
 }
 
+/// Ein Profilwechsel, der noch auf Bestätigung wartet, weil irgendwo ein Turn läuft.
+struct ProfilWechselFrage: Identifiable {
+    let profil: KanbanProfile
+    /// Tickets, an denen gerade gearbeitet wird — sie stehen namentlich in der Rückfrage.
+    let laufendeTickets: [String]
+    var id: String { profil.slug }
+}
+
 @MainActor
 @Observable
 final class AppModel {
@@ -383,9 +391,18 @@ final class AppModel {
         do {
             // First start on a machine that has Hermes: adopt its Jira/GitLab config once. Without
             // Hermes this does nothing at all — Kanban is standalone, the setup screen takes over.
-            HermesImport.runIfNeeded()
+            //
+            // **Nur für das migrierte Profil.** Die Übernahme greift genau dann, wenn eine Config
+            // noch keine `modules` hat — und das ist bei jedem frisch angelegten Profil der Fall.
+            // Ohne diese Schranke holte sich ein privates Profil beim ersten Start die
+            // Firmen-Zugangsdaten und die ganze Projektliste aus `~/.hermes/config.json`, also
+            // genau das, wovor die Profil-Ebene trennen soll.
+            if ProfileStore.active().isDefault { HermesImport.runIfNeeded() }
             let cfg = try KanbanConfig.load()
             config = cfg
+            // Vor dem Ausstieg: ein frisch angelegtes, noch leeres Profil landet im
+            // Einrichtungs-Bildschirm — und genau dort will man zurückwechseln können.
+            profileNeuLesen()
             guard cfg.isConfigured else {
                 needsSetup = true
                 return
@@ -468,11 +485,25 @@ final class AppModel {
     /// laufenden Terminals ziehen nach, und die gerenderten Markdown-Ansichten zeichnen über die
     /// Benachrichtigung neu. Ohne das wäre jede Farbe hier eine Einstellung, die erst beim nächsten
     /// Start sichtbar wird.
-    func reloadConfig() {
+    func reloadConfig() { reloadConfig(projektKey: nil, behaltAuswahl: true) }
+
+    /// Nach einem Profilwechsel: dieses Fenster zeigt jetzt ein Projekt der **neuen** Welt.
+    ///
+    /// Anders als `reloadConfig` wird die bisherige Auswahl ausdrücklich **nicht** übernommen — sie
+    /// gehört dem alten Profil, und ein Ticket-Key daraus meint hier bestenfalls nichts. `nil` als
+    /// Ziel ist erlaubt und der Normalfall für ein frisch angelegtes Profil: das Fenster landet dann
+    /// im Einrichtungs-Bildschirm, statt zuzugehen.
+    func profilNeuLaden(projektKey: String?) {
+        szenenProjektKey = projektKey
+        selectedTicketKey = nil
+        reloadConfig(projektKey: projektKey, behaltAuswahl: false)
+    }
+
+    private func reloadConfig(projektKey: String?, behaltAuswahl: Bool) {
         KanbanSettingsStore.reload()
         TerminalCache.shared.reapplyAppearance()
-        let previousProject = selectedProject?.key
-        let previousTicket = selectedTicketKey
+        let previousProject = behaltAuswahl ? selectedProject?.key : nil
+        let previousTicket = behaltAuswahl ? selectedTicketKey : nil
         pollTask?.cancel()
         pollTask = nil
         config = nil
@@ -485,7 +516,7 @@ final class AppModel {
         fehlendesProjekt = nil
         // Mit dem Projekt dieses Fensters, nicht mit der gemerkten Auswahl: ein Speichern in den
         // Einstellungen lädt **alle** Fenster neu, und jedes bleibt bei seinem Projekt.
-        bootstrap(projectKey: szenenProjektKey ?? previousProject)
+        bootstrap(projectKey: projektKey ?? szenenProjektKey ?? previousProject)
         if let previousProject,
            let project = projects.first(where: { $0.key == previousProject }),
            project.id != selectedProject?.id {
@@ -1072,7 +1103,7 @@ final class AppModel {
             // Second (right) terminal: a plain shell opened in the worktree, if one exists.
             var worktreeSession: String? = nil
             if let worktree {
-                let name = "kanban-\(key.uppercased())-wt"
+                let name = TerminalSessionResolver.sessionName(forTicket: key, suffix: "wt")
                 _ = tmux.createSession(name: name, cwd: worktree.path, command: nil)
                 tmux.setStatusBar(name, visible: false)
                 tmux.cancelCopyMode(name)
@@ -1421,7 +1452,7 @@ final class AppModel {
     }
 
     static func newTaskSessionName(project: ProjectConfig) -> String {
-        "kanban-\(project.key.uppercased())-new"
+        TerminalSessionResolver.sessionName(forTicket: project.key, suffix: "new")
     }
 
     /// Pseudo-Ticket-Key im `SessionIdStore` — kollidiert nicht mit echten Keys (`PREFIX-123`).
@@ -1456,7 +1487,7 @@ final class AppModel {
         guard let key = selectedTicketKey, let project = selectedProject else { return nil }
         let cwd = WorktreeScanner.worktree(for: key, in: worktrees)?.path ?? project.repoDir
         let suffix = UUID().uuidString.prefix(6).lowercased()
-        let name = "kanban-\(key.uppercased())-term-\(suffix)"
+        let name = TerminalSessionResolver.sessionName(forTicket: key, suffix: "term-\(suffix)")
         extraTerminalsByTicket[key, default: []].append(name)
         Task.detached {
             let tmux = TmuxController()
@@ -2446,6 +2477,46 @@ final class AppModel {
     func runningTurnStart(ticketKey: String) -> Date? {
         guard let timing = timingByTicket[ticketKey] else { return nil }
         return LiveTurn.start(timing: timing, isWorking: workingTickets.contains(ticketKey))
+    }
+
+    /// Das Ticket, an dem in diesem Fenster gerade ein Turn läuft — nil, wenn keines arbeitet.
+    /// Der Profilwechsel fragt damit nach, bevor er ein Brett zumacht, an dem jemand auf eine
+    /// Antwort wartet.
+    var laufenderTurnTicket: String? {
+        cards.map(\.ticket.key).first { runningTurnStart(ticketKey: $0) != nil }
+    }
+
+    // MARK: - Profile
+
+    /// Die Profile, wie sie in `profiles.json` stehen — gehalten statt bei jedem Aufbau gelesen:
+    /// das Projekt-Menü fragt danach, und eine Dateilesung je Zeichnung wäre Verschwendung.
+    private(set) var profile: [KanbanProfile] = []
+    var aktivesProfil: KanbanProfile? { ProfileRuntime.aktiv }
+    /// Steht ein Wechsel an, der erst bestätigt werden muss?
+    var profilWechselFrage: ProfilWechselFrage?
+
+    func profileNeuLesen() { profile = ProfileStore.load().profiles }
+
+    /// Auf ein anderes Profil umschalten — mit Rückfrage, wenn irgendwo ein Turn läuft.
+    ///
+    /// Die tmux-Sitzung überlebt den Wechsel, das Fenster nicht; wer gerade auf eine Antwort
+    /// wartet, soll das vorher erfahren statt hinterher zu suchen.
+    func profilWechseln(zu profil: KanbanProfile) {
+        guard profil.slug != ProfileRuntime.aktiv?.slug else { return }
+        let laufend = ProfileRuntime.laufendeTurns()
+        if laufend.isEmpty { profilJetztWechseln(zu: profil) }
+        else { profilWechselFrage = ProfilWechselFrage(profil: profil, laufendeTickets: laufend) }
+    }
+
+    func profilJetztWechseln(zu profil: KanbanProfile) {
+        profilWechselFrage = nil
+        do {
+            try ProfileRuntime.wechseln(zu: profil.slug)
+        } catch {
+            startWorkNotice = StartWorkNotice(
+                text: "Profilwechsel fehlgeschlagen: \(error.localizedDescription)",
+                isWarning: true)
+        }
     }
 
     /// Cumulated Claude time across every card of the current sprint.

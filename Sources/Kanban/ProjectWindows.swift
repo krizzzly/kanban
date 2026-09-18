@@ -208,6 +208,67 @@ final class ProjectWindows {
 
     func zeigtProjekt(_ key: String) -> Bool { eintraege.contains { $0.key == key && $0.model != nil } }
 
+    /// Die Models aller offenen Fenster, in Öffnungsreihenfolge.
+    func modelle() -> [AppModel] { eintraege.compactMap(\.model) }
+
+    /// Jedes Fenster liest die Profilliste neu — nach Anlegen, Umbenennen, Entfernen.
+    func profileNeuLesen() { for model in modelle() { model.profileNeuLesen() } }
+
+    /// Den Wechsel über ein Model anstossen, damit die Rückfrage bei laufendem Turn in einem
+    /// Fenster erscheint. Das vorderste, sonst das erste.
+    ///
+    /// Die Einstellungen gehen dabei **zuerst** zu, auch wenn nur gefragt wird: ein
+    /// `confirmationDialog` der Board-Ansicht hinter einem offenen Sheet erschiene bestenfalls
+    /// unzuverlässig, und ein Knopf, auf den sichtbar nichts folgt, ist schlimmer als ein Sheet, das
+    /// sich schliesst. Ohnehin gehört der Stand darin zur Welt, die gerade verlassen wird.
+    func profilWechselnLassen(_ profil: KanbanProfile) {
+        for model in modelle() { model.settingsPresented = false }
+        let model = eintraege.first { $0.window?.isKeyWindow == true }?.model ?? eintraege.first?.model
+        model?.profilWechseln(zu: profil)
+    }
+
+    /// Die Fenster auf das neue Profil umstellen.
+    ///
+    /// Umgestellt statt zugemacht und neu aufgemacht, und das ist der Kern: ginge das letzte alte
+    /// Fenster zu, bevor das erste neue steht, beendete sich die App (`applicationShouldTerminate…`
+    /// ist `true`, und das soll es bleiben), und `openWindow` käme aus dem Environment einer
+    /// Ansicht, die es dann nicht mehr gibt. So bleibt immer mindestens ein Fenster stehen.
+    ///
+    /// Die gemerkte Liste wird **frisch** gelesen, nicht die beim Programmstart eingefrorene: sie
+    /// gehört jetzt einem anderen Profil.
+    func profilWechsel() {
+        // Die Einstellungen zuerst zumachen. `SettingsModel` hält seinen `ConfigStore` mit dem Pfad,
+        // der bei seiner Konstruktion galt — nach dem Wechsel zeigte er auf die Config des alten
+        // Profils, und „Speichern" schriebe das Formular dorthin. Der Wechsel wird obendrein
+        // meistens **aus** dieser Ansicht heraus ausgelöst.
+        for model in modelle() { model.settingsPresented = false }
+
+        let projekte = (try? KanbanConfig.load())?.projects ?? []
+        let wiederhergestellteKeys = OpenProjects.wiederherstellen(
+            gespeichert: SelectionStore.openProjectKeys,
+            zuletzt: SelectionStore.projectKey,
+            vorhanden: projekte.map(\.key))
+        // Ein leeres Zielprofil bekommt trotzdem ein Fenster — es zeigt dann den
+        // Einrichtungs-Bildschirm. Eine App ohne Fenster wäre ein Zustand, aus dem niemand
+        // herausfindet.
+        let ziele: [String?] = wiederhergestellteKeys.isEmpty
+            ? [nil]
+            : wiederhergestellteKeys.map { $0 }
+
+        let lebende = modelle()
+        for (index, model) in lebende.enumerated() {
+            if index < ziele.count { model.profilNeuLaden(projektKey: ziele[index]) }
+            else { schliessen(model: model) }
+        }
+        for key in ziele.dropFirst(lebende.count) {
+            if let key { fensterOeffner?(key) }
+        }
+        // Der Start-Pfad ist damit erledigt; sonst machte das nächste aufgehende Fenster die
+        // gemerkte Liste ein zweites Mal auf.
+        wiederhergestellt = true
+        wartetAufFenster = []
+    }
+
     // MARK: - Start
 
     /// Welches Projekt ein Fenster **ohne** Szenenwert zeigt.
@@ -353,9 +414,15 @@ final class ProjectWindows {
     /// findet beim nächsten Start ein Fenster mit dem zuletzt benutzten Projekt vor — geschlossen
     /// ist geschlossen.
     private func listeSchreiben() {
-        guard !beendetSich else { return }
+        // Während eines Profilwechsels schweigen: der Abbau der alten Fenster schriebe sonst erst
+        // deren Liste und dann eine leere in die Schlüssel des **neuen** Profils — und löschte
+        // damit genau die Erinnerung, die der Wechsel gerade wiederherstellt.
+        guard !beendetSich, !ProfileRuntime.wechselLaeuft else { return }
         SelectionStore.openProjectKeys = offeneKeys
     }
+
+    /// Die Liste jetzt festhalten — vom Profilwechsel gerufen, nachdem sein Riegel gefallen ist.
+    func listeJetztSchreiben() { listeSchreiben() }
 }
 
 /// Ein Fenster, das noch keinem Eintrag gehört — ohne es am Leben zu halten.

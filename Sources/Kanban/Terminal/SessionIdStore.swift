@@ -1,15 +1,14 @@
 import Foundation
+import KanbanCore
 
 /// Fallback store for Claude session ids of tickets that have **no** task file (Jira-only). Tickets
 /// with a task file keep their id in the file itself (see `ClaudeSession`). Persists to
 /// `~/Library/Application Support/Kanban/sessions.json`.
 enum SessionIdStore {
     private static var fileURL: URL {
-        let base = FileManager.default
-            .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("Kanban", isDirectory: true)
-        try? FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
-        return base.appendingPathComponent("sessions.json")
+        try? FileManager.default.createDirectory(at: KanbanPaths.root,
+                                                 withIntermediateDirectories: true)
+        return KanbanPaths.sessionsFile
     }
 
     /// The ticket's stored session id, or nil — unlike `ensure` this never creates one, so it is safe

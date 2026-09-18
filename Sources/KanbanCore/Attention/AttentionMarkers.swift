@@ -5,10 +5,12 @@ import Foundation
 /// watches this directory and maps each session id back to its ticket.
 public enum AttentionMarkers {
     /// `~/Library/Application Support/Kanban/attention/`
+    /// Bewusst **global** und nicht je Profil: das Hook-Skript in `~/.claude/settings.json` nennt
+    /// diesen Ordner mit absolutem Pfad. Ein Marker-Ordner je Profil hiesse, diese fremde Datei bei
+    /// jedem Wechsel umzuschreiben — viel Risiko für nichts. Die Marker tragen ohnehin
+    /// Claude-`session_id`s, also UUIDs: kollidieren können sie zwischen Profilen nicht.
     public static var directory: URL {
-        let base = FileManager.default
-            .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("Kanban/attention", isDirectory: true)
+        let base = KanbanPaths.attentionDirectory
         try? FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
         return base
     }

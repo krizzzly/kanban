@@ -228,9 +228,7 @@ final class ExportLock {
     private static let staleAfter: TimeInterval = 600
 
     init?(ticketKey: String) {
-        let directory = FileManager.default
-            .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("Kanban/.locks", isDirectory: true)
+        let directory = KanbanPaths.locksDirectory
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         file = directory.appendingPathComponent("\(ticketKey).lock")
 

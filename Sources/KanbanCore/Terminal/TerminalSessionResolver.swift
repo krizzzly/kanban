@@ -33,9 +33,29 @@ public struct TerminalSessionPlan: Sendable, Hashable {
 /// Pure decision logic: given the existing tmux sessions and the ticket's artifacts, decide which
 /// session to attach/create. No side effects — the caller runs the resulting plan via `TmuxController`.
 public enum TerminalSessionResolver {
+    /// Der Slug des aktiven Profils — **nil beim Vorgabe-Profil**, dessen Sitzungen ihre
+    /// gewohnten Namen behalten.
+    ///
+    /// Die Regel hängt am Profil und bewusst **nicht** an der Anzahl der Profile („Slug, sobald es
+    /// mehr als eins gibt"): sonst änderte das Anlegen eines zweiten Profils die Namen des ersten
+    /// und liesse jede laufende Sitzung verwaisen.
+    public static var profileSlug: String?
+
+    /// `kanban-` bzw. `kanban-<slug>-` — der Namensraum dieses Profils in tmux.
+    public static var sessionPrefix: String {
+        guard let slug = profileSlug, !slug.isEmpty else { return "kanban-" }
+        return "kanban-\(slug)-"
+    }
+
     /// Our own deterministic session name for a ticket, e.g. `kanban-BFEZVM-4525`.
     public static func sessionName(forTicket key: String) -> String {
-        "kanban-\(key.uppercased())"
+        sessionPrefix + key.uppercased()
+    }
+
+    /// Eine Nebensitzung desselben Tickets bzw. Projekts (`-wt`, `-new`, `-term-<n>`). Läuft über
+    /// dieselbe Stelle, damit der Profil-Namensraum nicht an vier Orten nachgebaut wird.
+    public static func sessionName(forTicket key: String, suffix: String) -> String {
+        "\(sessionPrefix)\(key.uppercased())-\(suffix)"
     }
 
     /// The command that starts (or resumes) the ticket's Claude conversation. The caller checks

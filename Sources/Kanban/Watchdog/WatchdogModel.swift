@@ -73,6 +73,28 @@ final class WatchdogModel {
         starten()
     }
 
+    /// Profilwechsel: der Stand gehört ab jetzt einer anderen Datei.
+    ///
+    /// `WatchdogStore` rechnet seinen Pfad aus dem Datenordner, und der zeigt nach dem Wechsel
+    /// woandershin — der Scanner muss ihn aber auch neu binden, sonst schriebe er die Befunde des
+    /// privaten Profils weiter in die `watchdog.json` der Arbeit. Das wäre kein Schönheitsfehler,
+    /// sondern ein Übertritt über die Profilgrenze: ein Befund trägt wörtliche
+    /// Transcript-Ausschnitte.
+    func profilGewechselt() {
+        stoppen()
+        uebernommen = false
+        befunde = []
+        neueIds = []
+        letzterScan = nil
+        letzterFehler = nil
+        letzteKostenUSD = nil
+        sessionsGescannt = nil
+        Task { [weak self] in
+            await self?.scanner.neuAufsetzen()
+            await self?.uebernehmen(config: try? KanbanConfig.load())
+        }
+    }
+
     func starten() {
         guard schleife == nil else { return }
         schleife = Task { [weak self] in
