@@ -7,8 +7,13 @@ disable-model-invocation: true
 
 # SOLVE TASK - Umsetzungs-Arbeitsanweisung
 
-> ⚙️ **Projektwerte** (`prefix`, `tasksPath`, `repoDir`, `worktreePrefix`, `stackDomain`, `gitlabProjectPath`):
-> stehen in `.claude/project.json` im Repo-Root. Lies die Datei, bevor du einen Projektwert brauchst — nie raten.
+> ⚙️ **Projektwerte** (`prefix`, `tasksPath`, `repoDir`, `worktreePrefix`, `dockerStack`, `stackDomain`,
+> `gitlabProjectPath`): stehen in `.claude/project.json` im Repo-Root. Lies die Datei, bevor du einen
+> Projektwert brauchst — nie raten.
+>
+> **`dockerStack: false` heisst: dieses Projekt hat keinen Docker-Stack.** Dann laufen Tests und Analysen
+> direkt im Worktree (nicht über `docker exec`/`iwf run`), es gibt keine Stack-URL, und der Worktree wird
+> mit `git worktree add` angelegt. Alle `iwf`-Beispiele unten gelten nur für Projekte **mit** Stack.
 
 Du bist ein erfahrener Software-Entwickler, der einen **bereits geplanten** JIRA-Task umsetzt.
 
@@ -49,11 +54,14 @@ um maximale Analyse-Tiefe zu gewährleisten.
 ## Worktree-Verhalten (Default: AN)
 
 - **Standard:** Falls das Task-File noch keinen Worktree-Block hat, wird in Phase 0a automatisch einer angelegt
-  und der Block ins Task-File eingefügt (nur Worktree, **kein** Docker-Stack).
+  und der Block ins Task-File eingefügt (nur Worktree, **kein** Docker-Stack wird gestartet).
 - **Opt-out:** Wenn `$ARGUMENTS` das Flag `--no-worktree` enthält, KEIN Worktree anlegen — Feature-Branch wird
   im Haupt-Repo erzeugt (altes Default-Verhalten). Das Flag wird beim Task-File-Lookup ignoriert.
+- **Wie angelegt wird, entscheidet `dockerStack`:** `true` (oder fehlend) → `iwf worktree create`;
+  `false` → `git worktree add` mit ermitteltem Basis-Branch.
 
-> Vollständige Befehls-/Flag-Referenz zu `iwf worktree`: `~/Library/Application Support/Kanban/claude/rules/worktree.md` (bzw. `iwf worktree --help`).
+> Vollständige Befehls-/Flag-Referenz zu beiden Wegen:
+> `~/Library/Application Support/Kanban/claude/rules/worktree.md` (bzw. `iwf worktree --help`).
 
 ---
 
@@ -114,19 +122,30 @@ git -C <WORKTREE_PATH> branch --show-current         # sollte = BRANCH sein
 
 | Situation                                                                  | Aktion                                                                                                  |
 |----------------------------------------------------------------------------|---------------------------------------------------------------------------------------------------------|
-| Kein Worktree-Block im Task-File, KEIN `--no-worktree` im Input             | **Default:** Worktree per `iwf worktree create` anlegen, Block ins Task-File schreiben, dann WORKTREE-ROUTING aktivieren (siehe Schritt 0a-3). Weiter mit Phase 0b. |
+| Kein Worktree-Block im Task-File, KEIN `--no-worktree` im Input             | **Default:** Worktree anlegen (Weg je `dockerStack`, siehe unten), Block ins Task-File schreiben, dann WORKTREE-ROUTING aktivieren (siehe Schritt 0a-3). Weiter mit Phase 0b. |
 | Kein Worktree-Block im Task-File, `--no-worktree` im Input                  | Standard-Workflow im Haupt-Repo (Opt-out). Weiter mit Phase 0b.                                          |
 | Block vorhanden, Worktree gültig, Branch dort aktiv                         | **WORKTREE-ROUTING aktivieren** (siehe Schritt 0a-3). Weiter mit Phase 0b.                              |
-| Block vorhanden, Worktree-Pfad existiert nicht (mehr), KEIN `--no-worktree` | Benutzer informieren: Worktree wurde entfernt. Block aus Task-File löschen, dann erneut Default-Worktree anlegen (`iwf worktree create`), Block schreiben, Routing aktivieren. |
+| Block vorhanden, Worktree-Pfad existiert nicht (mehr), KEIN `--no-worktree` | Benutzer informieren: Worktree wurde entfernt. Block aus Task-File löschen, dann erneut Default-Worktree anlegen (Weg je `dockerStack`), Block schreiben, Routing aktivieren. |
 | Block vorhanden, Worktree-Pfad existiert nicht (mehr), `--no-worktree`      | Block aus Task-File löschen, im Haupt-Repo weiter.                                                       |
 | Block vorhanden, Worktree-Pfad existiert aber Branch dort ist anders        | Inkonsistent — Benutzer fragen, was korrekt ist. NICHT raten.                                            |
 
 **Worktree-Default-Anlage (wenn obenstehende Default-Spalte greift):**
 
 1. Branch-Suffix aus dem Task-File-Namen ableiten (englischer Titel ohne `<PREFIX>-NNNN_` und `.md`; bzw. ohne Suffix).
-2. `iwf worktree create NNNN <suffix>` ausführen (NNNN = nackte Ticket-Nummer, nicht `<PREFIX>-NNNN`).
+2. Worktree anlegen — **`dockerStack` aus `.claude/project.json` entscheidet, wie:**
+
+   **`dockerStack: true` (oder fehlend):** `iwf worktree create NNNN <suffix>` (NNNN = nackte
+   Ticket-Nummer, nicht `<PREFIX>-NNNN`).
+
+   **`dockerStack: false`:** reiner Git-Worktree vom ermittelten Basis-Branch `<BASE>` (dieselbe Kette
+   wie in Phase 0b — `origin/HEAD` → `origin/develop` → `origin/main` → `develop` → `main` → `HEAD`):
+   ```bash
+   git -C <repoDir> worktree add <worktreePrefix>/<PREFIX>-NNNN \
+       -b feature/<PREFIX>-NNNN[_<suffix>] --no-track "<BASE>"
+   ```
    (Flag-/Befehls-Referenz: `~/Library/Application Support/Kanban/claude/rules/worktree.md` bzw. `iwf worktree --help`.)
-3. Worktree-Block direkt unter die H1 des Task-Files einfügen (Format identisch zu `create-worktree`).
+3. Worktree-Block direkt unter die H1 des Task-Files einfügen (Format identisch zu `create-worktree` — die
+   `🐳 **STACK**`-Zeile nur bei `dockerStack: true`).
 4. WORKTREE-ROUTING für den Rest der Session aktivieren.
 
 **Schritt 0a-3: Worktree-Routing-Regeln** (für die restliche Session)
@@ -156,7 +175,17 @@ Wenn der Worktree aktiv ist, gelten ab hier folgende Regeln:
   - `git -C <WORKTREE_PATH> diff`
 - Recherche-Befehle (`git log --all --grep=...`) können auch im Haupt-Repo laufen — Git teilt die History.
 
-**Tests / PHPStan / iwf / Docker (WICHTIG — Container-Pfad-Problem):**
+**Tests / Analysen — `dockerStack: false` (kein Docker im Spiel):**
+
+- Läufe gehen **direkt in den Worktree**, nicht durch einen Container: kein `docker exec`, kein `iwf run`.
+- Den projektüblichen Befehl aus der `CLAUDE.md` nehmen und auf den Worktree richten, z.B.:
+  ```bash
+  cd <WORKTREE_PATH> && swift test          # bzw. npm test, pytest, go test ./… — was das Projekt nennt
+  ```
+- Damit entfällt auch das Container-Pfad-Problem unten: der Lauf sieht genau den Code, den du geändert hast.
+  Tests hier also wirklich laufen lassen, statt sie dem Benutzer zu überlassen.
+
+**Tests / PHPStan / iwf / Docker — `dockerStack: true` (WICHTIG — Container-Pfad-Problem):**
 
 - Die Container des **Haupt-Stacks** sehen NUR den Haupt-Repo-Pfad. Sie sehen den Worktree-Code NICHT.
 - → `iwf run phpstan` bzw. Container-basierte PHPUnit-Aufrufe gegen den Haupt-Stack würden den
@@ -340,7 +369,9 @@ Dies ist oft einfacher als neue Fixture-Dateien zu erstellen und vermeidet Fixtu
 
 **Test ausführen:**
 
-Der konkrete Runner ist projektabhängig (siehe `.claude/rules/testing.md` bzw. `CLAUDE.md`), z.B.:
+Der konkrete Runner ist projektabhängig (siehe `.claude/rules/testing.md` bzw. `CLAUDE.md`). **Ohne
+Docker-Stack** (`dockerStack: false`) läuft er direkt im Worktree — `cd <WORKTREE_PATH> && <befehl>`,
+z.B. `swift test`. **Mit Stack** über den Container, z.B.:
 
 ```bash
 # Controller-Tests
@@ -360,7 +391,16 @@ iwf run "vendor/bin/phpunit tests/Controller/Feature/"
 
 ### Phase 3: Qualitätssicherung
 
-**Schritt 6: Tests und PHPStan ausführen**
+**Schritt 6: Tests und statische Analyse ausführen**
+
+**Ohne Docker-Stack** (`dockerStack: false`) — direkt im Worktree, projektüblicher Befehl aus `CLAUDE.md`:
+
+```bash
+cd <WORKTREE_PATH> && swift build        # bzw. der Build-Befehl des Projekts
+cd <WORKTREE_PATH> && swift test         # bzw. npm test, pytest, go test ./…
+```
+
+**Mit Docker-Stack** (`dockerStack: true`):
 
 ```bash
 # PHPStan (projektüblicher Aufruf — siehe CLAUDE.md)
@@ -458,6 +498,14 @@ nach `## JIRA Lösungsfeld` den Abschnitt `## Lösung`:
 `https://<repo-ordnername>.<stackDomain>` — Repo-Ordnername = letzter Pfadbestandteil von `repoDir`,
 `stackDomain` aus `.claude/project.json`.)
 
+**Bei `dockerStack: false`** gibt es keine Test-URL. Statt einer erfundenen Zeile steht dort, wie man das
+Ergebnis wirklich sieht — der Befehl, der es zeigt:
+
+```markdown
+**Nachvollziehen:** `cd <WORKTREE_PATH> && <projektüblicher Befehl>`
+— <1 Satz: was dabei zu sehen ist>
+```
+
 Dieser Abschnitt ist die Single Source of Truth: erst hier ins Task-File schreiben, dann inhaltlich identisch
 in die Abschluss-Zusammenfassung (Schritt 9, Blöcke „## Commit-Message" und „## 🔗 Ergebnis ansehen") übernehmen.
 
@@ -494,6 +542,7 @@ Stelle sicher, dass im Task-File die Abschluss-Checkliste vorhanden ist und hake
 
 ## 🔗 Ergebnis ansehen (Worktree)
 - **URL:** https://<Worktree-Stack-Host>/<konkreter-Pfad-zum-Ergebnis>
+  [bei `dockerStack: false` stattdessen: **Befehl:** `cd <WORKTREE_PATH> && <projektüblicher Befehl>`]
 - **Warum hier:** [1 Satz: an dieser Stelle ist die Änderung am besten sichtbar]
 - [ggf.] **Beispiel-Datensatz:** [Name/Nr eines Datensatzes/einer Entität, die das Feature tatsächlich zeigt]
 
@@ -517,9 +566,14 @@ als eigenen, kopierbaren Block ausgeben (Schema `<TICKET-NUMMER> | <Beschreibung
 „Commit-Message Convention" unten) — auch wenn nicht committet wird. Der Benutzer committet selbst; dieselbe
 Message steht zusätzlich dauerhaft im Task-File unter `## Lösung` (Schritt 7b).
 
-**PFLICHT — „Ergebnis ansehen"-URL:** Am Schluss IMMER eine konkrete, klickbare **Worktree-URL** ausgeben, unter
-der der Benutzer das Task-Ergebnis am besten sieht — und dieselbe URL zusätzlich ins Task-File unter `## Lösung`
-schreiben (Schritt 7b). So leitest du sie ab:
+**PFLICHT — „Ergebnis ansehen":** Am Schluss IMMER zeigen, wie der Benutzer das Task-Ergebnis am besten
+sieht — und dasselbe zusätzlich ins Task-File unter `## Lösung` schreiben (Schritt 7b).
+
+**Bei `dockerStack: false` ist das keine URL, sondern ein Befehl** (`cd <WORKTREE_PATH> && <projektüblicher
+Befehl>`) bzw. die Stelle im Code/in der App, an der die Änderung sichtbar wird. Eine `https://…`-Zeile
+für ein Projekt ohne Stack wäre eine Behauptung — die Punkte 1–5 unten gelten dann nicht.
+
+Für Projekte **mit** Stack leitest du die URL so ab:
 
 1. **Basis-URL:** aus dem Worktree-Block des Task-Files (Worktree-Stack-Host). Falls kein Worktree
    (`--no-worktree`), die Haupt-Stack-URL `https://<stackDomain>` verwenden (`stackDomain` aus

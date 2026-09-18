@@ -13,7 +13,8 @@ import Foundation
 /// Einträge sollen nicht stillschweigend verschwinden. Umgekehrt gilt für Keys, die die Registry
 /// kennt: fehlt dort ein Modul-Block, verschwindet der zugehörige Eintrag — dafür ist sie ja Owner.
 public enum ProjectProjection {
-    private static let jiraOwnedKeys = ["prefix", "tasksPath", "repoDir", "baseUrl", "useJira"]
+    private static let jiraOwnedKeys = ["prefix", "tasksPath", "repoDir", "baseUrl", "useJira",
+                                        "dockerStack"]
     private static let gitlabOwnedKeys = ["path"]
     private static let confluenceOwnedKeys = ["space", "path"]
     private static let vertecOwnedKeys = ["project", "phase", "task", "additionalKeys"]
@@ -74,6 +75,7 @@ public enum ProjectProjection {
                 record.repoDir = entry["repoDir"]?.stringValue
                 record.jiraBaseUrl = entry["baseUrl"]?.stringValue
                 record.usesJira = entry["useJira"]?.boolValue
+                record.usesDockerStack = entry["dockerStack"]?.boolValue
             }
             if let path = gitlab[key]?.objectValue?["path"]?.stringValue {
                 record.gitlab = .init(path: path)
@@ -139,6 +141,8 @@ public enum ProjectProjection {
             // Nur die Abschaltung wird geschrieben: `true` ist die Vorgabe, und ein Schlüssel,
             // der nur den Normalfall wiederholt, stünde in jedem Projekt herum.
             if record.usesJira == false { fields["useJira"] = .bool(false) }
+            // Dieselbe Regel für den Stack: nur die Abschaltung steht in der Config.
+            if record.usesDockerStack == false { fields["dockerStack"] = .bool(false) }
             jira = fields
         }
         write(jira, ownedKeys: jiraOwnedKeys, at: projectsPath("jira") + [key], in: &config)

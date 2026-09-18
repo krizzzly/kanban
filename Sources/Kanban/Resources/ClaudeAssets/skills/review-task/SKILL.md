@@ -7,8 +7,10 @@ disable-model-invocation: true
 
 # REVIEW TASK - Code-Quality & Conventions Guide
 
-> ⚙️ **Projektwerte** (`prefix`, `tasksPath`, `repoDir`, `worktreePrefix`, `stackDomain`, `gitlabProjectPath`):
-> stehen in `.claude/project.json` im Repo-Root. Lies die Datei, bevor du einen Projektwert brauchst — nie raten.
+> ⚙️ **Projektwerte** (`prefix`, `tasksPath`, `repoDir`, `worktreePrefix`, `dockerStack`, `stackDomain`,
+> `gitlabProjectPath`): stehen in `.claude/project.json` im Repo-Root. Lies die Datei, bevor du einen
+> Projektwert brauchst — nie raten. `dockerStack: false` heisst: kein Docker-Stack — dann gibt es weder
+> `stackDomain` noch `iwf`, und Befehle laufen direkt im Worktree.
 
 Du bist ein erfahrener Code-Reviewer, der Code auf Qualität, Conventions und Best Practices prüft.
 
@@ -215,7 +217,8 @@ Alle Commits MÜSSEN diesem Schema folgen:
 - [ ] **Twig-Escaping:** Ausgaben korrekt escapen; `|raw` nur bewusst und geprüft einsetzen
 - [ ] **JS/SCSS in `assets/`:** Neuer JS-Code unter `assets/js/`, Styles unter `assets/scss/`
 - [ ] **Encore-Einbindung:** Assets über Webpack Encore eingebunden (`encore_entry_*_tags`)
-- [ ] **Build läuft:** `iwf yarn build` (bzw. `iwf yarn dev`) läuft ohne Fehler durch
+- [ ] **Build läuft:** projektüblicher Build-Befehl läuft ohne Fehler durch (mit Stack `iwf yarn build`
+      bzw. `iwf yarn dev`; ohne Stack der Befehl aus der `CLAUDE.md`)
 - [ ] **Templates klein halten:** Wiederkehrende Blöcke in Partials/Includes auslagern
 
 ### Berechtigungen
@@ -478,7 +481,12 @@ Konventions-/Gotcha-Abschnitte der `CLAUDE.md` selbst.
 
 ## Schnell-Checks
 
-### PHPStan ausführen
+> **Ohne Docker-Stack** (`dockerStack: false` in `.claude/project.json`) gibt es kein `iwf` und keinen
+> Container: dann den projektüblichen Befehl aus der `CLAUDE.md` direkt im Worktree laufen lassen
+> (`cd <WORKTREE_PATH> && swift test`, `npm test`, `pytest` …). Die `iwf`-Zeilen unten sind Beispiele für
+> Projekte **mit** Stack.
+
+### Statische Analyse ausführen
 ```bash
 # Projektüblicher Aufruf — siehe CLAUDE.md, z.B.:
 iwf run phpstan
@@ -637,8 +645,8 @@ Fehlend:
 
 | Prüfung | Befehl | Ergebnis |
 |---------|--------|----------|
-| PHPStan | projektüblicher Aufruf, z.B. `iwf run phpstan` | ✅/❌ |
-| Tests | projektüblicher Runner, z.B. `iwf run "vendor/bin/phpunit tests/..."` | ✅/❌ |
+| Statische Analyse | projektüblicher Aufruf (mit Stack z.B. `iwf run phpstan`, ohne Stack z.B. `swift build`) | ✅/❌ |
+| Tests | projektüblicher Runner (mit Stack z.B. `iwf run "vendor/bin/phpunit tests/..."`, ohne Stack z.B. `swift test`) | ✅/❌ |
 
 **Bei Fehlern:** Diese als 🔴 Blocker im Review-Report aufnehmen!
 

@@ -7,8 +7,9 @@ disable-model-invocation: true
 
 # GET TASK - JIRA-Ticket laden
 
-> ⚙️ **Projektwerte** (`prefix`, `tasksPath`, `repoDir`, `worktreePrefix`, `stackDomain`, `gitlabProjectPath`):
-> stehen in `.claude/project.json` im Repo-Root. Lies die Datei, bevor du einen Projektwert brauchst — nie raten.
+> ⚙️ **Projektwerte** (`prefix`, `tasksPath`, `repoDir`, `worktreePrefix`, `dockerStack`, `stackDomain`,
+> `gitlabProjectPath`): stehen in `.claude/project.json` im Repo-Root. Lies die Datei, bevor du einen
+> Projektwert brauchst — nie raten.
 
 Lade das JIRA-Ticket, erstelle ein Task-File im Task-Ordner (`tasksPath` aus `.claude/project.json`) und lege
 **per Default** direkt einen Worktree an (ohne Docker-Stack — der Stack wird nur auf ausdrücklichen Wunsch
@@ -16,9 +17,9 @@ hochgefahren).
 
 Platzhalter in spitzen Klammern (`<PREFIX>`, `<tasksPath>`, `<worktreePrefix>`, `<stackDomain>`) stehen im
 Folgenden für die entsprechenden Werte aus `.claude/project.json` — im Task-File landen immer die
-**aufgelösten** Werte, keine Platzhalter. `<stackDomain>` ist nur die TLD (z.B. `test`): der Haupt-Stack
-läuft auf `https://<repo-ordnername>.<stackDomain>`, ein Worktree-Stack auf
-`https://<worktree-ordnername>.<stackDomain>` (Ordnername = letzter Pfadbestandteil).
+**aufgelösten** Werte, keine Platzhalter. `<stackDomain>` gibt es nur in Projekten **mit** Stack; es ist
+nur die TLD (z.B. `test`): der Haupt-Stack läuft auf `https://<repo-ordnername>.<stackDomain>`, ein
+Worktree-Stack auf `https://<worktree-ordnername>.<stackDomain>` (Ordnername = letzter Pfadbestandteil).
 
 ## Ticket-Nummer
 
@@ -28,13 +29,23 @@ $ARGUMENTS
 
 - **Standard:** Nach Erstellung des Task-Files wird automatisch ein Worktree angelegt — aber **nur** der
   Worktree (Git-Branch + Configs). Es wird **kein** Docker-Stack gestartet.
+- **Wie angelegt wird, entscheidet `dockerStack` in `.claude/project.json`:** `true` (oder fehlend) →
+  `iwf worktree create`; `false` → reiner Git-Worktree per `git worktree add` (Details unten).
 - **Stack-Opt-in:** Wenn `$ARGUMENTS` das Flag `--stack` enthält, wird zusätzlich der Docker-Stack
   hochgefahren (`iwf worktree create NNNN <suffix> --start`): TLS-Cert + `iwf stack start` + DB-Seed +
   die `postStart`-Hooks aus `.iwf.yml`.
+- **`--stack` bei `dockerStack: false` wird abgelehnt** — dann abbrechen, bevor irgendetwas angelegt wird:
+
+  ```
+  ❌ --stack gibt es in diesem Projekt nicht: dockerStack ist false, also gibt es keinen Docker-Stack
+     zu starten. Ohne das Flag erneut aufrufen — Task-File und Git-Worktree entstehen ganz normal.
+  ```
+
 - **Worktree-Opt-out:** Wenn `$ARGUMENTS` das Flag `--no-worktree` enthält, Worktree-Erstellung überspringen.
 - Die Flags `--no-worktree`/`--stack` werden NICHT an das MCP-Tool weitergegeben — nur die Ticket-Nummer.
 
-> Vollständige Befehls-/Flag-Referenz zu `iwf worktree`: `~/Library/Application Support/Kanban/claude/rules/worktree.md`.
+> Vollständige Befehls-/Flag-Referenz zu beiden Wegen:
+> `~/Library/Application Support/Kanban/claude/rules/worktree.md`.
 
 ## Anweisungen
 
@@ -125,15 +136,45 @@ Falls ja, lies für jeden verwandten Task das entsprechende Task-File ein (falls
    ein leerer Suffix erzeugt einen namenlosen Branch `feature/<PREFIX>-NNNN` (genau die Lücke, die hier
    geschlossen wird). Findet sich partout kein sinnvoller Titel, lieber einen knappen generischen wählen
    (z.B. `tech_fix`) als gar keinen.
-2. `iwf worktree create NNNN <english_title>` ausführen (NNNN = nackte Ticket-Nummer, NICHT `<PREFIX>-NNNN`).
-   **Falls `--stack` im Input enthalten ist**, `--start` anhängen:
-   `iwf worktree create NNNN <english_title> --start`.
-3. Nach erfolgreichem Script-Lauf den Worktree-Block direkt unter die H1 des Task-Files einfügen:
+2. Worktree anlegen — **`dockerStack` entscheidet, wie:**
+
+   **`dockerStack: true` (oder fehlend):** `iwf worktree create NNNN <english_title>` ausführen
+   (NNNN = nackte Ticket-Nummer, NICHT `<PREFIX>-NNNN`). **Falls `--stack` im Input enthalten ist**,
+   `--start` anhängen: `iwf worktree create NNNN <english_title> --start`.
+
+   **`dockerStack: false`:** reiner Git-Worktree, Basis-Branch ermitteln statt annehmen:
+   ```bash
+   R=<repoDir>
+   BASE=$(git -C "$R" symbolic-ref --quiet --short refs/remotes/origin/HEAD)
+   if [ -z "$BASE" ]; then
+     for kandidat in origin/develop origin/main develop main; do
+       git -C "$R" rev-parse --verify --quiet "$kandidat" >/dev/null && { BASE="$kandidat"; break; }
+     done
+   fi
+   [ -z "$BASE" ] && BASE=HEAD
+   git -C "$R" worktree add <worktreePrefix>/<PREFIX>-NNNN \
+       -b feature/<PREFIX>-NNNN_<english_title> --no-track "$BASE"
+   ```
+
+3. Nach erfolgreichem Lauf den Worktree-Block direkt unter die H1 des Task-Files einfügen — **mit** Stack,
+   wenn es einen gibt:
 
    ```markdown
    > 🌳 **WORKTREE**: `<worktreePrefix>/<PREFIX>-NNNN`\
    > 🌿 **BRANCH**: `feature/<PREFIX>-NNNN_<english_title>`\
    > 🐳 **STACK**: `https://<worktree-ordnername>.<stackDomain>`\
+   > 📅 **Angelegt**: <YYYY-MM-DD>
+   >
+   > 🧭 **Routing-Modell für Claude:** cwd bleibt Haupt-Repo. Code-Edits gehen mit absolutem Worktree-Pfad
+   > in den WORKTREE. Git-Befehle mit `git -C <WORKTREE> ...`. Task-File/CLAUDE.md/Docs aus dem Haupt-Repo.
+   ```
+
+   **Ohne Stack (`dockerStack: false`) entfällt die STACK-Zeile** — nicht auf `-` setzen. Dafür nennt die
+   BRANCH-Zeile den Basis-Branch:
+
+   ```markdown
+   > 🌳 **WORKTREE**: `<worktreePrefix>/<PREFIX>-NNNN`\
+   > 🌿 **BRANCH**: `feature/<PREFIX>-NNNN_<english_title>` (von `<BASE>`)\
    > 📅 **Angelegt**: <YYYY-MM-DD>
    >
    > 🧭 **Routing-Modell für Claude:** cwd bleibt Haupt-Repo. Code-Edits gehen mit absolutem Worktree-Pfad
@@ -146,6 +187,9 @@ Falls ja, lies für jeden verwandten Task das entsprechende Task-File ein (falls
    `iwf worktree create` legt per Default **nur** den Worktree an (Branch + Configs + vorbereiteter Stack,
    aber NICHT gestartet). Mit `--start` wird der Stack zusätzlich hochgefahren — dann komplett durchlaufen
    lassen. Der Stack kann auch später gestartet werden: `iwf worktree start NNNN`.
+
+   Schlägt `git worktree add` fehl (Branch existiert schon, Pfad belegt): Meldung durchreichen und den
+   Worktree-Block **nicht** schreiben — das Task-File steht ja schon, nur ohne Worktree.
 
 **Falls `--no-worktree` gesetzt:** Worktree-Schritt komplett überspringen, in der Ausgabe entsprechend hinweisen.
 
@@ -176,15 +220,18 @@ Nach dem Laden des Tickets, gib folgende Informationen aus:
 👉 Zur Analyse & Planung: `/start-task <tasksPath>/<TICKET-NUMMER>_<english_title>.md`
 [falls Stack hochgezogen (--stack):]
 🌐 URL: https://<worktree-ordnername>.<stackDomain>
-[sonst:]
+[falls dockerStack: true, aber ohne --stack:]
 🐳 Stack bei Bedarf starten: `iwf worktree start <NUMMER>`
+[falls dockerStack: false:]
+🌿 Kein Docker-Stack in diesem Projekt — Branch von <BASE> abgezweigt
 ```
 
 **Wichtig:** Nur wenn der Stack tatsächlich hochgezogen wurde (`--stack` → `iwf worktree create … --start`
 durchgelaufen), als **letzte Zeile** der Ausgabe die fertige URL `https://<worktree-ordnername>.<stackDomain>` anzeigen. Falls
 Teile des Stack-Setups fehlschlugen (z.B. DB-Seed ohne VPN), das kurz vermerken, aber die URL trotzdem zeigen
 — der Stack ist auch ohne Dev-DB erreichbar. **Ohne `--stack`** stattdessen den `iwf worktree start`-Hinweis
-zeigen (keine URL, da kein Stack läuft).
+zeigen (keine URL, da kein Stack läuft). **Bei `dockerStack: false`** gar keine Stack-Zeile — weder URL noch
+Start-Hinweis; stattdessen den Basis-Branch nennen.
 
 ## Bei Fehlern
 

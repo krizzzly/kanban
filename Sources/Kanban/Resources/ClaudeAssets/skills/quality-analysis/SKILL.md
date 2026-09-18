@@ -7,8 +7,10 @@ disable-model-invocation: true
 
 # QUALITÄTS-ANALYSE — Lösungsplan oder Feature-Branch
 
-> ⚙️ **Projektwerte** (`prefix`, `tasksPath`, `repoDir`, `worktreePrefix`, `stackDomain`, `gitlabProjectPath`):
-> stehen in `.claude/project.json` im Repo-Root. Platzhalter wie `<PREFIX>`/`<tasksPath>` stehen für diese Werte.
+> ⚙️ **Projektwerte** (`prefix`, `tasksPath`, `repoDir`, `worktreePrefix`, `dockerStack`, `stackDomain`,
+> `gitlabProjectPath`): stehen in `.claude/project.json` im Repo-Root. Platzhalter wie
+> `<PREFIX>`/`<tasksPath>` stehen für diese Werte. `dockerStack: false` heisst: kein Docker-Stack — dann
+> gibt es weder `stackDomain` noch `iwf`, und Befehle laufen direkt im Worktree.
 
 Prüfe die Qualität eines Features gegen relevante Coding Principles, Architekturregeln,
 Qualitätsanforderungen und Design Patterns — **entweder** den *Lösungsplan* vor der Implementierung

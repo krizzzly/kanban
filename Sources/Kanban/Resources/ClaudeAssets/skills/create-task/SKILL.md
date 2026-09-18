@@ -7,17 +7,18 @@ disable-model-invocation: true
 
 # CREATE TASK - Task-File Generator
 
-> ⚙️ **Projektwerte** (`prefix`, `tasksPath`, `repoDir`, `worktreePrefix`, `stackDomain`, `gitlabProjectPath`):
-> stehen in `.claude/project.json` im Repo-Root. Lies die Datei, bevor du einen Projektwert brauchst — nie raten.
+> ⚙️ **Projektwerte** (`prefix`, `tasksPath`, `repoDir`, `worktreePrefix`, `dockerStack`, `stackDomain`,
+> `gitlabProjectPath`): stehen in `.claude/project.json` im Repo-Root. Lies die Datei, bevor du einen
+> Projektwert brauchst — nie raten.
 
 Du erstellst ein neues Task-File im Projekt nach dem etablierten Schema und legst **per Default** direkt
 einen Git-Worktree dafür an.
 
 Platzhalter in spitzen Klammern (`<PREFIX>`, `<tasksPath>`, `<worktreePrefix>`, `<stackDomain>`) stehen im
 Folgenden für die entsprechenden Werte aus `.claude/project.json` — im Task-File landen immer die
-**aufgelösten** Werte, keine Platzhalter. `<stackDomain>` ist nur die TLD (z.B. `test`): der Haupt-Stack
-läuft auf `https://<repo-ordnername>.<stackDomain>`, ein Worktree-Stack auf
-`https://<worktree-ordnername>.<stackDomain>` (Ordnername = letzter Pfadbestandteil).
+**aufgelösten** Werte, keine Platzhalter. `<stackDomain>` gibt es nur in Projekten **mit** Stack; es ist
+nur die TLD (z.B. `test`): der Haupt-Stack läuft auf `https://<repo-ordnername>.<stackDomain>`, ein
+Worktree-Stack auf `https://<worktree-ordnername>.<stackDomain>` (Ordnername = letzter Pfadbestandteil).
 
 ## Input
 
@@ -26,11 +27,14 @@ Beschreibung des neuen Tasks: $ARGUMENTS
 ## Worktree-Verhalten (Default: AN)
 
 - **Standard:** Nach Erstellung des Task-Files wird automatisch ein Worktree angelegt (Schritt 5) — nur der
-  Worktree (Branch + Configs), **kein** Docker-Stack.
+  Worktree (Branch + Configs), **kein** Docker-Stack wird gestartet.
 - **Opt-out:** Wenn `$ARGUMENTS` das Flag `--no-worktree` enthält, Worktree-Erstellung überspringen.
   Entferne `--no-worktree` aus der Beschreibung, bevor sie ins Task-File geschrieben wird.
+- **Wie angelegt wird, entscheidet `dockerStack` in `.claude/project.json`:** `true` (oder fehlend) →
+  `iwf worktree create`; `false` → reiner Git-Worktree per `git worktree add`. Siehe Schritt 5.
 
-> Vollständige Befehls-/Flag-Referenz zu `iwf worktree`: `~/Library/Application Support/Kanban/claude/rules/worktree.md`.
+> Vollständige Befehls-/Flag-Referenz zu beiden Wegen:
+> `~/Library/Application Support/Kanban/claude/rules/worktree.md`.
 
 ---
 
@@ -160,8 +164,29 @@ Felder die du nicht sicher bestimmen kannst, markiere mit `[TODO: ...]`.
 **Falls `--no-worktree` NICHT im Input enthalten ist:**
 
 1. Branch-Suffix aus dem Dateinamen ableiten (englischer Titel ohne `<PREFIX>-NNNN_` und `.md`).
-2. `iwf worktree create NNNN <suffix>` ausführen (NNNN = nackte Ticket-Nummer; oder ohne Suffix, falls keiner vorhanden).
-3. Nach erfolgreichem Script-Lauf den Worktree-Block direkt unter die H1 des Task-Files einfügen:
+2. Worktree anlegen — **`dockerStack` aus `.claude/project.json` entscheidet, wie:**
+
+   **`dockerStack: true` (oder fehlend):**
+   ```bash
+   iwf worktree create NNNN <suffix>     # NNNN = nackte Ticket-Nummer; ohne Suffix, falls keiner da ist
+   ```
+
+   **`dockerStack: false`** — reiner Git-Worktree, Basis-Branch ermitteln statt annehmen:
+   ```bash
+   R=<repoDir>
+   BASE=$(git -C "$R" symbolic-ref --quiet --short refs/remotes/origin/HEAD)
+   if [ -z "$BASE" ]; then
+     for kandidat in origin/develop origin/main develop main; do
+       git -C "$R" rev-parse --verify --quiet "$kandidat" >/dev/null && { BASE="$kandidat"; break; }
+     done
+   fi
+   [ -z "$BASE" ] && BASE=HEAD
+   git -C "$R" worktree add <worktreePrefix>/<PREFIX>-NNNN \
+       -b feature/<PREFIX>-NNNN[_<suffix>] --no-track "$BASE"
+   ```
+
+3. Nach erfolgreichem Lauf den Worktree-Block direkt unter die H1 des Task-Files einfügen — **mit** Stack,
+   wenn es einen gibt:
 
    ```markdown
    > 🌳 **WORKTREE**: `<worktreePrefix>/<PREFIX>-NNNN`\
@@ -173,11 +198,24 @@ Felder die du nicht sicher bestimmen kannst, markiere mit `[TODO: ...]`.
    > in den WORKTREE. Git-Befehle mit `git -C <WORKTREE> ...`. Task-File/CLAUDE.md/Docs aus dem Haupt-Repo.
    ```
 
+   **Ohne Stack (`dockerStack: false`) entfällt die STACK-Zeile** — nicht auf `-` setzen, eine Zeile, die
+   nichts sagt, ist schlechter als keine. Dafür nennt die BRANCH-Zeile den Basis-Branch:
+
+   ```markdown
+   > 🌳 **WORKTREE**: `<worktreePrefix>/<PREFIX>-NNNN`\
+   > 🌿 **BRANCH**: `feature/<PREFIX>-NNNN[_<suffix>]` (von `<BASE>`)\
+   > 📅 **Angelegt**: <YYYY-MM-DD>
+   >
+   > 🧭 **Routing-Modell für Claude:** cwd bleibt Haupt-Repo. Code-Edits gehen mit absolutem Worktree-Pfad
+   > in den WORKTREE. Git-Befehle mit `git -C <WORKTREE> ...`. Task-File/CLAUDE.md/Docs aus dem Haupt-Repo.
+   ```
+
    Alle Platzhalter mit den aufgelösten Werten aus `.claude/project.json` füllen. Die Stack-URL ist erst
    nach Stack-Start erreichbar.
 
 4. Stack NICHT automatisch starten — also `iwf worktree create` ohne `--start` aufrufen; nur in der
-   Zusammenfassung erwähnen, wie er später gestartet wird (`iwf worktree start NNNN`).
+   Zusammenfassung erwähnen, wie er später gestartet wird (`iwf worktree start NNNN`). Ohne Stack entfällt
+   dieser Punkt ganz.
 
 **Falls `--no-worktree` gesetzt:** Worktree-Schritt komplett überspringen.
 
@@ -199,8 +237,10 @@ Worktree: [Pfad / "nicht angelegt (--no-worktree)"]
 ## Nächste Schritte
 - Analyse verfeinern: `/start-task <tasksPath>/{DATEINAME}`
 - Direkt umsetzen: `/solve-task <tasksPath>/{DATEINAME}`
-[falls Worktree angelegt:]
+[falls Worktree angelegt UND dockerStack: true:]
 - Stack im Worktree starten: `iwf worktree start {NNNN}`
+[falls Worktree angelegt UND dockerStack: false:]
+- Kein Docker-Stack in diesem Projekt — Branch von {BASE} abgezweigt
 ```
 
 ---
@@ -216,3 +256,5 @@ Worktree: [Pfad / "nicht angelegt (--no-worktree)"]
 7. **Sections:** Alle Pflicht-Sections müssen vorhanden sein: Status, Beschreibung, Analyse, Lösungsplan, Abschluss-Checkliste
 8. **Pfad:** Task-Files liegen unter `<tasksPath>` (aus `.claude/project.json`) — nirgendwo sonst
 9. **Worktree-Default:** Worktree wird automatisch angelegt — Opt-out nur via `--no-worktree` im Input
+10. **`dockerStack` zuerst lesen:** Es entscheidet über den Anlege-Befehl und darüber, ob der
+    Worktree-Block eine STACK-Zeile bekommt

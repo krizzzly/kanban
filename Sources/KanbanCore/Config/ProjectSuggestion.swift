@@ -22,7 +22,14 @@ public enum ProjectSuggestion {
         }
     }
 
-    public static func record(for rawKey: String, from config: JSONValue) -> ProjectRecord {
+    /// Liegt an diesem Pfad eine Datei? Injizierbar, damit der `.iwf.yml`-Blick unten im Test
+    /// nicht an der Platte dieser Maschine hängt.
+    public typealias FileCheck = @Sendable (String) -> Bool
+
+    public static let defaultFileCheck: FileCheck = { FileManager.default.fileExists(atPath: $0) }
+
+    public static func record(for rawKey: String, from config: JSONValue,
+                              fileExists: FileCheck = ProjectSuggestion.defaultFileCheck) -> ProjectRecord {
         let key = rawKey.trimmingCharacters(in: .whitespaces)
         guard !key.isEmpty else { return ProjectRecord() }
 
@@ -46,9 +53,34 @@ public enum ProjectSuggestion {
             record.dockerhub = .init(namespace: literal(config, "dockerhub", "namespace"),
                                      repository: pattern(config, "dockerhub", "repository", key) ?? key)
         }
+        // Docker-Stack: das einzige Feld, das nicht aus der Config, sondern aus dem **Repo** kommt.
+        // Eine `.iwf.yml` dort ist die Stack-Definition selbst — fehlt sie, gibt es keinen Stack.
+        // Geraten wird nur der Vorschlag: entschieden wird im Editor.
+        if !hasIwfConfig(record, key: key, in: config, fileExists: fileExists) {
+            record.usesDockerStack = false
+        }
         // Vertec (Projekt/Phase/Task), `repoDir` und ein abweichender Jira-Host folgen keinem
         // ableitbaren Muster — bewusst leer.
         return record
+    }
+
+    /// Liegt im (vorgeschlagenen) Repo-Ordner eine `.iwf.yml`?
+    ///
+    /// Der Ordner wird genauso abgeleitet wie in `KanbanConfig.resolve`: `repoDir`, sonst das erste
+    /// Segment des Tasks-Pfads, beides relativ zu `basePath`. Lässt sich kein Ordner bestimmen,
+    /// lautet die Antwort **nein** — ein Vorschlag „mit Stack" ohne jeden Beleg wäre geraten, und
+    /// die teurere Richtung: ein abgeschalteter Schalter nimmt nur die Docker-Hälfte weg.
+    private static func hasIwfConfig(_ record: ProjectRecord, key: String, in config: JSONValue,
+                                     fileExists: FileCheck) -> Bool {
+        let basePath = (config.value(at: ["basePath"])?.stringValue ?? "~/code" as String)
+        let expandedBase = (basePath as NSString).expandingTildeInPath
+        let candidate = record.repoDir
+            ?? record.tasksPath?.split(separator: "/").first.map(String.init)
+            ?? key
+        let expanded = (candidate as NSString).expandingTildeInPath
+        let repoDir = expanded.hasPrefix("/") ? expanded
+            : (expandedBase as NSString).appendingPathComponent(expanded)
+        return fileExists((repoDir as NSString).appendingPathComponent(".iwf.yml"))
     }
 
     // MARK: - Musterableitung

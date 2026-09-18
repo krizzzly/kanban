@@ -52,6 +52,11 @@ struct TerminalTabsView: View {
             .onChange(of: worktreeSession) {
                 if worktreeSession == nil, selected == .worktree { selected = .claude }
             }
+            // Projektwechsel auf eins ohne Stack: der offene Stack-Reiter hat keinen Knopf mehr und
+            // zeigte sonst weiter ein Panel, das es nicht mehr gibt.
+            .onChange(of: model.hasStack) { _, hasStack in
+                if !hasStack, selected == .maintree || selected == .stack { selected = .claude }
+            }
             .sheet(isPresented: $composing) {
                 PromptComposerSheet(model: model)
             }
@@ -63,9 +68,13 @@ struct TerminalTabsView: View {
     private var tabBar: some View {
         HStack(spacing: 4) {
             // Maintree links vom Worktree: dasselbe Panel, anderes Ziel — der Stack des Haupt-Repos.
-            // Er hängt am Projekt, nicht am Ticket, und ist deshalb immer da.
-            pill("Maintree", active: selected == .maintree) { selected = .maintree }
-            pill("Worktree", active: selected == .stack) { selected = .stack }
+            // Er hängt am Projekt, nicht am Ticket, und ist deshalb immer da — **sofern** das
+            // Projekt überhaupt einen Stack hat. Ohne ihn fallen beide Reiter weg statt auszugrauen:
+            // ein Reiter, der nie angeht, ist keine Auskunft.
+            if model.hasStack {
+                pill("Maintree", active: selected == .maintree) { selected = .maintree }
+                pill("Worktree", active: selected == .stack) { selected = .stack }
+            }
             pill("Claude", active: selected == .claude) { selected = .claude }
             if worktreeSession != nil {
                 pill("Terminal", active: selected == .worktree) { selected = .worktree }
@@ -89,7 +98,7 @@ struct TerminalTabsView: View {
     /// the Claude console — the worktree/extra shells have no prompts.
     @ViewBuilder
     private var promptsButton: some View {
-        if selected == .claude || selected == .stack {
+        if selected == .claude || (selected == .stack && model.hasStack) {
             Button { showPrompts.toggle() } label: {
                 Image(systemName: showPrompts ? "sidebar.right" : "text.bubble")
                     .font(.system(size: 12, weight: .semibold))
@@ -140,9 +149,9 @@ struct TerminalTabsView: View {
     @ViewBuilder
     private func content(claude: String) -> some View {
         switch selected {
-        case .maintree:
+        case .maintree where model.hasStack:
             WorktreeStackView(model: model, target: .maintree)
-        case .stack:
+        case .stack where model.hasStack:
             WorktreeStackView(model: model, target: .worktree)
         case .worktree:
             if let worktreeSession {

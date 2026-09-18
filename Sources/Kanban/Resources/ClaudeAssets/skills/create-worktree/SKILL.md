@@ -7,19 +7,31 @@ disable-model-invocation: true
 
 # CREATE WORKTREE - Git-Worktree für Task anlegen
 
-> ⚙️ **Projektwerte** (`prefix`, `tasksPath`, `repoDir`, `worktreePrefix`, `stackDomain`, `gitlabProjectPath`):
-> stehen in `.claude/project.json` im Repo-Root. Lies die Datei, bevor du einen Projektwert brauchst — nie raten.
+> ⚙️ **Projektwerte** (`prefix`, `tasksPath`, `repoDir`, `worktreePrefix`, `dockerStack`, `stackDomain`,
+> `gitlabProjectPath`): stehen in `.claude/project.json` im Repo-Root. Lies die Datei, bevor du einen
+> Projektwert brauchst — nie raten.
 
-Du erstellst einen Git-Worktree für einen bestehenden Task, indem du `iwf worktree create` aufrufst und
-anschliessend den Worktree-Pfad ganz oben im Task-File verankerst.
+Du erstellst einen Git-Worktree für einen bestehenden Task und verankerst den Worktree-Pfad ganz oben im
+Task-File.
+
+## Zwei Wege — `dockerStack` entscheidet
+
+**Lies `.claude/project.json`, bevor du irgendetwas tust.** Der Schlüssel `dockerStack` bestimmt den
+kompletten Ablauf:
+
+| `dockerStack`        | Weg                                                                            |
+|----------------------|--------------------------------------------------------------------------------|
+| `true` (oder fehlend)| **Weg A:** `iwf worktree create` — Netbird-Pre-Flight, Image-Build, TLS-Cert, DB-Seed. |
+| `false`              | **Weg B:** reiner Git-Worktree (`git worktree add`). Kein `iwf`, kein Stack, kein Netbird. |
 
 Platzhalter in spitzen Klammern (`<PREFIX>`, `<tasksPath>`, `<worktreePrefix>`, `<stackDomain>`) stehen im
 Folgenden für die entsprechenden Werte aus `.claude/project.json` — im Task-File landen immer die
-**aufgelösten** Werte, keine Platzhalter. `<stackDomain>` ist nur die TLD (z.B. `test`): der Haupt-Stack
-läuft auf `https://<repo-ordnername>.<stackDomain>`, ein Worktree-Stack auf
+**aufgelösten** Werte, keine Platzhalter. `<stackDomain>` gibt es nur auf Weg A; es ist nur die TLD (z.B.
+`test`): der Haupt-Stack läuft auf `https://<repo-ordnername>.<stackDomain>`, ein Worktree-Stack auf
 `https://<worktree-ordnername>.<stackDomain>` (Ordnername = letzter Pfadbestandteil).
 
-> Vollständige Befehls-/Flag-Referenz zu `iwf worktree`: `~/Library/Application Support/Kanban/claude/rules/worktree.md`.
+> Vollständige Befehls-/Flag-Referenz zu beiden Wegen:
+> `~/Library/Application Support/Kanban/claude/rules/worktree.md`.
 
 ## Input
 
@@ -30,19 +42,26 @@ Akzeptierte Formate:
 - **Ticket-Nummer:** `<PREFIX>-1234` → das passende Task-File wird per Glob gesucht (`<tasksPath>/<PREFIX>-1234*.md`)
 - **Task-File-Pfad:** `<tasksPath>/<PREFIX>-1234_some_title.md` → direkt nutzen
 
+Flag `--start` (Stack direkt hochfahren) gilt **nur auf Weg A**. Auf Weg B wird es abgelehnt (siehe
+Schritt 3B) — es gibt dort keinen Stack, den man starten könnte.
+
 ## Voraussetzungen
 
 - Ein Task-File existiert bereits unter `<tasksPath>/`. Falls nein → erst `/get-task <TICKET>` oder
   `/create-task ...` ausführen.
 - Aktueller Pfad ist das Haupt-Repository (`<repoDir>`), NICHT ein Worktree.
-- **Netbird-VPN-Tunnel** (nötig für den DB-Sync) — Phase 0 ruft `netbird up` auf (idempotent) und
-  wiederholt bei Bedarf per hook-triggernder Rückfrage, bis die Ausgabe `Connected`/`Already Connected` meldet.
+- **Nur Weg A:** **Netbird-VPN-Tunnel** (nötig für den DB-Sync) — Phase 0 ruft `netbird up` auf
+  (idempotent) und wiederholt bei Bedarf per hook-triggernder Rückfrage, bis die Ausgabe
+  `Connected`/`Already Connected` meldet.
 
 ---
 
 ## Workflow
 
-### Phase 0: Pre-Flight — DB-Sync-Verbindung (Netbird) sicherstellen
+### Phase 0: Pre-Flight — DB-Sync-Verbindung (Netbird) sicherstellen — **nur Weg A**
+
+> **Bei `dockerStack: false` komplett überspringen.** Ohne Stack wird keine DB geseedet, also ist auch
+> kein Tunnel nötig. Direkt zu Phase 1.
 
 **Schritt 0: Netbird-Verbindung zum Management sicherstellen (PFLICHT, vor allem anderen)**
 
@@ -87,7 +106,8 @@ Beurteile die Ausgabe:
 **Schritt 2: Nummer + Branch-Suffix extrahieren**
 
 Aus dem Dateinamen `<PREFIX>-XXXX[_<english_title>].md` die nackte Ticket-**Nummer** und den englischen Titel
-extrahieren. `iwf worktree create` erwartet die **nackte Nummer** als erstes Argument (NICHT `<PREFIX>-XXXX`):
+extrahieren. `iwf worktree create` erwartet die **nackte Nummer** als erstes Argument (NICHT `<PREFIX>-XXXX`);
+der Worktree-Ordner heisst auf beiden Wegen `<PREFIX>-XXXX`:
 
 | Task-File                                | TICKET          | NUMMER  | SUFFIX                  |
 |------------------------------------------|-----------------|---------|-------------------------|
@@ -96,9 +116,9 @@ extrahieren. `iwf worktree create` erwartet die **nackte Nummer** als erstes Arg
 
 ---
 
-### Phase 2: `iwf worktree create` aufrufen
+### Phase 2: Worktree anlegen
 
-**Schritt 3: Worktree (+ optional Stack) anlegen**
+**Schritt 3A: Weg A — `iwf worktree create` (`dockerStack: true`)**
 
 ```bash
 # Mit Branch-Suffix (nur vorbereiten, Stack NICHT starten):
@@ -132,6 +152,44 @@ Weitere `create`-Flags bei Bedarf: `--dbdump <env|pfad>` (Seed überschreiben), 
 `<worktreePrefix>/<PREFIX>-<NUMMER>`, Stack-Name = Worktree-Ordnername kleingeschrieben, URL =
 `https://<worktree-ordnername>.<stackDomain>`).
 
+**Schritt 3B: Weg B — `git worktree add` (`dockerStack: false`)**
+
+Steht `--start` im Input, **hier abbrechen** und sagen warum:
+
+```
+❌ --start gibt es in diesem Projekt nicht: dockerStack ist false, also gibt es keinen Docker-Stack
+   zu starten. Ohne das Flag erneut aufrufen — der Git-Worktree wird ganz normal angelegt.
+```
+
+Sonst: erst den **Basis-Branch ermitteln** (nie hart `develop` annehmen — in einem Repo ohne `develop`
+schlüge `git worktree add` fehl, und in einem mit `main` als Default zweigte der Branch vom falschen Stand ab):
+
+```bash
+R=<repoDir>
+BASE=$(git -C "$R" symbolic-ref --quiet --short refs/remotes/origin/HEAD)   # z.B. "origin/main"
+if [ -z "$BASE" ]; then
+  for kandidat in origin/develop origin/main develop main; do
+    git -C "$R" rev-parse --verify --quiet "$kandidat" >/dev/null && { BASE="$kandidat"; break; }
+  done
+fi
+[ -z "$BASE" ] && BASE=HEAD    # rein lokales Repo ohne origin
+echo "Basis-Branch: $BASE"
+```
+
+Dann Worktree + Branch in **einem** Schritt:
+
+```bash
+git -C <repoDir> worktree add <worktreePrefix>/<PREFIX>-<NUMMER> \
+    -b feature/<PREFIX>-<NUMMER>[_<suffix>] --no-track "$BASE"
+```
+
+Das legt an: den Worktree-Ordner, den Branch `feature/<PREFIX>-<NUMMER>[_<suffix>]` (local-only, kein
+Upstream) vom ermittelten Basis-Branch. Gitignored Configs werden **nicht** kopiert — es gibt keine.
+
+**Schlägt der Befehl fehl** (Branch existiert schon, Pfad belegt, Basis-Branch unbekannt): die Meldung von
+`git` unverändert durchreichen, Ursache benennen und **das Task-File nicht anfassen**. Es ist nichts halb
+angelegt, das aufgeräumt werden müsste.
+
 ---
 
 ### Phase 3: Task-File verankern
@@ -142,7 +200,7 @@ Lies das Task-File und füge **direkt nach der H1-Titelzeile** (`# <PREFIX>-XXXX
 Falls bereits ein Worktree-Block existiert (Quote mit `🌳 **WORKTREE**`), aktualisiere ihn statt einen
 neuen einzufügen.
 
-**Einzufügender Block** (mit aufgelösten Werten, keine Platzhalter):
+**Weg A (mit Stack)** — vier Metadaten-Zeilen:
 
 ```markdown
 > 🌳 **WORKTREE**: `<worktreePrefix>/<PREFIX>-XXXX`\
@@ -154,11 +212,23 @@ neuen einzufügen.
 > in den WORKTREE. Git-Befehle mit `git -C <WORKTREE> ...`. Task-File/CLAUDE.md/Docs aus dem Haupt-Repo.
 ```
 
-Die vier Metadaten-Zeilen (WORKTREE/BRANCH/STACK/Angelegt) enden auf einen Backslash `\` — das ist ein
-harter Markdown-Zeilenumbruch. Ohne ihn kollabiert der Blockquote im gerenderten Task-File zu einer
-einzigen Zeile. Backslashes beim Einfügen also mitkopieren, nicht entfernen.
+**Weg B (ohne Stack)** — dieselbe Form, aber **ohne die STACK-Zeile**. Nicht auf `-` setzen: eine Zeile, die
+nichts sagt, ist schlechter als keine. Dafür nennt der Block den Basis-Branch, von dem abgezweigt wurde:
 
-**Beispiel-Platzierung:**
+```markdown
+> 🌳 **WORKTREE**: `<worktreePrefix>/<PREFIX>-XXXX`\
+> 🌿 **BRANCH**: `feature/<PREFIX>-XXXX[_<suffix>]` (von `<BASE>`)\
+> 📅 **Angelegt**: <YYYY-MM-DD>
+>
+> 🧭 **Routing-Modell für Claude:** cwd bleibt Haupt-Repo. Code-Edits gehen mit absolutem Worktree-Pfad
+> in den WORKTREE. Git-Befehle mit `git -C <WORKTREE> ...`. Task-File/CLAUDE.md/Docs aus dem Haupt-Repo.
+```
+
+Die Metadaten-Zeilen enden auf einen Backslash `\` — das ist ein harter Markdown-Zeilenumbruch. Ohne ihn
+kollabiert der Blockquote im gerenderten Task-File zu einer einzigen Zeile. Backslashes beim Einfügen also
+mitkopieren, nicht entfernen. (Die **letzte** Metadaten-Zeile — `📅 Angelegt` — braucht keinen.)
+
+**Beispiel-Platzierung (Weg A):**
 
 ```markdown
 # <PREFIX>-4426 - Anhänge werden nicht in der Dateiablage angezeigt
@@ -177,6 +247,9 @@ Typ: Bug
 🟡 In Arbeit
 ```
 
+> **Bestehende Task-Files nicht rückwirkend umschreiben.** Ein alter Block mit `🐳 **STACK**: -` bleibt, wie
+> er ist — nur wenn du ihn ohnehin gerade aktualisierst, gilt die Form oben.
+
 **Schritt 5: Status auf "In Arbeit" setzen**
 
 Falls der Status noch `🔴 Offen` ist, auf `🟡 In Arbeit` aktualisieren.
@@ -187,7 +260,7 @@ Falls der Status noch `🔴 Offen` ist, auf `🟡 In Arbeit` aktualisieren.
 
 **Schritt 6: Ergebnis ausgeben**
 
-Übernimm den Output von `iwf worktree create` und ergänze die Task-File-relevanten Infos:
+**Weg A** — übernimm den Output von `iwf worktree create` und ergänze die Task-File-relevanten Infos:
 
 ```
 ✅ TASK BEREIT FÜR WORKTREE-ARBEIT
@@ -206,21 +279,43 @@ Task:     <tasksPath>/<PREFIX>-XXXX*.md (Worktree-Block verankert, Status 🟡)
   /solve-task <tasksPath>/<PREFIX>-XXXX*.md
 ```
 
+**Weg B** — ohne Stack-Zeilen, dafür mit dem Basis-Branch (das ist die eine Angabe, die hier nicht aus einer
+Konvention folgt):
+
+```
+✅ TASK BEREIT FÜR WORKTREE-ARBEIT
+
+Ticket:   <PREFIX>-XXXX
+Branch:   feature/<PREFIX>-XXXX[_<suffix>]  (von <BASE>)
+Worktree: <worktreePrefix>/<PREFIX>-XXXX
+Task:     <tasksPath>/<PREFIX>-XXXX*.md (Worktree-Block verankert, Status 🟡)
+
+Dieses Projekt hat keinen Docker-Stack (dockerStack: false) — reiner Git-Worktree.
+
+⚙️  Umsetzung starten (im Haupt-Repo):
+  /solve-task <tasksPath>/<PREFIX>-XXXX*.md
+```
+
 ---
 
 ## Wichtige Regeln
 
-1. **Nackte Nummer:** `iwf worktree create` erwartet die Ticket-**Nummer** (`4519`), nicht `<PREFIX>-4519`.
+1. **Erst `.claude/project.json` lesen:** `dockerStack` entscheidet über den ganzen Ablauf. Raten heisst
+   hier entweder ein `iwf`-Aufruf ins Leere oder ein fehlender Stack, den alle erwarten.
+2. **Nackte Nummer:** `iwf worktree create` erwartet die Ticket-**Nummer** (`4519`), nicht `<PREFIX>-4519`.
    Vom Haupt-Repo aus ausführen (nicht aus einem Worktree).
-2. **Stack ist opt-in:** Ohne `--start` wird der Stack nur vorbereitet, nicht hochgefahren — erst `--start`
-   (bzw. später `iwf worktree start <NUMMER>`) startet ihn. Grund für das Opt-in: Ressourcen-Verbrauch,
-   lange Laufzeit, mögliche Konflikte zwischen parallelen Stacks.
-3. **Block-Position:** Worktree-Block IMMER direkt unter H1. Bestehenden Block ersetzen, nicht duplizieren.
-4. **Branch-Schema:** `feature/<PREFIX>-<NUMMER>[_<english_title>]` — konsistent mit `solve-task`.
-5. **Base-Branch:** Neue Branches IMMER von `origin/develop`.
-6. **Suffix früh vergeben:** Branch-Suffix schon beim `create` mitgeben — ein Rename ist nur solange
+3. **Stack ist opt-in (Weg A):** Ohne `--start` wird der Stack nur vorbereitet, nicht hochgefahren — erst
+   `--start` (bzw. später `iwf worktree start <NUMMER>`) startet ihn. Grund für das Opt-in:
+   Ressourcen-Verbrauch, lange Laufzeit, mögliche Konflikte zwischen parallelen Stacks.
+4. **`--start` ohne Stack wird abgelehnt** (Weg B) — mit Begründung, nicht stillschweigend ignoriert.
+5. **Block-Position:** Worktree-Block IMMER direkt unter H1. Bestehenden Block ersetzen, nicht duplizieren.
+   Die STACK-Zeile steht nur auf Weg A.
+6. **Branch-Schema:** `feature/<PREFIX>-<NUMMER>[_<english_title>]` — konsistent mit `solve-task`.
+7. **Base-Branch:** Weg A = `origin/develop` (iwf-Konvention). Weg B = **ermittelt** (origin/HEAD →
+   origin/develop → origin/main → develop → main → HEAD) und in der Zusammenfassung genannt.
+8. **Suffix früh vergeben:** Branch-Suffix schon beim Anlegen mitgeben — ein Rename ist nur solange
    lokal/ungepusht gefahrlos.
-7. **Secrets-Handling:** `iwf` kopiert `secrets/sensible.env` mit, gibt sie aber NIE im Klartext aus.
+9. **Secrets-Handling:** `iwf` kopiert `secrets/sensible.env` mit, gibt sie aber NIE im Klartext aus.
 
 ---
 
@@ -228,14 +323,18 @@ Task:     <tasksPath>/<PREFIX>-XXXX*.md (Worktree-Block verankert, Status 🟡)
 
 | Fehler                                                      | Reaktion                                                          |
 |-------------------------------------------------------------|-------------------------------------------------------------------|
-| `netbird up`-Ausgabe ≠ `Connected`/`Already Connected` (Phase 0) | per `AskUserQuestion` erneut versuchen — Schleife bis `Connected`/`Already Connected` |
-| Kein Task-File gefunden                                     | Hinweis auf `get-task` oder `create-task` ausgeben              |
+| `netbird up`-Ausgabe ≠ `Connected`/`Already Connected` (Phase 0, Weg A) | per `AskUserQuestion` erneut versuchen — Schleife bis `Connected`/`Already Connected` |
+| Kein Task-File gefunden                                     | Hinweis auf `get-task` oder `create-task` ausgeben                |
 | Mehrere passende Task-Files                                 | Benutzer fragen welches gemeint ist                               |
 | `iwf` läuft aus einem Worktree heraus                       | Benutzer ins Haupt-Repo schicken                                  |
 | `iwf worktree create` bricht ab (z.B. Stack-Konflikt, Cert) | Output prüfen; Eingabe (nackte Nummer) korrekt weitergeben        |
+| `--start` bei `dockerStack: false`                          | Ablehnen mit Begründung (Schritt 3B), nichts anlegen              |
+| `git worktree add` schlägt fehl (Branch/Pfad belegt)        | Meldung durchreichen, Ursache benennen, **Task-File nicht anfassen** |
+| Kein `origin`-Remote (rein lokales Repo)                    | Basis-Branch = `HEAD`; in der Zusammenfassung ausdrücklich nennen |
 | Bestehender Worktree, Branch unterscheidet sich             | Benutzer informieren — manuell prüfen                             |
 
 ---
 
-Beginne mit Phase 0: Pre-Flight (Netbird-Check). Nur bei bestehender Management-Verbindung weiter mit
-Phase 1: Eingabe normalisieren.
+Beginne damit, `.claude/project.json` zu lesen und `dockerStack` festzustellen. Auf Weg A dann Phase 0
+(Netbird-Check) und erst bei bestehender Management-Verbindung weiter mit Phase 1; auf Weg B direkt
+Phase 1.

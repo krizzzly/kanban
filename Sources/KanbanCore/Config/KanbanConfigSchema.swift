@@ -56,6 +56,23 @@ public enum KanbanConfigSchema {
                                      + "aus Task-Files, Worktrees und Merge Requests. Der "
                                      + "Ticket-Präfix bleibt trotzdem nötig — er benennt Task-Files "
                                      + "und Branches, nicht die Jira-Anbindung."),
+                // Direkt darunter, weil es dieselbe Form hat und dieselbe Reichweite: ein Schalter,
+                // der eine ganze Hälfte des Projekts wegnimmt.
+                ProjectFieldSpec("dockerStack", "Docker-Stack", kind: .bool(defaultOn: true),
+                                 required: false,
+                                 help: "Aus = Projekt ohne eigenen Docker-Stack (z.B. ein Paket "
+                                     + "oder ein Skript-Repo). Es entfallen die Reiter Maintree "
+                                     + "und Worktree, die Snapshots, „Stacks stoppen\" und jeder "
+                                     + "iwf-Aufruf; Worktrees werden als reine Git-Worktrees "
+                                     + "angelegt (git worktree add). Es bleiben: Worktrees, "
+                                     + "Branches, Task-Files, Commits und Merge Requests. "
+                                     + "Vorbelegt beim Anlegen anhand einer .iwf.yml im Repo — "
+                                     + "entschieden wird hier. Läuft gerade ein Stack dieses "
+                                     + "Projekts, bleibt er nach dem Abschalten laufen; er "
+                                     + "verschwindet nur aus der Oberfläche (stoppen z.B. mit "
+                                     + "iwf worktree stop <NR>). Teilen sich zwei Projekte ein "
+                                     + "Repo, gehört <repo>/.claude/project.json dem zuletzt "
+                                     + "gewählten — dann sollten beide hier gleich stehen."),
                 ProjectFieldSpec("prefix", "Ticket-Präfix", required: true, placeholder: "EVEN"),
                 ProjectFieldSpec("tasksPath", "Tasks-Pfad", required: true,
                                  placeholder: "~/Library/Application Support/Kanban/tasks/even",

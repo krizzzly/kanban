@@ -285,7 +285,9 @@ struct TopBarToolbar: ToolbarContent {
     @ViewBuilder
     private var stackSweepButton: some View {
         let finished = model.stackSweep.finished.count
-        if finished > 0 {
+        // `model.hasStack` steht mit da, obwohl der Zähler ohne Stack ohnehin 0 bleibt: der Knopf
+        // soll an derselben Bedingung hängen wie die Reiter, nicht an einer Nebenwirkung.
+        if model.hasStack, finished > 0 {
             Button {
                 model.openStackSweep()
             } label: {
