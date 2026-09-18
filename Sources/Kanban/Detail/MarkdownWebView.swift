@@ -287,7 +287,9 @@ enum HTMLTemplate {
           --bg: \(MarkdownTheme.hex(theme.background));
           --text: \(MarkdownTheme.hex(theme.text));
           --secondary-text: \(MarkdownTheme.hex(theme.secondaryText));
-          --bg2: \(MarkdownTheme.hex(theme.codeBackground));   /* code, Tabellenköpfe, Frontmatter */
+          /* Code, Tabellenköpfe, Zebrastreifen, Frontmatter: aus dem Blatt abgeleitet
+             (`markdown.shade`), sofern keine feste Farbe gesetzt ist. */
+          --bg2: \(MarkdownTheme.hex(theme.flaeche));
           --link: \(MarkdownTheme.hex(theme.link));
           --border: \(MarkdownTheme.hex(theme.border));
           --divider: \(MarkdownTheme.hex(theme.divider));

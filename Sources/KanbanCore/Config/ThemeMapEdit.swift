@@ -87,6 +87,34 @@ public enum ThemeMapEdit {
     }
 }
 
+/// Die feste Flächenfarbe wegräumen, die eine Fassung von der **alten** mitgelieferten geerbt hat.
+///
+/// Bis die Flächen aus dem Blatt abgeleitet wurden, trugen `Blatt` und `Blatt Dunkel` eine feste
+/// `codeBackground`. Wer eine eigene Fassung als Kopie anlegte, erbte sie mit — und änderte dann
+/// den Hintergrund, blieben kaltgraue Codeblöcke auf cremefarbenem Blatt stehen. Genau der Fall,
+/// der das hier ausgelöst hat.
+///
+/// Entfernt wird **nur**, was bitgleich einer dieser alten Vorgaben ist: eine selbst gewählte Farbe
+/// ist eine Entscheidung und bleibt. Trifft es zufällig doch eine selbst gesetzte, ist der
+/// abgeleitete Wert an derselben Stelle (`#f0f0f0` statt `#f1f1f4`) — und das Feld steht weiterhin
+/// in den Einstellungen.
+public enum GeerbteFlaechenfarbe {
+    static let alteVorgaben = ["#f1f1f4", "#22262d"]
+
+    @discardableResult
+    public static func entferne(_ root: inout JSONValue) -> Int {
+        let pfad = ["markdown", "themes"]
+        var entfernt = 0
+        for name in (root.value(at: pfad)?.objectValue ?? [:]).keys {
+            let farbe = root.value(at: pfad + [name, "codeBackground"])?.stringValue?.lowercased()
+            guard let farbe, alteVorgaben.contains(farbe) else { continue }
+            root.set(nil, at: pfad + [name, "codeBackground"])
+            entfernt += 1
+        }
+        return entfernt
+    }
+}
+
 /// Der Umzug des flachen `markdown`-Blocks in eine benannte Fassung.
 ///
 /// Vor den benannten Fassungen standen die Werte direkt unter `markdown`. Diese Form bleibt
@@ -97,8 +125,8 @@ public enum MarkdownAltblock {
     /// Die Schlüssel, die früher direkt unter `markdown` standen. `theme` und `themes` gehören
     /// **nicht** dazu: die beschreiben die Auswahl, nicht eine Fassung.
     public static let schluessel = ["fontFamily", "headingFont", "headingFonts", "background",
-                                    "text", "secondaryText", "codeBackground", "link", "border",
-                                    "fontSize", "headings"]
+                                    "text", "secondaryText", "codeBackground", "shade", "link",
+                                    "border", "fontSize", "headings"]
 
     /// Übernimmt einen vorhandenen flachen Block als Fassung `Eigene` und macht sie zur aktiven,
     /// falls noch keine gewählt ist. Gibt `true` zurück, wenn etwas umgezogen ist.

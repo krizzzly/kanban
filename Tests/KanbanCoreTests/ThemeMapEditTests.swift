@@ -161,6 +161,31 @@ final class ThemeMapEditTests: XCTestCase {
         XCTAssertNil(terminal.fehler(in: root.value(at: ["terminal", "themes", "Kanban Dark"])))
     }
 
+    // MARK: - Geerbte Flächenfarbe
+
+    func testGeerbteFlaechenfarbeFaelltWeg() {
+        var root = JSONValue.object(["markdown": .object(["themes": .object([
+            "Blatt": .object(["background": .string("#f5eeda"),
+                              "codeBackground": .string("#f1f1f4")]),
+            "Blatt Dunkel": .object(["background": .string("#16181c"),
+                                     "codeBackground": .string("#22262D")]),
+        ])])])
+        XCTAssertEqual(GeerbteFlaechenfarbe.entferne(&root), 2, "auch in Grossschreibung")
+        XCTAssertNil(root.value(at: ["markdown", "themes", "Blatt", "codeBackground"]))
+        XCTAssertEqual(root.value(at: ["markdown", "themes", "Blatt", "background"])?.stringValue,
+                       "#f5eeda", "sonst nichts angefasst")
+    }
+
+    /// Eine selbst gewählte Farbe ist eine Entscheidung und bleibt stehen.
+    func testEigeneFlaechenfarbeBleibt() {
+        var root = JSONValue.object(["markdown": .object(["themes": .object([
+            "Meine": .object(["codeBackground": .string("#112233")]),
+        ])])])
+        XCTAssertEqual(GeerbteFlaechenfarbe.entferne(&root), 0)
+        XCTAssertEqual(root.value(at: ["markdown", "themes", "Meine", "codeBackground"])?.stringValue,
+                       "#112233")
+    }
+
     // MARK: - Altblock-Umzug
 
     func testAltblockZiehtVerlustfreiUm() throws {

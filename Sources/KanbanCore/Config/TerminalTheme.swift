@@ -249,7 +249,9 @@ public enum KanbanSettingsStore {
             background: farbe(raw.background, vorgabe.background),
             text: farbe(raw.text, vorgabe.text),
             secondaryText: farbe(raw.secondaryText, vorgabe.secondaryText),
-            codeBackground: farbe(raw.codeBackground, vorgabe.codeBackground),
+            // Ohne Eintrag **nicht** die Vorgabefarbe, sondern nil: dann folgt die Fläche dem Blatt.
+            codeBackground: raw.codeBackground.flatMap(TerminalRGB.init(hex:)),
+            shade: min(max(raw.shade?.wert ?? MarkdownTheme.shadeVorgabe, 0), 100),
             link: farbe(raw.link, vorgabe.link),
             border: farbe(raw.border, vorgabe.border),
             fontSizes: resolveFontSizes(body: raw.fontSize, headings: raw.headings),
@@ -310,6 +312,8 @@ struct RawMarkdown: Decodable {
     let text: String?
     let secondaryText: String?
     let codeBackground: String?
+    /// Abdunklung der Flächen in Prozent, relativ zum Hintergrund.
+    let shade: LenientNumber?
     let link: String?
     let border: String?
     let fontSize: LenientNumber?
@@ -322,8 +326,8 @@ struct RawMarkdown: Decodable {
     /// als Fassung `Eigene` gilt oder die mitgelieferten greifen.
     var istLeer: Bool {
         fontFamily == nil && headingFont == nil && background == nil && text == nil
-            && secondaryText == nil && codeBackground == nil && link == nil && border == nil
-            && fontSize == nil && headings == nil && headingFonts == nil
+            && secondaryText == nil && codeBackground == nil && shade == nil && link == nil
+            && border == nil && fontSize == nil && headings == nil && headingFonts == nil
     }
 }
 
@@ -467,7 +471,6 @@ let defaultConfigJSON = """
         "background": "#ffffff",
         "text": "#060606",
         "secondaryText": "#6b6e7b",
-        "codeBackground": "#f1f1f4",
         "link": "#2c65cf",
         "border": "#e4e4e8",
         "fontSize": 15,
@@ -477,7 +480,6 @@ let defaultConfigJSON = """
         "background": "#16181c",
         "text": "#e6e7ea",
         "secondaryText": "#9aa0ab",
-        "codeBackground": "#22262d",
         "link": "#7aa7ff",
         "border": "#2d323b",
         "fontSize": 15,

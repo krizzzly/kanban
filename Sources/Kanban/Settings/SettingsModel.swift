@@ -99,6 +99,9 @@ final class SettingsModel {
         // Erst der Altblock: sonst schöben die mitgelieferten Fassungen ihn beiseite — `themes`
         // gewinnt beim Laden, und die von Hand gesetzten Farben wären stumm weg.
         MarkdownAltblock.migriere(&doc.root)
+        // Eine Flächenfarbe, die nur aus der alten Vorgabe mitkopiert wurde, hielte die Fläche
+        // fest, obwohl sie dem Blatt folgen soll (`GeerbteFlaechenfarbe`).
+        GeerbteFlaechenfarbe.entferne(&doc.root)
         for spec in KanbanConfigSchema.sections.compactMap(\.groups).flatMap({ $0 }).compactMap(\.themeMap) {
             ThemeMapEdit.ergaenzeVorlagen(&doc.root, spec: spec)
         }

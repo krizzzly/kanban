@@ -101,6 +101,67 @@ final class MarkdownStyleConfigTests: XCTestCase {
         XCTAssertEqual(t.fontSizes.h1, 72, "900 wird auf die Obergrenze gezogen")
     }
 
+    // MARK: - Abdunklung der Flächen
+
+    /// Der Punkt der Sache: wer den Hintergrund ändert, bekommt Flächen, die dazu passen — statt
+    /// eines festen Graus auf farbigem Blatt.
+    func testFlaecheFolgtDemBlatt() {
+        let hell = theme("""
+            { "markdown": { "background": "#ffffff" } }
+            """)
+        XCTAssertEqual(MarkdownTheme.hex(hell.flaeche), "#f0f0f0", "6 % dunkler als Weiss")
+
+        let blau = theme("""
+            { "markdown": { "background": "#dce6ff" } }
+            """)
+        XCTAssertEqual(MarkdownTheme.hex(blau.flaeche), "#cfd8f0", "bleibt blau, nur dunkler")
+    }
+
+    func testStaerkeIstEinstellbar() {
+        XCTAssertEqual(MarkdownTheme.hex(theme("""
+            { "markdown": { "background": "#ffffff", "shade": 20 } }
+            """).flaeche), "#cccccc")
+        XCTAssertEqual(MarkdownTheme.hex(theme("""
+            { "markdown": { "background": "#ffffff", "shade": 0 } }
+            """).flaeche), "#ffffff", "0 heisst: gar keine Fläche")
+    }
+
+    /// Auf einem fast schwarzen Blatt ergibt Abdunkeln keinen sichtbaren Unterschied — dort geht es
+    /// um denselben Anteil in die andere Richtung.
+    func testAufDunklemBlattWirdAufgehellt() {
+        let dunkel = theme("""
+            { "markdown": { "background": "#16181c", "shade": 20 } }
+            """)
+        XCTAssertEqual(MarkdownTheme.hex(dunkel.flaeche), "#454649")
+        XCTAssertGreaterThan(dunkel.flaeche.r, dunkel.background.r)
+    }
+
+    func testFesteFarbeSchlaegtDieAbleitung() {
+        let t = theme("""
+            { "markdown": { "background": "#dce6ff", "codeBackground": "#112233" } }
+            """)
+        XCTAssertEqual(MarkdownTheme.hex(t.flaeche), "#112233")
+    }
+
+    func testStaerkeWirdAufDieGrenzenGezogen() {
+        XCTAssertEqual(theme("""
+            { "markdown": { "shade": 900 } }
+            """).shade, 100)
+        XCTAssertEqual(theme("""
+            { "markdown": { "shade": "unlesbar" } }
+            """).shade, MarkdownTheme.shadeVorgabe)
+    }
+
+    /// Die mitgelieferten Fassungen dürfen **keine** feste Code-Farbe mitschleppen: eine Kopie davon
+    /// hätte sie sonst geerbt, und das Blatt zu ändern brächte wieder graue Blöcke auf Farbe.
+    func testMitgelieferteFassungenLegenDieFlaecheNichtFest() {
+        for fassung in MarkdownTheme.vorgaben {
+            XCTAssertNil(fassung.codeBackground, "\(fassung.name) hält die Fläche fest")
+            XCTAssertNil(fassung.werte.value(at: ["codeBackground"]),
+                         "\(fassung.name) gäbe sie an jede Kopie weiter")
+        }
+    }
+
     // MARK: - Schrift je Überschriftenebene
 
     func testEbeneSchlaegtGemeinsameUeberschriftenschrift() {
