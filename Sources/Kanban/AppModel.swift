@@ -8,8 +8,11 @@ struct CardVM: Identifiable, Hashable {
     let column: KanbanColumn
     let badges: [CardBadge]
     let statusMarker: TaskStatusMarker?   // Claude's task-file status (shown as a dot, separate from column)
+    /// Von welcher Forge die Requests dieser Karte stammen — entscheidet allein über die
+    /// **Beschriftung** („MR !42" gegen „PR #42") und die Badge-Farben, nicht über die Logik.
+    var forge: ForgeKind = .gitlab
     var unresolvedMRComments: Int = 0     // open (unresolved) review discussions of the opened MR
-    var resolvedMRComments: Int = 0       // the settled ones — together they give GitLab's "x of y"
+    var resolvedMRComments: Int = 0       // the settled ones — together they give the forge's "x of y"
     var mrReviewState: MRReviewState = .none  // approved / resolved verdict shown flush right
     var approvedBy: [String] = []         // approvers, for the Approved badge's tooltip
     var mergeRequestURL: String?          // web URL of the MR in the 🔀/🚧 badge — the badge opens it
@@ -36,8 +39,13 @@ struct CardVM: Identifiable, Hashable {
         return nil
     }
 
+    /// Wie die Forge die Nummer des Badge-Requests schreibt — `!42` bzw. `#42`.
+    var badgeRequestLabel: String? {
+        badgeMergeRequestIid.map { "\(forge.numberPrefix)\($0)" }
+    }
+
     /// The iid of the opened, review-ready MR (the 🔀 badge) — nil for drafts and merged MRs.
-    /// Feeds the context menu's `/review-merge !<iid>` entry on Review cards.
+    /// Feeds the context menu's `review-merge <!|#><nummer>` entry on Review cards.
     var openMergeRequestIid: Int? {
         guard column == .review else { return nil }
         for badge in badges { if case .mergeRequest(let iid, false) = badge { return iid } }
@@ -342,7 +350,9 @@ final class AppModel {
     }
 
     private var jira: JiraClient?
-    private var gitlab: GitLabClient?
+    /// Die Forge-Clients, je einer pro Plattform — welcher ein Projekt bedient, sagt dessen
+    /// `forge`-Eintrag. Beide dürfen nil sein: eine Forge ist optional, wie GitLab es immer war.
+    private var forgeClients: [ForgeKind: any ForgeClient] = [:]
     private var pollTask: Task<Void, Never>?
     private var watcher: TaskFileWatcher?
     private var watchTask: Task<Void, Never>?
@@ -376,7 +386,7 @@ final class AppModel {
                 _ = try? ClaudeProjectFile.write(for: project)
             }
             jira = JiraClient(config: cfg)
-            gitlab = GitLabClient(config: cfg)   // nil, solange GitLab nicht konfiguriert ist
+            forgeClients = Self.makeForgeClients(cfg)   // leer, solange keine Forge konfiguriert ist
             let creds = Data("\(cfg.jiraEmail):\(cfg.jiraApiToken)".utf8).base64EncodedString()
             AvatarCache.shared.configure(
                 authHeader: "Basic \(creds)",
@@ -402,7 +412,30 @@ final class AppModel {
         }
     }
 
-    var hasGitlab: Bool { gitlab != nil }
+    /// Ist überhaupt eine Forge konfiguriert? Ohne sie bleiben Review und Done leer.
+    var hasForge: Bool { !forgeClients.isEmpty }
+
+    /// Hat das **gewählte** Projekt eine Forge, die auch konfiguriert ist? Erst das beantwortet die
+    /// Frage, die der Hinweis in der Leiste stellt — ein Projekt ohne Zuordnung nützt der beste
+    /// Token nichts.
+    var selectedProjectHasForge: Bool {
+        guard let kind = selectedProject?.forge?.kind else { return false }
+        return forgeClients[kind] != nil
+    }
+
+    /// Plattform, Web-Basis und Projekt-Pfad des gewählten Projekts — die Quelle aller Branch-Links.
+    var forgeLocation: ForgeLocation? { config?.forgeLocation(for: selectedProject) }
+
+    /// Wie das gewählte Projekt einen Request nennt: „MR" bzw. „PR". Ohne Forge bleibt es bei „MR" —
+    /// die Beschriftung, die die App seit jeher trägt.
+    var forgeKind: ForgeKind { selectedProject?.forge?.kind ?? .gitlab }
+
+    private static func makeForgeClients(_ cfg: AppConfig) -> [ForgeKind: any ForgeClient] {
+        var clients: [ForgeKind: any ForgeClient] = [:]
+        if let gitlab = GitLabClient(config: cfg) { clients[.gitlab] = gitlab }
+        if let github = GitHubClient(config: cfg) { clients[.github] = github }
+        return clients
+    }
 
     /// Re-reads the config after the settings sheet saved it: rebuilds clients + project list via
     /// `bootstrap()` and restores the previous selection where it still exists.
@@ -415,7 +448,7 @@ final class AppModel {
         configError = nil
         needsSetup = false
         jira = nil
-        gitlab = nil
+        forgeClients = [:]
         projects = []
         selectedProject = nil
         bootstrap()
@@ -630,6 +663,7 @@ final class AppModel {
                     branch: branch
                 )
                 var card = CardVM(ticket: ticket, column: res.column, badges: res.badges, statusMarker: info.marker)
+                card.forge = project.forge?.kind ?? .gitlab
                 // Review state of the ticket's opened MR (merged MRs always carry the blank one).
                 card.unresolvedMRComments = mr?.unresolvedDiscussions ?? 0
                 card.resolvedMRComments = mr?.resolvedDiscussions ?? 0
@@ -714,9 +748,11 @@ final class AppModel {
         }
     }
 
+    /// Die Requests des Projekts von **seiner** Forge. Die eine Aufrufstelle, an der die App eine
+    /// Forge überhaupt anspricht — deshalb reicht hier das Protokoll.
     private func fetchMergeRequests(for project: ProjectConfig) async -> [MergeRequestRef] {
-        guard let gitlab, let path = project.gitlabProjectPath else { return [] }
-        return (try? await gitlab.openedAndMergedMRs(projectPath: path)) ?? []
+        guard let forge = project.forge, let client = forgeClients[forge.kind] else { return [] }
+        return (try? await client.openedAndMergedRequests(projectPath: forge.path)) ?? []
     }
 
     /// The first card in board order (Sprint → Offen → In Bearbeitung → Review → Done), preferring
@@ -762,8 +798,7 @@ final class AppModel {
                     preamble: tf.preamble,
                     ticketKey: selectedTicketKey,
                     jiraBaseUrl: selectedProject?.jiraBaseUrl,
-                    gitlabBaseUrl: config?.gitlabBaseUrl,
-                    gitlabProjectPath: selectedProject?.gitlabProjectPath)
+                    forge: forgeLocation)
                 result.append(TaskSection(id: -1, title: "Status", markdown: linked))
             }
             // Each review file as its own tab (ids -2, -3, …), right after Status so they're easy to
@@ -840,6 +875,7 @@ final class AppModel {
                                             to: jiraSelfByBaseUrl[project.jiraBaseUrl]?.accountId),
             branch: branch)
         var card = CardVM(ticket: cards[idx].ticket, column: res.column, badges: res.badges, statusMarker: info.marker)
+        card.forge = project.forge?.kind ?? .gitlab
         // Rebuilt from the cached MRs, so the 💬-count, the review badge and the links survive a
         // local status change.
         let mr = WorkflowStatus.primaryMR(ticketKey: key, mergeRequests: lastMergeRequests, branch: branch)
@@ -1127,10 +1163,11 @@ final class AppModel {
                                isWarning: true)
     }
 
-    /// Board context menu on Review cards: `/review-merge !<iid>` — the command wants the MR
-    /// number, not the ticket key.
+    /// Board context menu on Review cards: `/review-merge !<iid>` bzw. `/review-merge #<nummer>` —
+    /// the command wants the request number in **its forge's** notation, not the ticket key.
     func sendReviewMerge(ticketKey: String, mrIid: Int) {
-        typeIntoConsole("\(agent.commandPrefix)review-merge !\(mrIid) ", ticketKey: ticketKey)
+        let number = "\(forgeKind.numberPrefix)\(mrIid)"
+        typeIntoConsole("\(agent.commandPrefix)review-merge \(number) ", ticketKey: ticketKey)
     }
 
     /// Types text into the ticket's Claude console, selecting the ticket first if needed. While
@@ -1189,7 +1226,8 @@ final class AppModel {
         guard let branch = ticket.sourceBranch else { return }
         var lines = [ticket.summary]
         lines.append("")
-        lines.append("Die Arbeit liegt schon auf dem Branch `\(branch)` (Merge Request \(ticket.key)).")
+        lines.append("Die Arbeit liegt schon auf dem Branch `\(branch)` "
+                     + "(\(forgeKind.requestNoun) \(ticket.key)).")
         newTaskDraft = lines.joined(separator: "\n")
         newTaskSheetPresented = true
     }
@@ -1417,23 +1455,15 @@ final class AppModel {
         Task { await refreshStackStatus() }
     }
 
-    /// GitLab-URL eines beliebigen Branches (nil ohne GitLab-Zuordnung).
+    /// Die Branch-URL auf der Forge des Projekts (nil ohne Zuordnung). GitLab schiebt sein `/-/`
+    /// zwischen Projekt und Ressource, GitHub nicht — die Unterscheidung steht in `ForgeKind`.
     func branchURL(for branch: String) -> URL? {
-        guard let base = config?.gitlabBaseUrl, !base.isEmpty,
-              let path = selectedProject?.gitlabProjectPath, !path.isEmpty,
-              let encoded = branch.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed)
-        else { return nil }
-        return URL(string: "\(base.hasSuffix("/") ? String(base.dropLast()) : base)/\(path)/-/tree/\(encoded)")
+        forgeLocation?.branchURL(branch).flatMap(URL.init(string:))
     }
 
-    /// GitLab-URL des Worktree-Branches (nil ohne GitLab-Zuordnung).
+    /// Die Branch-URL des Worktrees (nil ohne Forge-Zuordnung).
     var worktreeBranchURL: URL? {
-        guard let branch = currentWorktree?.branch,
-              let base = config?.gitlabBaseUrl, !base.isEmpty,
-              let path = selectedProject?.gitlabProjectPath, !path.isEmpty,
-              let encoded = branch.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed)
-        else { return nil }
-        return URL(string: "\(base.hasSuffix("/") ? String(base.dropLast()) : base)/\(path)/-/tree/\(encoded)")
+        currentWorktree?.branch.flatMap(branchURL(for:))
     }
 
     /// Die Stack-URL des Worktrees (`https://<name>.test`) — dieselbe, die der Domain-Status prüft.
@@ -2078,10 +2108,13 @@ final class AppModel {
     /// daraus ein richtiger Task wird. Mehr gibt es nicht; genau deshalb steht die Karte ja da.
     private func branchTicketSection(_ ticket: Ticket) -> TaskSection {
         let branch = ticket.sourceBranch ?? ""
-        let mr = cards.first { $0.ticket.key == ticket.key }?.mergeRequestURL
+        let card = cards.first { $0.ticket.key == ticket.key }
+        let mr = card?.mergeRequestURL
         var lines = ["**\(ticket.summary)**", ""]
         lines.append("> 🌿 **BRANCH**: `\(branch)`")
-        if let mr { lines.append("> 🔀 **MERGE REQUEST**: \(mr)") }
+        if let mr {
+            lines.append("> 🔀 **\((card?.forge ?? forgeKind).requestNoun.uppercased())**: \(mr)")
+        }
         lines.append("")
         lines.append("_Dieser Branch trägt keine Ticketnummer — es gibt kein Jira-Ticket und (noch) "
                      + "kein Task-File._")

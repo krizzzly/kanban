@@ -22,7 +22,10 @@ public enum ProjectSuggestion {
         }
     }
 
-    public static func record(for rawKey: String, from config: JSONValue) -> ProjectRecord {
+    /// `originURL` ist der `origin`-Remote des Repos, sofern es schon eins gibt. Er schlägt jedes
+    /// Muster: der Remote **sagt**, wo das Repo liegt, die Muster raten es aus den Nachbarprojekten.
+    public static func record(for rawKey: String, from config: JSONValue,
+                              originURL: String? = nil) -> ProjectRecord {
         let key = rawKey.trimmingCharacters(in: .whitespaces)
         guard !key.isEmpty else { return ProjectRecord() }
 
@@ -31,8 +34,17 @@ public enum ProjectSuggestion {
         // Projekt für Kanban unsichtbar (die Board-Spalten hängen an den Task-Files).
         record.tasksPath = pattern(config, "jira", "tasksPath", key) ?? "\(key)/docs/tasks"
 
-        if let path = pattern(config, "gitlab", "path", key) {
+        // Genau **eine** Forge — ein Projekt in beiden Abschnitten lehnt `KanbanConfig` ab, und ein
+        // Vorschlag, der von vornherein nicht ladbar wäre, wäre kein Vorschlag.
+        if let forge = originURL.flatMap(forge(fromOriginURL:)) {
+            switch forge.kind {
+            case .gitlab: record.gitlab = .init(path: forge.path)
+            case .github: record.github = .init(path: forge.path)
+            }
+        } else if let path = pattern(config, "gitlab", "path", key) {
             record.gitlab = .init(path: path)
+        } else if let path = pattern(config, "github", "path", key) {
+            record.github = .init(path: path)
         }
         if !section(config, "confluence").isEmpty {
             // Space-Keys folgen keinem Pfad-Muster, sind aber konventionell der Key in Grossbuchstaben.
@@ -49,6 +61,54 @@ public enum ProjectSuggestion {
         // Vertec (Projekt/Phase/Task), `repoDir` und ein abweichender Jira-Host folgen keinem
         // ableitbaren Muster — bewusst leer.
         return record
+    }
+
+    // MARK: - Forge aus dem origin-Remote
+
+    /// Der `origin`-Remote eines Repos, oder nil (kein Repo, kein Remote, kein git).
+    public static func originURL(repoDir: String) -> String? {
+        guard FileManager.default.fileExists(atPath: repoDir) else { return nil }
+        let url = GitRun.run(["remote", "get-url", "origin"], cwd: repoDir)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return url.isEmpty ? nil : url
+    }
+
+    /// Forge und Projekt-Pfad aus einer Remote-URL — beide Schreibweisen, die git kennt:
+    /// `git@github.com:owner/repo.git` und `https://github.com/owner/repo.git`.
+    ///
+    /// Die Forge entscheidet der **Host**: `github.com` (und jede `*.github.com`-Adresse) ist
+    /// GitHub, alles andere GitLab — das ist die Annahme, unter der diese Codebasis gewachsen ist,
+    /// und der Vorschlag bleibt ohnehin editierbar. Eine selbstgehostete GitHub-Enterprise-Instanz
+    /// heisst nicht `github.com` und wird deshalb als GitLab vorgeschlagen; das ist der eine Fall,
+    /// den man von Hand umstellt.
+    public static func forge(fromOriginURL url: String) -> ForgeRef? {
+        let trimmed = url.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+
+        let host: String
+        var path: String
+        if let range = trimmed.range(of: "://") {
+            // https://host/pfad  bzw. ssh://git@host/pfad
+            let afterScheme = String(trimmed[range.upperBound...])
+            guard let slash = afterScheme.firstIndex(of: "/") else { return nil }
+            host = String(afterScheme[..<slash]).split(separator: "@").last.map(String.init) ?? ""
+            path = String(afterScheme[afterScheme.index(after: slash)...])
+        } else if let colon = trimmed.firstIndex(of: ":") {
+            // git@host:pfad — die scp-Schreibweise
+            let before = String(trimmed[..<colon])
+            host = before.split(separator: "@").last.map(String.init) ?? before
+            path = String(trimmed[trimmed.index(after: colon)...])
+        } else {
+            return nil
+        }
+
+        if path.hasSuffix(".git") { path = String(path.dropLast(4)) }
+        while path.hasSuffix("/") { path = String(path.dropLast()) }
+        guard !path.isEmpty, !host.isEmpty else { return nil }
+
+        let lower = host.lowercased().split(separator: ":").first.map(String.init) ?? ""
+        let isGitHub = lower == "github.com" || lower.hasSuffix(".github.com")
+        return ForgeRef(kind: isGitHub ? .github : .gitlab, path: path)
     }
 
     // MARK: - Musterableitung

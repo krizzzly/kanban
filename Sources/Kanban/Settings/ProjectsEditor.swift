@@ -103,6 +103,7 @@ struct ProjectsEditor: View {
         // steht dahinter kein Board. „lokal" ist hier die ehrlichere Auskunft.
         if record.prefix != nil { badges.append(record.usesJira == false ? "lokal" : "Jira") }
         if record.gitlab != nil { badges.append("GitLab") }
+        if record.github != nil { badges.append("GitHub") }
         if record.confluence != nil { badges.append("Confluence") }
         if record.vertec != nil { badges.append("Vertec") }
         if record.jenkins != nil { badges.append("Jenkins") }
@@ -154,11 +155,26 @@ struct ProjectsEditor: View {
                               prompt: Text("https://andere-instanz.atlassian.net"))
                 }
 
-                modul("GitLab", \.gitlab, leer: .init(path: "")) {
-                    TextField("Projekt-Pfad", text: optional(
-                        get: { $0.gitlab?.path },
-                        set: { record, value in record.gitlab = .init(path: value ?? "") }),
-                              prompt: Text("applications/even"))
+                // Genau **eine** Forge je Projekt: den jeweils anderen Block gibt es nur, solange
+                // dieser leer ist. Ein Projekt in beiden Abschnitten lehnt `KanbanConfig` beim Laden
+                // ab — es hier gar nicht erst anlegen zu lassen ist die freundlichere Fassung
+                // derselben Regel.
+                if draft.github == nil {
+                    modul("GitLab", \.gitlab, leer: .init(path: "")) {
+                        TextField("Projekt-Pfad", text: optional(
+                            get: { $0.gitlab?.path },
+                            set: { record, value in record.gitlab = .init(path: value ?? "") }),
+                                  prompt: Text("applications/even"))
+                    }
+                }
+
+                if draft.gitlab == nil {
+                    modul("GitHub", \.github, leer: .init(path: "")) {
+                        TextField("Repository", text: optional(
+                            get: { $0.github?.path },
+                            set: { record, value in record.github = .init(path: value ?? "") }),
+                                  prompt: Text("owner/repo"))
+                    }
                 }
 
                 modul("Confluence", \.confluence, leer: .init()) {

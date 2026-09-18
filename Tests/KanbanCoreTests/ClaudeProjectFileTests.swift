@@ -20,7 +20,7 @@ final class ClaudeProjectFileTests: XCTestCase {
                       tasksPathAbsolute: "/Users/x/code/even/docs/tasks",
                       docsPathAbsolute: "/Users/x/Library/Application Support/Kanban/docs/even",
                       repoDir: repoDir.path,
-                      gitlabProjectPath: "applications/even")
+                      forge: ForgeRef(kind: .gitlab, path: "applications/even"))
     }
 
     func testValuesDeriveWorktreePrefixAndDomain() {
@@ -28,6 +28,9 @@ final class ClaudeProjectFileTests: XCTestCase {
         XCTAssertEqual(values.prefix, "EVEN")
         XCTAssertEqual(values.worktreePrefix, repoDir.path + "-worktree")
         XCTAssertEqual(values.stackDomain, "test")
+        XCTAssertEqual(values.forge, "gitlab")
+        XCTAssertEqual(values.forgeProjectPath, "applications/even")
+        // Übergangsweise weitergeführt, damit nichts bricht, was den alten Schlüssel liest.
         XCTAssertEqual(values.gitlabProjectPath, "applications/even")
         // Der Doku-Ordner steht mit in der Datei: sonst kennte kein Skill den Ort, an den die
         // Confluence-Exporte gehen (Platzhalter `<docsPath>`, wie `<tasksPath>`).
@@ -44,7 +47,7 @@ final class ClaudeProjectFileTests: XCTestCase {
                                    docsPathAbsolute: "/docs/even",
                                    kbPathAbsolute: "/wissen/even",
                                    repoDir: repoDir.path,
-                                   gitlabProjectPath: nil)
+                                   forge: nil)
         try ClaudeProjectFile.write(for: withKB)
         let text = try String(contentsOf: repoDir.appendingPathComponent(".claude/project.json"),
                               encoding: .utf8)
@@ -66,6 +69,27 @@ final class ClaudeProjectFileTests: XCTestCase {
                        ClaudeProjectFile.values(for: project))
         // Unverändert → kein zweiter Write (kein mtime-Rauschen für File-Watcher).
         XCTAssertFalse(try ClaudeProjectFile.write(for: project))
+    }
+
+    /// Ein GitHub-Projekt führt `forge`/`forgeProjectPath` — und **keinen** `gitlabProjectPath`:
+    /// der alte Schlüssel behauptete sonst einen GitLab-Pfad, den es nicht gibt.
+    func testGithubProjectWritesForgeAndNoGitlabPath() throws {
+        let onGithub = ProjectConfig(key: "kanban", prefix: "KANBAN",
+                                     jiraBaseUrl: "",
+                                     tasksPathAbsolute: "/tasks/kanban",
+                                     docsPathAbsolute: "/docs/kanban",
+                                     repoDir: repoDir.path,
+                                     forge: ForgeRef(kind: .github, path: "krizzzly/kanban"),
+                                     usesJira: false)
+        let values = ClaudeProjectFile.values(for: onGithub)
+        XCTAssertEqual(values.forge, "github")
+        XCTAssertEqual(values.forgeProjectPath, "krizzzly/kanban")
+        XCTAssertNil(values.gitlabProjectPath)
+
+        try ClaudeProjectFile.write(for: onGithub)
+        let text = try String(contentsOf: repoDir.appendingPathComponent(".claude/project.json"),
+                              encoding: .utf8)
+        XCTAssertFalse(text.contains("gitlabProjectPath"), text)
     }
 
     func testWriteIsStableJSONWithTrailingNewline() throws {

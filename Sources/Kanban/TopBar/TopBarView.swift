@@ -241,10 +241,10 @@ struct TopBarToolbar: ToolbarContent {
         } else if let error = model.errorMessage {
             Label(error, systemImage: "exclamationmark.triangle.fill")
                 .font(.caption).foregroundStyle(.orange).lineLimit(1).help(error)
-        } else if !model.hasGitlab {
-            Label("kein GitLab", systemImage: "info.circle")
+        } else if !model.selectedProjectHasForge {
+            Label("keine Forge", systemImage: "info.circle")
                 .font(.caption).foregroundStyle(.secondary)
-                .help("Ohne GitLab-Config bleiben Review/Done leer.")
+                .help("Ohne GitLab- oder GitHub-Zuordnung bleiben Review und Done leer.")
         }
     }
 

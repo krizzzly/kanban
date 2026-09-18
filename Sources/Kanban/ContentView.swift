@@ -80,8 +80,8 @@ struct SetupView: View {
             Text("Willkommen bei Kanban")
                 .font(.headline)
             Text("Noch nichts konfiguriert. Trage in den Einstellungen deine Jira-Zugangsdaten ein "
-                 + "und lege mindestens ein Projekt an — GitLab ist optional und ergänzt nur die "
-                 + "MR-Spalten Review und Done.")
+                 + "und lege mindestens ein Projekt an — GitLab oder GitHub ist optional und "
+                 + "ergänzt nur die Spalten Review und Done.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)

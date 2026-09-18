@@ -121,13 +121,13 @@ struct WorktreeStackView: View {
         .padding(.horizontal, 12).padding(.vertical, 7)
     }
 
-    /// Die drei Sprungmarken des Worktrees: Branch → GitLab, Ordner → PhpStorm, URL → Browser.
+    /// Die drei Sprungmarken des Worktrees: Branch → Forge, Ordner → PhpStorm, URL → Browser.
     /// Bewusst kräftig statt hellgrau — das sind die Dinge, die man von hier aus ständig öffnet.
     private var linkBar: some View {
         HStack(spacing: 8) {
             if let branch = model.branch(for: target) {
                 linkChip(branch, icon: "arrow.triangle.branch", tint: .purple,
-                         help: "Branch auf GitLab öffnen") {
+                         help: "Branch auf \(model.forgeKind.label) öffnen") {
                     if let url = model.branchURL(for: branch) { StatusLinkOpener.open(url) }
                 }
                 .disabled(model.branchURL(for: branch) == nil)

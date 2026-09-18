@@ -168,6 +168,27 @@ public extension ModuleHTTPClient {
                          authHeaders: ["PRIVATE-TOKEN": apiToken])
     }
 
+    /// GitHub: ein `Bearer`-Token statt eines eigenen Header-Namens, dazu die zwei Header, ohne die
+    /// die Antwortform nicht festliegt — `Accept` wählt das JSON-Schema, `X-GitHub-Api-Version`
+    /// friert dessen Fassung ein.
+    ///
+    /// `Accept` steht hier bei den Auth-Headern und nicht als Aufruf-Parameter: `perform` setzt
+    /// seinen eigenen `Accept` **vor** den Modul-Headern, dieser gewinnt also.
+    ///
+    /// Mehrere `baseUrls`, weil GraphQL neben REST liegt (`/graphql` gegen `/api/v3`). Bei
+    /// `api.github.com` ist es derselbe Host, bei GitHub Enterprise auch — aber der Host-Guard ist
+    /// eine Liste, und eine Liste ist billiger als eine Annahme.
+    static func github(baseUrls: [String], apiToken: String) -> ModuleHTTPClient {
+        ModuleHTTPClient(module: "github", baseUrls: baseUrls,
+                         authHeaders: ["Authorization": "Bearer \(apiToken)",
+                                       "Accept": "application/vnd.github+json",
+                                       "X-GitHub-Api-Version": "2022-11-28"])
+    }
+
+    static func github(baseUrl: String, apiToken: String) -> ModuleHTTPClient {
+        github(baseUrls: [baseUrl], apiToken: apiToken)
+    }
+
     /// Profilbilder der Kommentar-Autoren. **Ohne Zugangsdaten**, und das ist der Punkt: die Bilder
     /// liegen auf `atl-paas.net` und `gravatar.com`, nicht auf der Jira-Instanz, und dorthin gehört
     /// kein Token. Ein eigener, handgeschriebener Abruf wäre die zweite Stelle, an der eine

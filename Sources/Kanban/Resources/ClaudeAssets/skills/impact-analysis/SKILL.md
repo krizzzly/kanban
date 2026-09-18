@@ -1,7 +1,7 @@
 ---
 name: impact-analysis
 description: Impact-Analyse für einen Task (offen, in Bearbeitung oder abgeschlossen). Nur explizit aufrufen — kein Auto-Trigger.
-argument-hint: <task-file.md, branch-name, TICKET-NUMMER oder MR-Nummer>
+argument-hint: <task-file.md, branch-name, TICKET-NUMMER oder MR-/PR-Nummer>
 disable-model-invocation: true
 ---
 
@@ -21,7 +21,7 @@ $ARGUMENTS
 - Task-File: `<tasksPath>/<PREFIX>-1234_feature.md`
 - Ticket-Nummer: `<PREFIX>-1234`
 - Branch-Name: `feature/<PREFIX>-1234_feature`
-- MR-Nummer: `!969` oder `969`
+- MR-/PR-Nummer: `!969`, `#969` oder `969` (GitLab schreibt `!`, GitHub `#`)
 - Kein Argument: Aktueller Branch wird verwendet
 
 ---
@@ -30,7 +30,7 @@ $ARGUMENTS
 
 ### Schritt 1: Task und Branch identifizieren
 
-1. **Ticket-Nummer ermitteln** aus dem Argument (Task-File-Name, Branch, MR oder direkt):
+1. **Ticket-Nummer ermitteln** aus dem Argument (Task-File-Name, Branch, Merge/Pull Request oder direkt):
    ```bash
    # Falls kein Argument: aktuellen Branch verwenden
    git branch --show-current

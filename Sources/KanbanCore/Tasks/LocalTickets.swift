@@ -77,7 +77,7 @@ public enum LocalTickets {
         return order.compactMap { byKey[$0] }.sorted { iid(of: $0.key) > iid(of: $1.key) }
     }
 
-    /// `!49` → 49, der Sortierschlüssel der MR-Karten (der jüngste MR zuerst).
+    /// `!49` bzw. `#49` → 49, der Sortierschlüssel der MR-Karten (der jüngste zuerst).
     static func iid(of key: String) -> Int { Int(key.dropFirst()) ?? 0 }
 
     /// Arbeit **ohne Ticketnummer**: ein offener MR, dessen Branch und Titel kein
@@ -88,16 +88,16 @@ public enum LocalTickets {
     /// zu erstellen ist; sie mitzunehmen hiesse, Done mit Altlasten zu füllen — in `zba` sind das
     /// 10 von 14 (der älteste von 2023), gegen 4 offene, um die es wirklich geht.
     ///
-    /// Der Key ist **`!<iid>`**, GitLabs eigene Schreibweise für einen MR (und dieselbe, die
-    /// `/review-merge !<iid>` benutzt). Gefunden wird die Karte trotzdem nicht über ihn, sondern
-    /// über ihren Branch — siehe `Ticket.sourceBranch`.
+    /// Der Key ist die **Schreibweise der Forge**: `!49` bei GitLab, `#49` bei GitHub — dieselbe,
+    /// die `review-merge` als Argument nimmt. Gefunden wird die Karte trotzdem nicht über ihn,
+    /// sondern über ihren Branch (siehe `Ticket.sourceBranch`); der Key benennt sie nur.
     static func branchTickets(mergeRequests: [MergeRequestRef], prefix: String) -> [Ticket] {
         mergeRequests
             .filter { $0.state == "opened" }
             .filter { key(in: $0.sourceBranch, prefix: prefix) == nil && key(in: $0.title, prefix: prefix) == nil }
             .sorted { $0.iid > $1.iid }   // der jüngste MR zuerst — er ist der, an dem gerade liegt
             .map { mr in
-                Ticket(key: "!\(mr.iid)",
+                Ticket(key: mr.numberLabel,
                        summary: mr.title.isEmpty ? mr.sourceBranch : mr.title,
                        sourceBranch: mr.sourceBranch)
             }
@@ -153,11 +153,15 @@ public enum LocalTickets {
         let branch: String?
     }
 
-    /// `!49_cli_version_option.md` → `!49`. Verlangt den Key am Anfang, damit `notiz_zu_!49.md` nicht
-    /// als Karte zählt — dieselbe Regel wie bei `key(inFileName:prefix:)`.
+    /// `!49_cli_version_option.md` → `!49`, `#49_cli_version_option.md` → `#49`. Verlangt den Key
+    /// am Anfang, damit `notiz_zu_!49.md` nicht als Karte zählt — dieselbe Regel wie bei
+    /// `key(inFileName:prefix:)`.
+    ///
+    /// **Beide** Schreibweisen, unabhängig von der Forge des Projekts: bestehende Task-Files heissen
+    /// `!49_…` und werden nicht rückwirkend umbenannt, nur weil ein Projekt auf GitHub liegt.
     static func mrKey(inFileName name: String) -> String? {
         let stem = name.hasSuffix(".md") ? String(name.dropLast(3)) : name
-        guard let regex = try? NSRegularExpression(pattern: #"^!\d+"#),
+        guard let regex = try? NSRegularExpression(pattern: #"^[!#]\d+"#),
               let match = regex.firstMatch(in: stem, range: NSRange(stem.startIndex..., in: stem)),
               let range = Range(match.range, in: stem) else { return nil }
         return String(stem[range])

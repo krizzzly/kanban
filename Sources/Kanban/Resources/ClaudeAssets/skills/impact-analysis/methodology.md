@@ -7,7 +7,7 @@ Command/Query-Trennung (Symfony Messenger). Sie wird von mehreren Commands verwe
 
 - `start-task` (Schritt 5b) — **vor** der Umsetzung, basierend auf dem Lösungsplan
 - `review-task` (Phase 1d) — **nach** der Umsetzung, basierend auf dem git diff
-- `review-merge` (Phase 3b) — beim **Review eines Kollegen-MRs**, basierend auf dem MR-Branch-Diff
+- `review-merge` (Phase 3b) — beim **Review eines Kollegen-MR/PR**, basierend auf dem Branch-Diff
 - `impact-analysis` — **standalone**, für Tasks in jedem Status (offen, in Bearbeitung, abgeschlossen)
 
 Ziel ist nicht, geänderte Dateien aufzulisten, sondern die fachlichen und technischen Auswirkungen entlang
@@ -88,7 +88,7 @@ Trennung, Verzweigungs-Analyse, QA-Priorisierung) ist projekt-unabhängig.
 |---------|-------------|------|
 | `start-task` | **Lösungsplan** — geplante Datei-Änderungen | Nebeneffekte VOR der Umsetzung erkennen |
 | `review-task` | **git diff** — tatsächliche Code-Änderungen | Test-Bereiche für QA identifizieren |
-| `review-merge` | **git diff** — MR-Branch des Kollegen | Lücken finden, Findings generieren, QA informieren |
+| `review-merge` | **git diff** — MR-/PR-Branch des Kollegen | Lücken finden, Findings generieren, QA informieren |
 | `impact-analysis` | **Lösungsplan, Branch-Diff oder gemergte Commits** | Impact unabhängig vom Task-Status |
 
 **`start-task`:** Aus dem Lösungsplan ermitteln, welche Dateien/Klassen/Methoden geändert werden sollen.
@@ -101,7 +101,7 @@ git diff --name-only $MERGE_BASE..HEAD
 git status --short
 ```
 
-**`review-merge`:** Änderungen des MR-Branches:
+**`review-merge`:** Änderungen des MR-/PR-Branches:
 
 ```bash
 git log --oneline origin/develop..origin/<branch-name>
@@ -592,7 +592,7 @@ Im Ergebnis (Task-File unter `## Impact-Analyse` bzw. Review-Report unter `## Te
 ## Test-Impact-Analyse (für Test-Ingenieur)
 
 **Durchgeführt am:** <DATUM>
-**Basis:** <Lösungsplan / Branch-Diff / MR-Diff / gemergte Commits>
+**Basis:** <Lösungsplan / Branch-Diff / MR-/PR-Diff / gemergte Commits>
 **Status bei Analyse:** <Offen / In Bearbeitung / Review / Abgeschlossen>
 **Projekt-Profil:** <FE-Sprache · Read-Modell · Autorisierung · Async — Kurzform aus P2/P5/P7/P8>
 

@@ -1,28 +1,52 @@
 ---
 name: review-merge
-description: Analysiere einen Merge-Request / Feature-Branch für Code-Review
-argument-hint: <task-file.md oder branch-name>
+description: Analysiere einen Merge Request / Pull Request / Feature-Branch für Code-Review
+argument-hint: <task-file.md, branch-name, !969 oder #969>
 disable-model-invocation: true
 ---
 
 # REVIEW MERGE - Code-Review Arbeitsanweisung
 
-> ⚙️ **Projektwerte** (`prefix`, `tasksPath`, `repoDir`, `worktreePrefix`, `stackDomain`, `gitlabProjectPath`):
-> stehen in `.claude/project.json` im Repo-Root. Lies die Datei, bevor du einen Projektwert brauchst — nie raten.
+> ⚙️ **Projektwerte** (`prefix`, `tasksPath`, `repoDir`, `worktreePrefix`, `stackDomain`, `forge`,
+> `forgeProjectPath`): stehen in `.claude/project.json` im Repo-Root. Lies die Datei, bevor du einen
+> Projektwert brauchst — nie raten.
 
-Du bist ein erfahrener Code-Reviewer, der Merge-Requests systematisch analysiert und konstruktives Feedback gibt.
+Du bist ein erfahrener Code-Reviewer, der Merge Requests (GitLab) bzw. Pull Requests (GitHub)
+systematisch analysiert und konstruktives Feedback gibt.
+
+## Zuerst: auf welcher Forge liegt das Projekt?
+
+Fachlich ist beides dasselbe — ein Zweig, der in einen anderen soll. Nur der Weg zu den Daten ist
+ein anderer, und das entscheidet sich **einmal am Anfang**:
+
+```bash
+# `forge` = "gitlab" oder "github"; fehlt der Schlüssel, gibt es keine Forge-Anbindung
+grep -o '"forge"[^,]*' .claude/project.json
+```
+
+| | GitLab (`forge: "gitlab"`) | GitHub (`forge: "github"`) |
+|---|---|---|
+| Nummer heisst | `!969` | `#969` |
+| MR-/PR-Daten laden | `mcp__hermes__enhance-claude-task-with-mr` | `gh` CLI (siehe unten) |
+| Sektion im Task-File | `## Merge-Review (MR !969)` | `## Merge-Review (PR #969)` |
+
+**`mcp__hermes__enhance-claude-task-with-mr` gilt nur für GitLab.** Hermes hat kein GitHub-Modul —
+auf GitHub führt der Weg über `gh` (installiert, `gh --version`; bei „not logged in" einmal
+`gh auth login`).
+
+Wo unten „MR" steht, ist auf GitHub der Pull Request gemeint; wo `!<nummer>` steht, dort `#<nummer>`.
 
 ## Dein Input
 
 Analysiere: $ARGUMENTS
 
 **Akzeptierte Formate:**
-- MR-Nummer: `!969` oder `969`
+- MR-/PR-Nummer: `!969`, `#969` oder `969`
 - Branch-Name: `feature/<PREFIX>-1234_feature`
 - Task-File: `<tasksPath>/<PREFIX>-1234_feature.md`
 - Ticket-Nummer: `<PREFIX>-1234`
 
-**Falls kein Branch angegeben:** Frage den Benutzer nach dem Branch-Namen oder der MR-Nummer, bevor du fortfährst!
+**Falls kein Branch angegeben:** Frage den Benutzer nach dem Branch-Namen oder der Nummer, bevor du fortfährst!
 
 **Haupt-Branch `<BASE>`:** der Merge-Ziel-Branch des Projekts (`develop` oder `main`) — ermitteln über
 `git symbolic-ref refs/remotes/origin/HEAD --short` (→ `origin/<BASE>`); im Zweifel den Benutzer fragen.
@@ -35,10 +59,11 @@ Analysiere: $ARGUMENTS
 
 **Schritt 1: Task-File und Branch identifizieren**
 
-**Bei MR-Nummer (z.B. `!969` oder `969`):**
-1. Suche das Task-File mit dieser MR-Nummer:
+**Bei MR-/PR-Nummer (z.B. `!969`, `#969` oder `969`):**
+1. Suche das Task-File mit dieser Nummer — beide Schreibweisen, weil ältere Task-Files eines
+   GitHub-Projekts noch `!` tragen können:
    ```bash
-   grep -r "MR !969" <tasksPath>/
+   grep -rE "(MR !|PR #)969" <tasksPath>/
    ```
 2. Lies das gefundene Task-File - dort steht auch die Ticket-Nummer und der Branch
 
@@ -81,17 +106,46 @@ Die MR-Kommentare und Hinweise vom Kollegen sind im Task-File unter der Sektion 
 grep -l "## Merge-Review" <tasksPath>/<TICKET-NUMMER>*.md
 ```
 
-**Falls die Sektion FEHLT → MR-Daten automatisch laden:**
+**Falls die Sektion FEHLT → MR-/PR-Daten automatisch laden:**
 
-1. Ermittle die MR-Nummer (aus dem Argument, Branch-Name oder via GitLab):
+1. Ermittle die Nummer (aus dem Argument, Branch-Name oder von der Forge):
    ```bash
    # Falls nur Branch/Ticket bekannt:
    git log --oneline origin/<BASE>..origin/<branch-name> | head -5
    ```
-2. Rufe `mcp__hermes__enhance-claude-task-with-mr` auf mit der MR-Nummer
+
+2a. **GitLab** (`forge: "gitlab"`): Rufe `mcp__hermes__enhance-claude-task-with-mr` auf mit der
+    MR-Nummer.
    - Das Tool lädt alle MR-Discussions und Kommentare
    - Speichert die Discussions als JSON unter `<tasksPath>/<TICKET>/discussions/`
    - Erweitert das Task-File automatisch um eine `## Merge-Review (MR !XXX)` Sektion
+
+2b. **GitHub** (`forge: "github"`): Es gibt **kein** Hermes-Tool dafür — hol die Daten mit `gh` und
+    trage die Sektion selbst nach:
+   ```bash
+   # Kopf des PR (Titel, Beschreibung, Branches, Zustand)
+   gh pr view <nummer> --json number,title,body,state,isDraft,headRefName,baseRefName,url,reviewDecision
+
+   # Der Diff des PR
+   gh pr diff <nummer>
+
+   # Allgemeine Kommentare und Reviews
+   gh pr view <nummer> --json comments,reviews
+
+   # Review-Threads samt Auflösungsstand — nur GraphQL kennt `isResolved`
+   gh api graphql -f query='
+     query($owner:String!,$repo:String!,$number:Int!){
+       repository(owner:$owner,name:$repo){
+         pullRequest(number:$number){
+           reviewThreads(first:100){nodes{isResolved isOutdated
+             comments(first:20){nodes{path line body author{login}}}}}}}}' \
+     -F owner=<owner> -F repo=<repo> -F number=<nummer>
+   ```
+   Schreibe daraus eine `## Merge-Review (PR #XXX)` Sektion ins Task-File — gleiche Struktur wie
+   beim GitLab-Weg, damit die Reviews beider Forges gleich aussehen. **Offene** Threads
+   (`isResolved: false`) sind die, um die es geht; erledigte gehören der Vollständigkeit halber
+   dazu, aber nicht in die TODO-Liste.
+
 3. Lies das aktualisierte Task-File erneut
 
 **Falls die Sektion EXISTIERT → direkt lesen.**
@@ -275,7 +329,7 @@ Kategorisiere alle Findings (für den Report):
 Erstelle einen strukturierten Review-Report:
 
 ```
-## 📋 Merge-Review: <TICKET-NUMMER> (MR !<MR-NUMMER>)
+## 📋 Merge-Review: <TICKET-NUMMER> (MR !<NUMMER> bzw. PR #<NUMMER>)
 
 ### Zusammenfassung
 [1-2 Sätze was der MR macht]
@@ -325,11 +379,11 @@ Erstelle einen strukturierten Review-Report:
 
 **PFLICHT:** Speichere die komplette Analyse im Task-File unter der `## Merge-Review` Sektion:
 
-1. Aktualisiere den **Status** im Task-File Header:
+1. Aktualisiere den **Status** im Task-File Header (`MR !XXX` bei GitLab, `PR #XXX` bei GitHub):
    - `🟢 Abgeschlossen` → `🔴 Changes Requested (MR !XXX)` bei Blockern
    - oder `🟡 In Review (MR !XXX)` bei Warnungen
 
-2. Füge unter `## Merge-Review (!XXX)` folgende Sektionen hinzu:
+2. Füge unter `## Merge-Review (!XXX)` bzw. `## Merge-Review (#XXX)` folgende Sektionen hinzu:
    - `### Review-Status:` mit Empfehlung und Datum
    - `### Zusammenfassung der MR-Kommentare` (falls vorhanden)
    - `### Findings` als Tabelle mit Status-Spalte
@@ -394,6 +448,11 @@ iwf run phpstan
 
 # Geänderte Test-Dateien finden
 git diff --name-only <BASE>..<branch> | grep -E "Test\.php$"
+
+# GitHub: PR zum aktuellen Branch finden, auschecken (auch aus einem Fork), Threads lesen
+gh pr status
+gh pr checkout <nummer>
+gh pr view <nummer> --comments
 ```
 
 ---

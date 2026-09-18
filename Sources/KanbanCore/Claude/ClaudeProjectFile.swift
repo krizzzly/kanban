@@ -20,6 +20,15 @@ public enum ClaudeProjectFile {
         public let repoDir: String           // absolutes Haupt-Repo
         public let worktreePrefix: String    // Ordner der Worktrees: <repoDir>-worktree (iwf-Konvention)
         public let stackDomain: String       // TLD des lokalen Stacks; URL = https://<worktree-name>.<stackDomain>
+        /// Auf welcher Forge das Repo liegt: `gitlab` oder `github`. **Fehlt**, wenn keine
+        /// zugeordnet ist — ein Skill soll „liegt auf GitLab" von „liegt nirgends" unterscheiden
+        /// können, und davon hängt ab, ob er `glab`/Hermes oder `gh` benutzt.
+        public let forge: String?
+        /// Der Projekt-Pfad auf dieser Forge: `applications/even` bei GitLab, `owner/repo` bei GitHub.
+        public let forgeProjectPath: String?
+        /// **Übergangsweise** weitergeführt: derselbe Pfad, aber nur bei GitLab gesetzt. Es lesen
+        /// ihn die Stellen, die vor der zweiten Forge geschrieben wurden; alles Neue nimmt `forge`
+        /// und `forgeProjectPath`.
         public let gitlabProjectPath: String?
         /// Hinweis an menschliche Leser — Kanban überschreibt die Datei beim Projektwechsel.
         public let generatedBy: String
@@ -35,6 +44,8 @@ public enum ClaudeProjectFile {
                repoDir: project.repoDir,
                worktreePrefix: project.repoDir + "-worktree",
                stackDomain: "test",
+               forge: project.forge?.kind.rawValue,
+               forgeProjectPath: project.forge?.path,
                gitlabProjectPath: project.gitlabProjectPath,
                generatedBy: "Kanban — generiert aus der Kanban-Config, nicht von Hand editieren")
     }

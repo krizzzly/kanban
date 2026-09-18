@@ -43,8 +43,10 @@ Karte da, mit „Task erstellen …" im Kontextmenü (Titel und Branch sind vorb
 - **Nur offene MRs.** Ein gemergter ohne Nummer ist erledigte Geschichte, aus der nichts mehr zu
   erstellen ist; ihn mitzunehmen hiesse, Done mit Altlasten zu füllen — in `zba` wären das 10 von
   14, der älteste von 2023, gegen die 4, um die es geht.
-- **Der Key ist `!<iid>`** — GitLabs eigene Schreibweise für einen Merge Request, dieselbe, die
-  `/review-merge !<iid>` schon benutzt. Gefunden wird die Karte aber **nicht** über ihn: `!130` steht
+- **Der Key ist die Schreibweise der Forge** — `!<iid>` bei GitLab, `#<nummer>` bei GitHub,
+  dieselbe, die `review-merge` als Argument nimmt (`MergeRequestRef.numberLabel`). Task-Files
+  werden **nicht** rückwirkend umbenannt: `LocalTickets.mrKey(inFileName:)` erkennt beide
+  Schreibweisen, damit ein `!49_slug.md` aus GitLab-Zeiten seine Karte behält. Gefunden wird die Karte aber **nicht** über ihn: `!130` steht
   in keinem Branchnamen. Sie trägt ihren Branch (`Ticket.sourceBranch`), und
   `TicketMatching.matches` vergleicht dann den Branch statt den Key zu suchen. Damit funktionieren
   Spalte, Badges, 🔀-Nummer und der **Worktree** unverändert — `feature/e2e-test-sf7` in `zba` hat
@@ -256,11 +258,11 @@ schreibt auch in Jira nichts.
   und ein Schritt in der Arbeitsanweisung hinge daran, dass die KI ihn abarbeitet. Das Skill sagt
   deshalb nur, dass Kanban es tut — und dass es bei einem Aufruf ausserhalb von Kanban ausbleibt.
 
-### Review-Stand des offenen MR (Optik 1:1 aus GitLabs MR-Liste)
+### Review-Stand des offenen MR/PR (Optik 1:1 aus der Liste der jeweiligen Forge)
 
-Zwei Anzeigen in der zweiten Kartenzeile, beide nur für **opened** MRs geholt (je 2 Requests pro
-offenem MR über denselben Transport wie die MR-Liste, Fehlschlag zählt als 0/nicht-approved —
-gemergte MRs bleiben leer, ihr Review ist vorbei):
+Zwei Anzeigen in der zweiten Kartenzeile, beide nur für **opened** Requests geholt (je 2 Requests pro
+offenem MR/PR über denselben Transport wie die Liste, Fehlschlag zählt als 0/nicht-approved —
+gemergte bleiben leer, ihr Review ist vorbei):
 
 - **Verdikt** (grünes Pill rechtsbündig **unter der Ticketnummer**, `MRReviewBadge`): `Approved`,
   sobald jemand approved hat (`/merge_requests/:iid/approvals` → `approved`, Fallback nicht-leeres
@@ -273,14 +275,21 @@ gemergte MRs bleiben leer, ihr Review ist vorbei):
 Gezählt wird über `/discussions` (`GitLabClient.threadCounts`: ein Thread ist offen, sobald eine
 seiner *resolvable* Notes offen ist; System-Notes zählen nie). Bewusst **nicht** über
 `blocking_discussions_resolved` aus der MR-Liste: das Feld meldet auf dieser Instanz `true` auch bei
-vier offenen Threads (es beschreibt nur, was den Merge blockiert). Farben = GitLabs Tokens
-(`GitLabColors`, green-100/700 bzw. gray-100/700, dunkel gespiegelt).
+vier offenen Threads (es beschreibt nur, was den Merge blockiert). Farben = die Tokens der
+jeweiligen Plattform (`ForgeColors`: GitLab green-100/700 bzw. gray-100/700, GitHub Primer
+success-fg/muted bzw. neutral-fg/muted — beide dunkel gespiegelt).
+
+**Bei GitHub sind dieselben zwei Zahlen anders zu holen** (siehe „Zwei Forges"): die Zustimmung aus
+`/pulls/{n}/reviews` (je Person der letzte meinungsstarke Zustand), die Thread-Zähler über eine
+kleine GraphQL-Abfrage, weil GitHubs REST `isResolved` nicht kennt. Schlägt die fehl, sind es
+**0/0 und kein Badge** — fail-open, statt eine Karte in die falsche Spalte zu schieben.
 
 **Draft-MRs** sind in GitLab `state == "opened"`, aber nicht review-reif — sie schieben die Karte
 **nicht** nach Review (weder direkt noch über `shouldAutoSetReview`). `GitLabClient` erkennt den Draft
-am `draft`-Flag, dem Legacy-`work_in_progress` oder einem `Draft:`/`WIP:`-Titelpräfix. Die Karte bleibt
-in ihrer Arbeitsspalte und trägt statt 🔀 ein **🚧#iid**-Badge (orange), damit sichtbar ist, warum sie
-trotz MR nicht in Review steht.
+am `draft`-Flag, dem Legacy-`work_in_progress` oder einem `Draft:`/`WIP:`-Titelpräfix; GitHub führt
+ein echtes `draft`-Feld und braucht die Titel-Erkennung nicht. Die Karte bleibt in ihrer
+Arbeitsspalte und trägt statt 🔀 ein **🚧-Badge** (orange) mit der Nummer in der Schreibweise ihrer
+Forge („MR !42" / „PR #42"), damit sichtbar ist, warum sie trotz Request nicht in Review steht.
 
 **Unteraufgaben** (`issuetype.subtask`, sprachunabhängig) erscheinen **nicht** als eigene Karten — die
 Story trägt die Arbeit. `AppModel.refresh` filtert sie aus der Sprint-Liste; `--selftest` meldet, wie
@@ -1731,18 +1740,24 @@ Sources/
 │   │                      HermesSync (Projekte zurück; absolute Pfade in Hermes' join-Form) +
 │   │                      ConfigStore/KanbanConfigSchema (Settings) + ProjectRegistry/-Projection
 │   ├── Domain/            Ticket, KanbanColumn, BoardMode (Sprint/Frei), TaskSection, Worktree,
-│   │                      MergeRequestRef, CardBadge,
+│   │                      MergeRequestRef (provider-neutral, trägt nur `forge` als Herkunft), CardBadge,
 │   │                      EpicRef + EpicColors (Jira-Palette) + EpicResolution (Sub-Task erbt Epic)
 │   ├── Jira/              JiraClient (Board/Sprints/Sprint-Issues/Worklog) + SprintSelection +
 │   │                      JiraSolutionField (Feld „Lösung": editmeta-Auflösung, lesen, schreiben)
+│   ├── Forge/             ForgeKind (gitlab/github: Beschriftung, `!`/`#`, Branch-Pfad) +
+│   │                      ForgeRef/ForgeLocation + ForgeClient (was das Board von einer Forge braucht)
 │   ├── GitLab/            GitLabClient (MR-Liste + Thread-Zähler + Approval) + models
+│   ├── GitHub/            GitHubClient (PR-Liste + Zustands-Normalisierung + Reviews→Zustimmung +
+│   │                      GraphQL-Thread-Zähler, fail-open)
 │   ├── Modules/           die zwei Module in Hermes-Bauweise (siehe „Module")
 │   │   ├── ModuleHTTPClient  Transport: Auth je Modul, Host-Guard, Paging
 │   │   ├── Jira/             JiraFetch (Issue/Comments/Worklogs/…) + JiraModels +
 │   │   │                     JiraFieldExtraction (Custom/Extra Fields, Meta) + ADFToMarkdown +
 │   │   │                     JiraDuration (1d = 8h)
-│   │   └── GitLab/           GitLabFetch (MR/Notes/Discussions/Diffs/Schreibwege/Activity) +
-│   │                         GitLabModels + MRDiffPosition (Zeile → old/new für Inline-Kommentare)
+│   │   ├── GitLab/           GitLabFetch (MR/Notes/Discussions/Diffs/Schreibwege/Activity) +
+│   │   │                     GitLabModels + MRDiffPosition (Zeile → old/new für Inline-Kommentare)
+│   │   └── GitHub/           GitHubFetch (PR/Reviews/Kommentare/Files/Schreibwege) + GitHubModels +
+│   │                         PRDiffPosition (Zeile → path/line/side/commit_id, Gegenstück zu MRDiffPosition)
 │   ├── Git/               WorktreeScanner (`git worktree list --porcelain`) + BranchParent
 │   │                      (Abzweig-Basis abgeleitet: Kandidaten = langlebige Branches + Worktree-
 │   │                      Checkouts (Branches stacken!), Gewinner = wenigste fehlende Commits
@@ -1792,14 +1807,77 @@ Sources/
     ├── Watchdog/          WatchdogModel (Takt + angezeigter Stand) + WatchdogPanel (Liste + Knopf)
     ├── Stack/             StackSweepSheet („N Stacks stoppen": Liste + Bestätigung + Ausgabe)
     ├── Timing/            ClaudeTimeBadge (Karte) / ClaudeTimeChip + Popover (Turn-Liste + Buchen) / BookingSheet
-    └── Theme/             MarkdownTheme (ported from kanban-code's chatMarkdownTheme)
+    └── Theme/             MarkdownTheme (ported from kanban-code's chatMarkdownTheme) +
+                            ForgeColors (Badge-Palette je Forge: GitLab-Tokens, GitHub Primer)
 ```
 
-## Module (Jira + GitLab, nach Hermes' Vorbild in Swift)
+## Zwei Forges: GitLab **oder** GitHub je Projekt
 
-Kanban betreibt die zwei Module, die es braucht, **selbst** — portiert aus `hermes/mcp-server`
-(`lib/http.js`, `modules/jira`, `modules/gitlab`). Damit hängt kein Board-Feature mehr an einem
-laufenden Daemon.
+Ein Projekt sagt, wo sein Code liegt, und bekommt danach dieselben Funktionen — Review- und
+Done-Spalte, Badge mit Zustimmung und Thread-Zähler, die Karten ohne Ticketnummer, die Branch-Links
+im Task-File, die Review-Skills. Nach aussen heisst es dort „PR" statt „MR"; darunter ist es
+dasselbe Modell.
+
+**Der Schnitt ist klein, und das liegt am Domänenmodell:** `MergeRequestRef` war schon
+provider-neutral (`iid`, `title`, `state`, Branches, `webUrl`, `draft`, Threads, `approved`), und die
+App ruft eine Forge an **genau einer** Stelle an (`AppModel.fetchMergeRequests`). Dazu kommt
+`ForgeClient` mit drei Methoden — Liste, Thread-Zähler, Zustimmung. Mehr nicht: die Detail-Ebene
+(Diffs, Notes, Schreibwege) hängt an keiner Oberfläche, weder hier noch dort, und aufs Protokoll
+gehoben bliebe sie Vorrat.
+
+**Normalisiert wird im Adapter, nicht in der Domäne.** Vier Dinge sind bei GitHub anders *gebaut*,
+nicht bloss anders benannt:
+
+| Sache | GitLab | GitHub |
+|---|---|---|
+| Auth | Header `PRIVATE-TOKEN` | `Authorization: Bearer …` + `Accept: application/vnd.github+json` |
+| Zustand | `opened` / `merged` / `closed` | nur `open` / `closed`, dazu `merged_at` — **„merged" ist dort kein Zustand** |
+| Zustimmung | `/approvals` → `approved_by` | `/pulls/{n}/reviews` → je Person der **letzte** Zustand, `APPROVED` zählt |
+| Threads aufgelöst | `/discussions` → `resolved` je Note | **gibt es im REST nicht** — `isResolved` steht nur in GraphQL |
+
+`GitHubClient` übersetzt deshalb `closed` + `merged_at != nil` → `"merged"` und `open` → `"opened"`,
+und `WorkflowStatus`, `TicketMatching`, die Badges und die Spaltenlogik bleiben **unverändert**
+(`WorkflowStatusTests` und `MRDiffPositionTests` laufen wörtlich weiter — das ist die Gegenprobe).
+Wer GitHubs Vokabular durchreichte, müsste jede dieser Stellen anfassen und bräche dabei die Tests.
+
+Was daraus im Einzelnen folgt:
+
+- **Der Zustand ist der gefährliche Fall.** Ein *abgelehnter* PR ist `closed` ohne `merged_at` — ohne
+  die Unterscheidung landete er in Done. Beide Richtungen sind getestet.
+- **Fail-open bei den Threads.** Die GraphQL-Abfrage (`pullRequest.reviewThreads { isResolved }`)
+  braucht ein Token mit Repo-Lesezugriff. Fehlt es, scheitert sie oder läuft in die Frist: dann
+  **0/0, kein Badge, keine Spaltenwirkung**. Eine Karte wegen einer fehlenden Antwort zu verschieben
+  wäre der schlechtere Ausgang.
+- **Ratenbegrenzung.** 30 offene PRs sind 60 Abfragen im 45-Sekunden-Takt. Meldet GitHub einmal
+  „rate limit" (403/429 **mit** Grund im Body — ein nacktes 403 ist ein fehlendes Recht), hört die
+  Runde auf zu fragen (`RateLimitGate`) und wiederholt **nichts**; der nächste Takt versucht es neu.
+- **Fork-PRs.** `head.label` trägt dort `owner:branch`. Verglichen wird mit lokalen Branches, also
+  gilt `head.ref` — sonst fände `TicketMatching` den Worktree nicht.
+- **Zwei Listen statt `state=all`.** `all` liefert eine Seite, und die besteht in einem Repo mit
+  Historie aus geschlossenen PRs; die offenen fielen hinten heraus. Getrennt geholt bekommt jede
+  Hälfte ihre Sortierung: offene vollständig, geschlossene nach letzter Änderung.
+- **Branch-Links.** GitLab schiebt `/-/` zwischen Projekt und Ressource, GitHub nicht
+  (`ForgeKind.branchPathSegment`). Ohne das ginge der Link im Task-File still ins Leere.
+- **Web- gegen API-Basis.** Die Config hält `https://api.github.com`; Branch- und PR-Links brauchen
+  `https://github.com`. Abgeleitet in `GitHubClient.webBaseURL(forApiBase:)`, ebenso die GraphQL-URL
+  (bei GitHub Enterprise `/api/graphql` neben `/api/v3`).
+- **Ein Projekt, eine Forge.** Steht derselbe Key in beiden Abschnitten, wirft `KanbanConfig.resolve`
+  mit dem Namen des Projekts (`ambiguousForge`) statt sich eine auszusuchen. Der Projekt-Editor
+  blendet den jeweils anderen Block aus, solange einer gesetzt ist.
+- **Umbenannt wurde nichts.** `MergeRequestRef`, `MRReviewState`, `CardBadge.mergeRequest`, `iid`
+  bleiben — `ChangeRequest`/`number` wäre neutraler, zöge aber durch die halbe Codebasis und durch
+  bestehende Task-Files. Die Herkunft ist ein **Feld** (`MergeRequestRef.forge`), und nur die
+  Anzeige hängt daran.
+- **Stufe 1.** Gebaut ist der Listen-Weg (Board vollständig) **und** die Detail-Ebene als Modul
+  (`Modules/GitHub`: PR, Reviews, Kommentare, Files, Schreibwege, `PRDiffPosition`). Angeschlossen
+  an die Oberfläche ist die Detail-Ebene bei **keiner** der beiden Forges — das ist so entschieden,
+  nicht vergessen.
+
+## Module (Jira + GitLab + GitHub, nach Hermes' Vorbild in Swift)
+
+Kanban betreibt die Module, die es braucht, **selbst** — portiert aus `hermes/mcp-server`
+(`lib/http.js`, `modules/jira`, `modules/gitlab`); das GitHub-Modul hat dort kein Vorbild, weil
+Hermes keins hat. Damit hängt kein Board-Feature mehr an einem laufenden Daemon.
 
 - **Transport** (`ModuleHTTPClient`, Zwilling von `lib/http.js`): Auth-Resolver je Modul und
   Host-Guard. Zwei Abweichungen von Hermes, beide bewusst: es gibt **nur** den direkten Weg mit dem
@@ -1860,6 +1938,16 @@ laufenden Daemon.
     es beim Umleiten auch nichts zu entziehen — und umgeleitet **wird**: Gravatar schickt auf
     `i1.wp.com` weiter, einen Host ausserhalb der Liste. Deshalb prüft die Allowlist den Einstieg,
     und begrenzt wird die Kette stattdessen über Länge (5) und Grösse (2 MB).
+- **GitHub**: PR-Liste, Thread-Zähler und Zustimmung in `GitHubClient` (siehe „Zwei Forges" für die
+  vier Unterschiede), der Rest in `Modules/GitHub` — einzelner PR inkl. `head.sha`, Reviews,
+  allgemeine Kommentare (GitHub führt sie als **Issue**-Kommentare) und Review-Kommentare, geänderte
+  Dateien mit `patch`, und die Schreibwege (Kommentar, Inline-Kommentar, Antwort).
+  - `PRDiffPosition` ist das Gegenstück zu `MRDiffPosition`: **dieselbe Eingabe, andere Ausgabe** —
+    `path` + `line` + `side` (+ `start_line`/`start_side`) statt `old_line`/`new_line`, dazu
+    `commit_id` statt des SHA-Tripels. Den **Hunk-Parser teilen sich beide**
+    (`MRDiffPosition.parseHunks`): ein Unified Diff ist ein Unified Diff, und zwei Kopien wären zwei
+    Stellen, an denen dieselbe Zählung schiefgehen kann. Die Tests laufen gegen denselben Diff wie
+    `MRDiffPositionTests`.
 - **GitLab**: MR-Liste, Thread-Zähler und Approval bleiben in `GitLabClient` (das braucht das Board),
   der Rest in `Modules/GitLab` — einzelner MR inkl. `diff_refs`, Notes, Threads, Changes, Diffs,
   Aktivität, Projekt-Auflösung und die Schreibwege (Kommentar, Inline-Discussion, Antwort).
@@ -1899,7 +1987,8 @@ und wer die eine Datei kennt, kennt die andere.
   kaputtem JSON wirft — stilles Ignorieren sähe aus wie Datenverlust. `isConfigured` = Jira-Zugang
   vollständig **und** mindestens ein Projekt.
 - **Hermes-Übernahme** (`HermesImport`): existiert `~/.hermes/config.json` und hat Kanban noch keine
-  `modules`, werden `basePath` sowie `modules.jira`/`modules.gitlab` **wortgleich** kopiert (auch
+  `modules`, werden `basePath` sowie `modules.jira`/`modules.gitlab` **wortgleich** kopiert
+  (GitHub bleibt aussen vor — Hermes hat kein solches Modul, es gäbe dort nichts zu übernehmen) (auch
   Schlüssel, die Kanban nie liest, wie `anonymize`). Einzige Ausnahme: **`backend` fliegt raus** —
   Hermes' Umschalter zwischen REST und Browser-Session täuschte eine Wahl vor, die es hier nicht gibt.
   Ein Bootstrap, **kein** Sync — sonst käme ein in Kanban geänderter Wert bei jedem Start zurück.
@@ -1910,6 +1999,9 @@ und wer die eine Datei kennt, kennt die andere.
   gelöscht. **Vorher gemischt** (`HermesSync.merged`): `ProjectProjection.apply` hält die Registry für
   den Owner *aller* Modul-Blöcke und löscht, was sie nicht kennt — ungemischt hätte jeder Sync Hermes'
   Confluence-, Vertec-, Jenkins- und DockerHub-Einträge weggeräumt (ein Test hat genau das gefangen).
+  Der `github`-Block wandert dabei **mit** hinüber, obwohl Hermes kein GitHub-Modul hat: er ist
+  additiv, stört dort nichts und dokumentiert, wo das Repo liegt. Eine Ausnahme dafür zu bauen
+  hiesse, `ProjectProjection` eine zweite Liste zu geben, die niemand pflegt.
 
 - `basePath` (e.g. `~/code`) — tasksPath + repoDir are resolved relative to it.
 - `modules.jira.{baseUrl,email,apiToken}` +
@@ -1918,6 +2010,13 @@ und wer die eine Datei kennt, kennt die andere.
   das Projekt lahmzulegen). Auth = `Authorization: Basic base64(email:apiToken)`.
 - `modules.gitlab.{baseUrl,apiToken}` + `modules.gitlab.projects.<key>.{path}`.
   **Same key** as the Jira project → mapping. Auth = `PRIVATE-TOKEN` header. API base `${baseUrl}/api/v4`.
+- `modules.github.{baseUrl?,apiToken}` + `modules.github.projects.<key>.{path}` (`owner/repo`).
+  Ebenfalls derselbe Key → Zuordnung. Auth = `Authorization: Bearer` plus
+  `Accept: application/vnd.github+json`. `baseUrl` ist die **API**-Basis und hat eine Vorgabe
+  (`https://api.github.com`); bei GitHub Enterprise steht dort `https://<host>/api/v3`, und Kanban
+  leitet daraus GraphQL (`/api/graphql`) und die Web-Basis für Links ab. Ein Projekt gehört zu
+  **einer** Forge — derselbe Key unter `gitlab` *und* `github` ist ein Konfigurationsfehler, den
+  `KanbanConfig.resolve` mit dem Namen des Projekts meldet.
 - `modules.knowledgebase.projects.<key>.path` — ebenfalls kein Modul: nur der Ort der
   Knowledgebase, den Kanban als `kbPath` in `.claude/project.json` durchreicht (absolut, `~` oder
   relativ zum Basis-Pfad; leer = kein `kbPath`). Kanban liest den Ordner selbst nicht, und die

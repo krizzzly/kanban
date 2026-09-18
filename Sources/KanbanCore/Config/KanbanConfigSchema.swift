@@ -3,12 +3,12 @@ import Foundation
 /// Declarative schema of `~/Library/Application Support/Kanban/config.json` — the single source of
 /// truth the settings UI renders from (`ConfigFieldSpec` & co. live in `ConfigSchema.swift`).
 ///
-/// Die zwei Module, die Kanban selbst betreibt (Jira, GitLab) — plus **Confluence**, das keins ist:
-/// dort steht nur, wo die exportierten Seiten liegen und zu welchem Space sie gehören. Geholt werden
-/// sie von Hermes' `generate-confluence-page`, und genau dieser Eintrag sagt ihm, wohin.
+/// Die Module, die Kanban selbst betreibt (Jira, GitLab, GitHub) — plus **Confluence**, das keins
+/// ist: dort steht nur, wo die exportierten Seiten liegen und zu welchem Space sie gehören. Geholt
+/// werden sie von Hermes' `generate-confluence-page`, und genau dieser Eintrag sagt ihm, wohin.
 /// Wer weitere Hermes-Module pflegen will, tut das in Hermes.
 public enum KanbanConfigSchema {
-    public static let sections: [ConfigSectionSpec] = [general, jira, gitlab, confluence,
+    public static let sections: [ConfigSectionSpec] = [general, jira, gitlab, github, confluence,
                                                        knowledgebase, appearance, watchdog, hermes]
 
     /// Nur sinnvoll, solange eine `~/.hermes/config.json` existiert — die Einstellungen blenden die
@@ -79,7 +79,8 @@ public enum KanbanConfigSchema {
     static let gitlab = ConfigSectionSpec(
         id: "gitlab", title: "GitLab", icon: "arrow.triangle.branch",
         intro: "Optional — liefert die Spalten Review und Done. Gleicher Projekt-Key wie bei Jira → "
-             + "Zuordnung. Ohne GitLab bleibt das Board auf den lokalen Artefakten.",
+             + "Zuordnung. Liegt ein Projekt stattdessen auf GitHub, gehört es in den Abschnitt "
+             + "darunter; ohne beides bleibt das Board auf den lokalen Artefakten.",
         fields: [
             ConfigFieldSpec(["modules", "gitlab", "baseUrl"], "Base-URL", kind: .string,
                             placeholder: "https://git.firma.io", validation: .url),
@@ -92,6 +93,34 @@ public enum KanbanConfigSchema {
             keyPlaceholder: "even",
             fields: [
                 ProjectFieldSpec("path", "Projekt-Pfad", required: true, placeholder: "applications/even"),
+            ]))
+
+    /// Die zweite Forge. Gleicher Zuschnitt wie GitLab — was ein Projekt bekommt, hängt nicht davon
+    /// ab, wo sein Code liegt: Review- und Done-Spalte, PR-Badge, Branch-Links, Review-Skills.
+    static let github = ConfigSectionSpec(
+        id: "github", title: "GitHub", icon: "chevron.left.forwardslash.chevron.right",
+        intro: "Optional, und die Alternative zu GitLab — dieselben Spalten Review und Done, nur "
+             + "heisst ein Merge Request dort Pull Request. Gleicher Projekt-Key wie bei Jira → "
+             + "Zuordnung. Ein Projekt gehört zu **einer** Forge: steht derselbe Key auch unter "
+             + "GitLab, meldet Kanban das als Konfigurationsfehler, statt sich eine auszusuchen.",
+        fields: [
+            ConfigFieldSpec(["modules", "github", "baseUrl"], "API-Basis", kind: .string,
+                            placeholder: "https://api.github.com",
+                            help: "Leer = https://api.github.com. Für GitHub Enterprise die "
+                                + "API-Basis der Instanz eintragen (https://<host>/api/v3); "
+                                + "GraphQL und die Web-Adressen leitet Kanban daraus ab.",
+                            validation: .url),
+            ConfigFieldSpec(["modules", "github", "apiToken"], "API-Token", kind: .secret,
+                            help: "Personal Access Token (Settings → Developer settings) mit "
+                                + "Lesezugriff auf das Repo, Header Authorization: Bearer. Ein "
+                                + "klassisches Token braucht den Scope „repo“ — ohne ihn bleiben "
+                                + "die Thread-Zähler leer, weil sie über GraphQL kommen."),
+        ],
+        projectMap: ProjectMapSpec(
+            path: ["modules", "github", "projects"],
+            keyPlaceholder: "kanban",
+            fields: [
+                ProjectFieldSpec("path", "Repository", required: true, placeholder: "owner/repo"),
             ]))
 
     static let confluence = ConfigSectionSpec(

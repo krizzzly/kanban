@@ -50,12 +50,14 @@ struct TicketCard: View {
                     }
                     if card.needsAttention { AttentionBadge() }
                     ForEach(Array(card.badges.enumerated()), id: \.offset) { _, badge in
-                        BadgeView(badge: badge, mergeRequestURL: card.mergeRequestURL)
+                        BadgeView(badge: badge, forge: card.forge,
+                                  mergeRequestURL: card.mergeRequestURL)
                     }
-                    // Right after the MR badge (last in `badges`), so the count reads as its detail.
+                    // Right after the MR/PR badge (last in `badges`), so the count reads as its detail.
                     if card.unresolvedMRComments > 0 {
                         OpenCommentsBadge(resolved: card.resolvedMRComments,
                                           total: card.totalMRComments,
+                                          forge: card.forge,
                                           mergeRequestURL: card.commentsURL ?? card.mergeRequestURL)
                     }
                     if card.claudeSeconds > 0 || card.claudeRunningSince != nil {
@@ -70,8 +72,9 @@ struct TicketCard: View {
                             .font(.app(.caption2))
                             .foregroundStyle(.tertiary)
                     }
-                    // Flush right, directly under the ticket key: the MR's review verdict.
+                    // Flush right, directly under the ticket key: the request's review verdict.
                     MRReviewBadge(state: card.mrReviewState,
+                                  forge: card.forge,
                                   approvedBy: card.approvedBy,
                                   mergeRequestURL: card.commentsURL ?? card.mergeRequestURL)
                 }
@@ -156,38 +159,43 @@ struct AttentionBadge: View {
     }
 }
 
-/// Review threads on the card's MR, in GitLab's own MR-list notation: a grey pill with the comments
-/// icon and "‹resolved› of ‹total›". Shown only while something is still open — once every thread is
-/// resolved, GitLab (and this card, via `MRReviewBadge`) switches to the green "Resolved" pill.
+/// Review threads on the card's request, in the forge's own list notation: a grey pill with the
+/// comments icon and "‹resolved› of ‹total›". Shown only while something is still open — once every
+/// thread is resolved, the forge (and this card, via `MRReviewBadge`) switches to the green
+/// "Resolved" pill.
 struct OpenCommentsBadge: View {
     let resolved: Int
     let total: Int
-    /// Click target: the MR whose discussions these are (nil → the badge stays inert).
+    var forge: ForgeKind = .gitlab
+    /// Click target: the request whose discussions these are (nil → the badge stays inert).
     var mergeRequestURL: String?
 
     private var hint: String {
         let open = total - resolved
         let subject = open == 1
-            ? "1 offener Thread im Merge Request (\(resolved) von \(total) erledigt)"
-            : "\(open) offene Threads im Merge Request (\(resolved) von \(total) erledigt)"
+            ? "1 offener Thread im \(forge.requestNoun) (\(resolved) von \(total) erledigt)"
+            : "\(open) offene Threads im \(forge.requestNoun) (\(resolved) von \(total) erledigt)"
         return mergeRequestURL == nil ? subject : "\(subject) — klicken zum Öffnen im Browser"
     }
 
     var body: some View {
-        GitLabPill(icon: "bubble.left.and.bubble.right.fill",
-                   text: "\(resolved) of \(total)",
-                   foreground: GitLabColors.neutralText,
-                   fill: GitLabColors.neutralFill)
-            .accessibilityLabel("\(total - resolved) offene MR-Threads")
+        let palette = ForgeColors.palette(forge)
+        ForgePill(icon: "bubble.left.and.bubble.right.fill",
+                  text: "\(resolved) of \(total)",
+                  foreground: palette.neutralText,
+                  fill: palette.neutralFill)
+            .accessibilityLabel("\(total - resolved) offene \(forge.requestAbbreviation)-Threads")
             .modifier(BrowserLink(urlString: mergeRequestURL, hint: hint))
     }
 }
 
-/// The MR's review verdict, flush right under the ticket key — GitLab's green badges: **Approved**
-/// once someone approved, otherwise **Resolved** when every review thread is settled. Approved wins,
-/// so only one pill is ever on the card (see `MRReviewState`); `.none` renders nothing at all.
+/// The request's review verdict, flush right under the ticket key — the forge's green badges:
+/// **Approved** once someone approved, otherwise **Resolved** when every review thread is settled.
+/// Approved wins, so only one pill is ever on the card (see `MRReviewState`); `.none` renders
+/// nothing at all.
 struct MRReviewBadge: View {
     let state: MRReviewState
+    var forge: ForgeKind = .gitlab
     var approvedBy: [String] = []
     var mergeRequestURL: String?
 
@@ -197,28 +205,29 @@ struct MRReviewBadge: View {
             pill("checkmark.circle.fill", "Approved", hint: approvedHint)
         case .resolved:
             pill("bubble.left.and.bubble.right.fill", "Resolved",
-                 hint: "Alle Review-Threads im Merge Request sind erledigt")
+                 hint: "Alle Review-Threads im \(forge.requestNoun) sind erledigt")
         case .none:
             EmptyView()
         }
     }
 
     private var approvedHint: String {
-        approvedBy.isEmpty ? "Merge Request ist approved"
+        approvedBy.isEmpty ? "\(forge.requestNoun) ist approved"
                            : "Approved von \(approvedBy.joined(separator: ", "))"
     }
 
     private func pill(_ icon: String, _ text: String, hint: String) -> some View {
-        GitLabPill(icon: icon, text: text,
-                   foreground: GitLabColors.successText, fill: GitLabColors.successFill)
+        let palette = ForgeColors.palette(forge)
+        return ForgePill(icon: icon, text: text,
+                         foreground: palette.successText, fill: palette.successFill)
             .accessibilityLabel(text)
             .modifier(BrowserLink(urlString: mergeRequestURL,
                                   hint: mergeRequestURL == nil ? hint : "\(hint) — klicken zum Öffnen im Browser"))
     }
 }
 
-/// GitLab's badge shape: icon + label in a tinted capsule.
-private struct GitLabPill: View {
+/// Die Badge-Form beider Forges: Symbol + Beschriftung in einer getönten Kapsel.
+private struct ForgePill: View {
     let icon: String
     let text: String
     let foreground: Color
@@ -269,10 +278,14 @@ private struct BrowserLink: ViewModifier {
     }
 }
 
-/// Badge in kanban-code's icon+text style (cf. `CardBadgesRow`): 📄 file · 🌳 worktree · 🔀 MR.
+/// Badge in kanban-code's icon+text style (cf. `CardBadgesRow`): 📄 file · 🌳 worktree ·
+/// 🔀 MR !42 bzw. PR #42.
 struct BadgeView: View {
     let badge: CardBadge
-    /// Click target for the MR badge — the other badges ignore it.
+    /// Von welcher Forge der Request stammt — trägt die Beschriftung („MR !42" / „PR #42") und
+    /// damit auch die Schreibweise, die `review-merge` erwartet.
+    var forge: ForgeKind = .gitlab
+    /// Click target for the request badge — the other badges ignore it.
     var mergeRequestURL: String?
 
     var body: some View {
@@ -282,10 +295,11 @@ struct BadgeView: View {
         }
         .foregroundStyle(color)
         .modifier(BrowserLink(urlString: linkURL,
-                              hint: linkURL == nil ? nil : "Merge Request im Browser öffnen"))
+                              hint: linkURL == nil ? nil
+                                  : "\(forge.requestNoun) im Browser öffnen"))
     }
 
-    /// Only the MR badge links out; 📄 file and 🌳 worktree have no web page.
+    /// Only the request badge links out; 📄 file and 🌳 worktree have no web page.
     private var linkURL: String? {
         if case .mergeRequest = badge { return mergeRequestURL }
         return nil
@@ -300,8 +314,11 @@ struct BadgeView: View {
     }
 
     private var label: String? {
-        if case .mergeRequest(let iid, let draft) = badge { return draft ? "#\(iid) Draft" : "#\(iid)" }
-        return nil
+        guard case .mergeRequest(let iid, let draft) = badge else { return nil }
+        // „MR !42" / „PR #42" — die Schreibweise der Plattform, damit die Zahl auf der Karte
+        // dieselbe ist, die man dort eintippt.
+        let number = "\(forge.requestAbbreviation) \(forge.numberPrefix)\(iid)"
+        return draft ? "\(number) Draft" : number
     }
 
     private var color: Color {

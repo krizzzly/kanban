@@ -2,11 +2,18 @@ import Foundation
 
 /// Kanbans GitLab-Modul (Gegenstück zu Hermes' `modules/gitlab`). Transport, Auth und Host-Guard
 /// kommen von `ModuleHTTPClient`: direktes REST mit dem `PRIVATE-TOKEN`, das dafür `read_api` braucht.
-public struct GitLabClient: Sendable {
+///
+/// Eine von zwei Forges (`ForgeClient`), die andere ist `GitHubClient`. GitLabs Vokabular ist
+/// zugleich das **normalisierte**: Kanban ist hier gewachsen, und die Zustandsnamen dieser API
+/// (`opened` / `merged` / `closed`) stehen unverändert in `WorkflowStatus` und `TicketMatching`.
+/// Der GitHub-Adapter übersetzt auf sie — nicht umgekehrt.
+public struct GitLabClient: Sendable, ForgeClient {
     /// Modul-intern sichtbar, damit die Endpunkte in `GitLabFetch.swift` denselben Transport
     /// und dieselbe Basis-URL nutzen.
     let apiBaseUrl: String   // e.g. https://git.iwf.io/api/v4
     let http: ModuleHTTPClient
+
+    public var kind: ForgeKind { .gitlab }
 
     /// Aus der App-Config — nil, wenn GitLab nicht konfiguriert ist (es ist optional; ohne GitLab
     /// bleibt das Board bei den lokalen Artefakten).
@@ -35,9 +42,15 @@ public struct GitLabClient: Sendable {
                 targetBranch: $0.target_branch,
                 mergedAt: $0.merged_at,
                 webUrl: $0.web_url,
-                draft: $0.isDraft
+                draft: $0.isDraft,
+                forge: .gitlab
             )
         }
+    }
+
+    /// `ForgeClient` — derselbe Weg, unter dem Namen, den das Board kennt.
+    public func openedAndMergedRequests(projectPath: String) async throws -> [MergeRequestRef] {
+        try await openedAndMergedMRs(projectPath: projectPath)
     }
 
     /// Convenience: opened + merged MRs in one call. Opened MRs additionally carry their review
@@ -101,7 +114,8 @@ public struct GitLabClient: Sendable {
                                        mergedAt: mr.mergedAt, webUrl: mr.webUrl, draft: mr.draft,
                                        unresolvedDiscussions: state.unresolved,
                                        resolvedDiscussions: state.resolved,
-                                       approved: state.approved, approvedBy: state.approvedBy)
+                                       approved: state.approved, approvedBy: state.approvedBy,
+                                       forge: mr.forge)
             }
         }
     }

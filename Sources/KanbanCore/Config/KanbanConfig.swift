@@ -16,7 +16,10 @@ public struct ProjectConfig: Identifiable, Sendable, Hashable {
     /// `.claude/project.json`, und ein Skill weiss damit, dass es keine gibt.
     public let kbPathAbsolute: String?
     public let repoDir: String             // local git repo root (for `git worktree list`)
-    public let gitlabProjectPath: String?  // GitLab namespace path, e.g. "applications/even"
+    /// Auf welcher Forge das Repo liegt und unter welchem Pfad — `applications/even` bei GitLab,
+    /// `owner/repo` bei GitHub. **nil** heisst: keine Forge zugeordnet; dann bleibt das Board bei
+    /// den lokalen Artefakten, genau wie früher ohne GitLab-Eintrag.
+    public let forge: ForgeRef?
     /// Welcher Coding-Agent dieses Projekt bedient (`agent` in der Config, Default Claude).
     /// Entscheidet über Startbefehl, Asset-Ort und das Präfix, mit dem Kanban Commands tippt.
     public let agent: AgentKind
@@ -32,9 +35,15 @@ public struct ProjectConfig: Identifiable, Sendable, Hashable {
 
     public var id: String { key }
 
+    /// Der GitLab-Pfad, **wenn** das Projekt auf GitLab liegt. Für die Stellen, die es wörtlich so
+    /// weitergeben — `.claude/project.json` führt den Schlüssel für die Übergangszeit weiter.
+    public var gitlabProjectPath: String? {
+        forge?.kind == .gitlab ? forge?.path : nil
+    }
+
     public init(key: String, prefix: String, jiraBaseUrl: String, tasksPathAbsolute: String,
                 docsPathAbsolute: String = "", kbPathAbsolute: String? = nil,
-                repoDir: String, gitlabProjectPath: String?,
+                repoDir: String, forge: ForgeRef?,
                 agent: AgentKind = .claude,
                 appearance: ProjectAppearance = .none,
                 usesJira: Bool = true) {
@@ -45,7 +54,7 @@ public struct ProjectConfig: Identifiable, Sendable, Hashable {
         self.docsPathAbsolute = docsPathAbsolute
         self.kbPathAbsolute = kbPathAbsolute
         self.repoDir = repoDir
-        self.gitlabProjectPath = gitlabProjectPath
+        self.forge = forge
         self.agent = agent
         self.appearance = appearance
         self.usesJira = usesJira
@@ -64,6 +73,10 @@ public struct AppConfig: Sendable {
     public let jiraDefaultBaseUrl: String
     public let gitlabBaseUrl: String?
     public let gitlabApiToken: String?
+    /// GitHubs **API**-Basis. Leer = `https://api.github.com`; bei GitHub Enterprise steht hier
+    /// `https://<host>/api/v3`, und die Web-Adressen werden daraus abgeleitet (`githubWebBaseUrl`).
+    public let githubBaseUrl: String?
+    public let githubApiToken: String?
     public let projects: [ProjectConfig]
     /// Der Session-Watchdog (`watchdog.*`) — aus, solange niemand ihn einschaltet.
     public let watchdog: WatchdogSettings
@@ -80,7 +93,8 @@ public struct AppConfig: Sendable {
     /// A config that has never been filled in — what a fresh install starts from.
     public static let empty = AppConfig(basePath: ("~/code" as NSString).expandingTildeInPath,
                                         jiraEmail: "", jiraApiToken: "", jiraDefaultBaseUrl: "",
-                                        gitlabBaseUrl: nil, gitlabApiToken: nil, projects: [],
+                                        gitlabBaseUrl: nil, gitlabApiToken: nil,
+                                        githubBaseUrl: nil, githubApiToken: nil, projects: [],
                                         watchdog: WatchdogSettings(),
                                         excludeClaudeProjectFileFromCommit: true)
 
@@ -91,6 +105,34 @@ public struct AppConfig: Sendable {
     public var hasGitlab: Bool { gitlabBaseUrl != nil && (gitlabApiToken?.isEmpty == false) }
     public var gitlabApiUrl: String? { gitlabBaseUrl.map { "\($0)/api/v4" } }
 
+    /// Anders als bei GitLab reicht das **Token** — die Base-URL hat eine sinnvolle Vorgabe, und
+    /// niemand soll `https://api.github.com` abtippen müssen, um GitHub zu benutzen.
+    public var hasGithub: Bool { githubApiToken?.isEmpty == false }
+
+    public var githubApiUrl: String {
+        let configured = githubBaseUrl?.trimmingCharacters(in: .whitespaces) ?? ""
+        return configured.isEmpty ? GitHubClient.defaultApiBaseUrl : configured
+    }
+
+    /// Die Web-Basis für Branch- und PR-Links (`https://github.com`), abgeleitet aus der API-Basis.
+    public var githubWebBaseUrl: String { GitHubClient.webBaseURL(forApiBase: githubApiUrl) }
+
+    /// Die Web-Basis der Forge eines Projekts — was `ForgeLocation` braucht.
+    public func webBaseUrl(for kind: ForgeKind) -> String? {
+        switch kind {
+        case .gitlab: return gitlabBaseUrl
+        case .github: return githubWebBaseUrl
+        }
+    }
+
+    /// Plattform, Web-Basis und Pfad eines Projekts in einem Wert — nil, wenn dem Projekt keine
+    /// Forge zugeordnet ist oder deren Basis fehlt.
+    public func forgeLocation(for project: ProjectConfig?) -> ForgeLocation? {
+        guard let forge = project?.forge else { return nil }
+        return ForgeLocation(kind: forge.kind, webBaseUrl: webBaseUrl(for: forge.kind),
+                             projectPath: forge.path)
+    }
+
     /// Whether the app can show a board at all. Deliberately **not** an error state: a fresh install
     /// has no credentials and no projects, and lands on the setup screen instead of a red triangle.
     public var isConfigured: Bool { hasJira && !projects.isEmpty }
@@ -98,10 +140,17 @@ public struct AppConfig: Sendable {
 
 public enum KanbanConfigError: Error, LocalizedError {
     case decode(String)
+    /// Ein Projekt steht in **beiden** Forge-Abschnitten. Kein Raten: welche der beiden gemeint
+    /// ist, weiss nur der Mensch, und die falsche Wahl zeigte stillschweigend fremde Requests.
+    case ambiguousForge(project: String)
 
     public var errorDescription: String? {
         switch self {
         case .decode(let m): return "Kanban-Config konnte nicht gelesen werden: \(m)"
+        case .ambiguousForge(let project):
+            return "Projekt „\(project)“ steht sowohl unter modules.gitlab.projects als auch unter "
+                 + "modules.github.projects. Ein Projekt liegt auf einer Forge — bitte den "
+                 + "falschen Eintrag entfernen."
         }
     }
 }
@@ -156,9 +205,16 @@ public enum KanbanConfig {
         let basePathExpanded = expand(raw.basePath ?? "~/code")
         let jira = raw.modules?.jira
         let gitlab = raw.modules?.gitlab
+        let github = raw.modules?.github
         let confluence = raw.modules?.confluence
         let knowledgebase = raw.modules?.knowledgebase
         let appearance = raw.appearance
+
+        // **Vor** dem Aufbau der Projektliste: ein Projekt, das in beiden Forge-Abschnitten steht,
+        // ist ein Konfigurationsfehler. Geprüft wird über die Vereinigung beider Abschnitte, nicht
+        // nur über die Jira-Projekte — sonst bliebe ein Widerspruch in einem Key ohne Jira stehen,
+        // bis ihn jemand dort einträgt.
+        try assertSingleForge(gitlab: gitlab?.projects, github: github?.projects)
 
         var projects: [ProjectConfig] = []
         for (key, p) in (jira?.projects ?? [:]) {
@@ -186,7 +242,8 @@ public enum KanbanConfig {
                 docsPathAbsolute: docsAbsolute,
                 kbPathAbsolute: kbAbsolute,
                 repoDir: repoDir,
-                gitlabProjectPath: gitlab?.projects?[key]?.path,
+                forge: try forge(for: key, gitlab: gitlab?.projects?[key]?.path,
+                                 github: github?.projects?[key]?.path),
                 agent: AgentKind(configValue: p.agent) ?? .fallback,
                 // Fehlt der Abschnitt ganz (der Normalfall), kommt `.none` heraus — kein Bild,
                 // keine Farben, Kopfzeile wie immer.
@@ -204,10 +261,38 @@ public enum KanbanConfig {
             jiraDefaultBaseUrl: jira?.baseUrl ?? "",
             gitlabBaseUrl: gitlab?.baseUrl,
             gitlabApiToken: gitlab?.apiToken,
+            githubBaseUrl: github?.baseUrl,
+            githubApiToken: github?.apiToken,
             projects: projects,
             watchdog: watchdogSettings(raw.watchdog),
             excludeClaudeProjectFileFromCommit: raw.commit?.excludeClaudeProjectFile ?? true
         )
+    }
+
+    /// Wirft beim ersten Projekt, das in beiden Forge-Abschnitten mit nicht-leerem Pfad steht.
+    /// Sortiert, damit dieselbe Config immer denselben Namen meldet.
+    private static func assertSingleForge(gitlab: [String: RawGitlabProject]?,
+                                          github: [String: RawGithubProject]?) throws {
+        func filled(_ path: String?) -> Bool {
+            !(path?.trimmingCharacters(in: .whitespaces) ?? "").isEmpty
+        }
+        for key in (gitlab ?? [:]).keys.sorted() where filled(gitlab?[key]?.path) {
+            if filled(github?[key]?.path) { throw KanbanConfigError.ambiguousForge(project: key) }
+        }
+    }
+
+    /// Die Forge-Zuordnung eines Projekts aus den beiden Abschnitten. Ein leerer Pfad zählt als
+    /// „nicht gesetzt" — ein GitLab-Eintrag mit leerem `path` wäre später eine Abfrage gegen das
+    /// Projekt „" (siehe `ProjectRecord.strippingEmptyModules`).
+    static func forge(for key: String, gitlab: String?, github: String?) throws -> ForgeRef? {
+        let gitlabPath = gitlab?.trimmingCharacters(in: .whitespaces) ?? ""
+        let githubPath = github?.trimmingCharacters(in: .whitespaces) ?? ""
+        switch (gitlabPath.isEmpty, githubPath.isEmpty) {
+        case (false, false): throw KanbanConfigError.ambiguousForge(project: key)
+        case (false, true): return ForgeRef(kind: .gitlab, path: gitlabPath)
+        case (true, false): return ForgeRef(kind: .github, path: githubPath)
+        case (true, true): return nil
+        }
     }
 
     /// Bild und Farben eines Projekts aus `appearance.projects.<key>`. Der Bildpfad wird **nicht**
@@ -308,6 +393,9 @@ private struct RawCommit: Decodable {
 private struct RawModules: Decodable {
     let jira: RawJira?
     let gitlab: RawGitlab?
+    /// Die zweite Forge. Gleiche Form wie `gitlab`, nur ist `baseUrl` optional mit Vorgabe
+    /// (`https://api.github.com`) und `projects.<key>.path` heisst `owner/repo`.
+    let github: RawGithub?
     /// Kein Modul, das Kanban betreibt — nur der Ablageort der exportierten Seiten (und der Space,
     /// über den Hermes' Export sein Ziel findet). Siehe `KanbanConfigSchema.confluence`.
     let confluence: RawConfluence?
@@ -342,6 +430,16 @@ private struct RawGitlab: Decodable {
 
 private struct RawGitlabProject: Decodable {
     let path: String?
+}
+
+private struct RawGithub: Decodable {
+    let baseUrl: String?
+    let apiToken: String?
+    let projects: [String: RawGithubProject]?
+}
+
+private struct RawGithubProject: Decodable {
+    let path: String?      // owner/repo
 }
 
 private struct RawConfluence: Decodable {

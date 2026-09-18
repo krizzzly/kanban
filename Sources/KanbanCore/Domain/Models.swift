@@ -103,6 +103,12 @@ public enum JiraDoneState: String, Sendable, Hashable {
 }
 
 /// A merge request reduced to what the status engine needs.
+///
+/// **Provider-neutral**, und genau das macht eine zweite Forge überhaupt möglich: nichts hier ist
+/// GitLab-eigen ausser dem Namen `iid` (GitHub sagt „number") und der Schreibweise von `state`.
+/// Beides bleibt, weil es durch die halbe Codebasis und durch bestehende Task-Files zieht —
+/// **normalisiert wird im Adapter** (`GitHubClient`), nicht in der Domäne. Woher der Request stammt,
+/// steht in `forge`; davon hängt allein die **Anzeige** ab („MR !42" gegen „PR #42").
 public struct MergeRequestRef: Sendable, Hashable {
     public let iid: Int
     public let title: String
@@ -124,11 +130,16 @@ public struct MergeRequestRef: Sendable, Hashable {
     public let approved: Bool
     /// Names of the approvers, for the badge's tooltip. Empty when `approved` is false.
     public let approvedBy: [String]
+    /// Von welcher Plattform dieser Request stammt. Vorgabe `.gitlab`, damit jeder bestehende
+    /// Aufrufer (und jeder bestehende Test) unverändert bleibt.
+    public let forge: ForgeKind
 
     public init(iid: Int, title: String, state: String, sourceBranch: String,
                 targetBranch: String, mergedAt: String?, webUrl: String, draft: Bool = false,
                 unresolvedDiscussions: Int = 0, resolvedDiscussions: Int = 0,
-                approved: Bool = false, approvedBy: [String] = []) {
+                approved: Bool = false, approvedBy: [String] = [],
+                forge: ForgeKind = .gitlab) {
+        self.forge = forge
         self.iid = iid
         self.title = title
         self.state = state
@@ -148,6 +159,9 @@ public struct MergeRequestRef: Sendable, Hashable {
 
     /// What the card advertises about this MR's review progress.
     public var reviewState: MRReviewState { MRReviewState(mergeRequest: self) }
+
+    /// Wie die Forge diesen Request schreibt: `!42` bei GitLab, `#42` bei GitHub.
+    public var numberLabel: String { "\(forge.numberPrefix)\(iid)" }
 }
 
 /// The one review signal a card shows for its opened MR, in GitLab's own vocabulary.
@@ -243,11 +257,15 @@ public enum CardBadge: Sendable, Hashable {
     case worktree
     case mergeRequest(iid: Int, draft: Bool)   // 🔀 opened/merged · 🚧 draft (why it's not in Review)
 
-    public var symbol: String {
+    /// Die Kurzform in Text-Ausgaben. Die **Nummer** steht hier bewusst ohne Präfix: welches
+    /// Zeichen davor gehört, weiss nur die Forge (`!` bei GitLab, `#` bei GitHub), und ein Badge
+    /// kennt sie nicht — die Oberfläche beschriftet über `CardVM.forge` (siehe `BadgeView`).
+    public func symbol(forge: ForgeKind = .gitlab) -> String {
         switch self {
         case .file: return "📄"
         case .worktree: return "🌳"
-        case .mergeRequest(let iid, let draft): return "\(draft ? "🚧" : "🔀")#\(iid)"
+        case .mergeRequest(let iid, let draft):
+            return "\(draft ? "🚧" : "🔀")\(forge.numberPrefix)\(iid)"
         }
     }
 }

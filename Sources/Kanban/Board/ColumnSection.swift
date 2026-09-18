@@ -12,7 +12,8 @@ struct ColumnSection: View {
     let onToggle: () -> Void
     let onSelect: (String) -> Void
     // Right-click menu: the ticket workflow commands; Review cards additionally offer
-    // `/review-merge !<iid>` (the card's opened MR).
+    // `/review-merge !<iid>` bzw. `#<nummer>` (der offene Request der Karte, in der Schreibweise
+    // seiner Forge).
     let commands: [ClaudeCommand]
     /// `/` bei Claude, `$` bei Codex — die Karte zeigt, was sie tatsächlich tippt.
     let commandPrefix: String
@@ -77,8 +78,8 @@ struct ColumnSection: View {
             Button {
                 onReviewMerge(card, iid)
             } label: {
-                Text("\(commandPrefix)review-merge !\(iid)")
-                Text("Code-Review des Merge-Requests — Nummer wird eingetragen")
+                Text("\(commandPrefix)review-merge \(card.forge.numberPrefix)\(iid)")
+                Text("Code-Review des \(card.forge.requestNoun)s — Nummer wird eingetragen")
             }
         }
     }
