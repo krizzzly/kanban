@@ -1,73 +1,162 @@
 import Foundation
 
-/// Art eines Claude-Assets; der Rohwert ist der Unterordner im kanonischen Bestand.
+/// Art eines Claude-Assets; der Rohwert ist der Unterordner innerhalb eines Sets.
+///
+/// Die Gattung `commands` ist mit den Sets weggefallen: Kanban lieferte schon vorher nichts mehr
+/// als Command aus (der Umzug nach `skills/` war einmalig und ist erledigt), Codex kennt sie gar
+/// nicht, und ein von Hand angelegter Projekt-Command bleibt als Datei liegen — Kanban verwaltet
+/// ihn nur nicht mehr.
 public enum ClaudeAssetKind: String, CaseIterable, Sendable {
-    /// **Altbestand.** Kanban liefert nichts mehr als Command aus (siehe `ClaudeAssetMigration`) —
-    /// die Gattung bleibt, damit ein von Hand angelegter Command sichtbar und editierbar bleibt.
-    /// Codex kennt sie nicht.
-    case command = "commands"   // einzelne .md-Datei
-    case skill   = "skills"     // Ordner (SKILL.md + Beiwerk) — die Gattung, die beide Agents lesen
-    case rule    = "rules"      // einzelne .md-Datei; kein nativer Mechanismus, nur referenziert
+    case skill = "skills"     // Ordner (SKILL.md + Beiwerk) — die Gattung, die beide Agents lesen
+    case rule  = "rules"      // einzelne .md-Datei; kein nativer Mechanismus, nur referenziert
 }
 
-/// Ein Asset im kanonischen Bestand (`~/Library/Application Support/Kanban/claude/…`).
+/// Ein Asset innerhalb eines Sets.
 public struct ClaudeAsset: Sendable, Hashable, Identifiable {
+    /// Name des Sets, aus dem es stammt — zwei Sets dürfen denselben Skill-Namen führen.
+    public let set: String
     public let kind: ClaudeAssetKind
     public let name: String   // Dateiname ohne .md bzw. Skill-Ordnername
-    public let url: URL       // kanonischer Ort
+    public let url: URL       // der gepflegte Ordner selbst — das Ziel der Symlinks
 
-    public var id: String { "\(kind.rawValue)/\(name)" }
+    public var id: String { "\(set)/\(kind.rawValue)/\(name)" }
 
-    public init(kind: ClaudeAssetKind, name: String, url: URL) {
+    public init(set: String, kind: ClaudeAssetKind, name: String, url: URL) {
+        self.set = set
         self.kind = kind
         self.name = name
         self.url = url
     }
 }
 
-/// Zustand des Symlinks in der User-Ebene eines Agents (`~/.claude/skills`, `~/.codex/skills`).
+/// Eine benannte Zusammenstellung von Skills und Rules — das, was ein Projekt auswählt.
+///
+/// Ein Set ist ein Ordner unter der Sets-Wurzel; `set.json` gibt ihm Anzeigename und eine Zeile
+/// Beschreibung. Beides ist optional: ohne Datei heisst das Set wie sein Ordner, und die Übersicht
+/// zeigt dann eben nur den Namen.
+public struct ClaudeAssetSet: Sendable, Hashable, Identifiable {
+    public let name: String          // Ordnername — der Wert, der in der Config steht
+    public let displayName: String
+    public let description: String
+    public let url: URL
+
+    public var id: String { name }
+
+    public init(name: String, displayName: String? = nil, description: String = "", url: URL) {
+        self.name = name
+        self.displayName = displayName.flatMap { $0.isEmpty ? nil : $0 } ?? name
+        self.description = description
+        self.url = url
+    }
+}
+
+/// Wohin ein Set verlinkt wird.
+///
+/// Die Projekt-Ebene ist der Regelfall und der eigentliche Punkt der Sets: ein Agent-Home kann
+/// nicht zwei Sets gleichzeitig tragen, und Kanban fährt regelmässig mehrere Projekte parallel.
+/// Das Home bekommt nur das Standard-Set — damit eine Sitzung ausserhalb eines Projekts nicht leer
+/// dasteht.
+public enum ClaudeLinkScope: Sendable, Hashable {
+    case home(AgentKind)
+    case project(repoDir: String, agent: AgentKind)
+}
+
+/// Zustand eines Zielorts (`<repo>/.claude/skills/<name>`, `~/.claude/skills/<name>`, …).
 public enum ClaudeSymlinkState: Sendable, Equatable {
-    /// Symlink existiert und zeigt auf unseren kanonischen Bestand.
+    /// Symlink existiert und zeigt genau auf dieses Asset.
     case linked
     /// Am Zielort liegt nichts.
     case notInstalled
-    /// Am Zielort liegt etwas Fremdes (echte Datei oder Symlink woandershin) — wird nie überschrieben.
+    /// **Unser** Symlink, aber auf etwas anderes: ein anderes Set oder der alte, flache Bestand in
+    /// Application Support aus dem Modell vor den Sets. Wird beim Verlinken umgehängt, nicht
+    /// gemeldet — sonst bliebe nach jedem Set-Wechsel ein Zielort für immer belegt.
+    case otherSet(String)
+    /// Am Zielort liegt etwas Fremdes (echte Datei oder Symlink irgendwo anders hin) — wird nie
+    /// überschrieben.
     case foreign(String)
+}
+
+/// Was beim Verlinken eines Sets passiert ist — die Grundlage der Übersicht.
+public struct ClaudeLinkReport: Sendable, Equatable {
+    /// Asset-Ids, die jetzt verlinkt sind.
+    public var linked: [String] = []
+    /// Aufgeräumte Symlinks eines vorher verlinkten Sets (bzw. des alten flachen Bestands).
+    public var removed: [String] = []
+    /// Zielort → Grund. Fremdes wird nie angefasst, sondern hier gemeldet.
+    public var foreign: [String: String] = [:]
+
+    public var isComplete: Bool { foreign.isEmpty }
+
+    public init() {}
 }
 
 public struct ClaudeAssetError: LocalizedError {
     public let message: String
     public var errorDescription: String? { message }
+
+    public init(message: String) { self.message = message }
 }
 
-/// Der kanonische Bestand an Commands/Skills/Rules, den Kanban besitzt und bereitstellt.
+/// Die Skill-Sets: **physisch gepflegte Ordner**, die direkt in die Projekte verlinkt werden.
 ///
-/// Drei Orte spielen zusammen: der **Auslieferungsstand** (App-Bundle, read-only), der **kanonische
-/// Bestand** (Application Support — editierbar, überlebt Updates) und die **User-Ebene der Agents**
-/// (`~/.claude/skills` und `~/.codex/skills` — Symlinks auf denselben Bestand, gelten damit in jedem
-/// Projekt). Ein Skill wird in **beide** Homes verlinkt: dieselbe Datei bedient Claude und Codex, es
-/// gibt keinen zweiten Bestand, der auseinanderlaufen könnte.
+/// Es gibt genau **einen** Ort, an dem ein Set lebt — den Ordner, in dem es gepflegt wird
+/// (`claude.setsPath`, per Vorgabe das Kanban-Repo unter
+/// `<basePath>/kanban/Sources/Kanban/Resources/ClaudeAssets/sets`). Dorthin zeigen die Symlinks
+/// der Projekte. Keine Kopie, kein Sync, kein App-Bundle dazwischen: eine Änderung an einem
+/// `SKILL.md` wirkt sofort in jedem Projekt, ohne Rebuild und ohne Neustart.
 ///
-/// Rules bekommen keinen Symlink: keiner der beiden Agents hat einen Rules-Mechanismus, sie werden
-/// aus den Skills per absolutem Pfad referenziert.
+/// Zielorte sind `<repo>/.claude/skills/<name>` bzw. `<repo>/.codex/skills/<name>` je Projekt und
+/// die Agent-Homes für das Standard-Set. Rules reisen mit ins Projekt
+/// (`<repo>/.claude/rules/<name>.md`) — **immer** nach `.claude/`, auch bei `agent: codex`: die
+/// Skills verweisen im Text auf `.claude/rules/…`, und dieser Pfad muss unter beiden Agents
+/// aufgehen. Dieselbe Überlegung wie bei `.claude/project.json`. In den Agent-Homes bekommen Rules
+/// keinen Zielort — dort gibt es keinen Ordner, auf den ein Skill zeigen könnte.
 public struct ClaudeAssetStore: Sendable {
-    public let canonicalRoot: URL
+    /// Der Ordner, unter dem die Sets liegen und gepflegt werden.
+    public let setsRoot: URL
+    /// Der flache Bestand aus dem Modell **vor** den Sets. Kanban schreibt dort nichts mehr; der
+    /// Pfad wird nur noch gebraucht, um alte Symlinks als **unsere** zu erkennen und umzuhängen,
+    /// statt sie als fremd liegenzulassen.
+    public let legacyRoot: URL
     public let userClaudeDir: URL
     public let userCodexDir: URL
 
-    /// `~/Library/Application Support/Kanban/claude`
-    public static var defaultRoot: URL {
+    /// `~/Library/Application Support/Kanban/claude` — der alte Bestand.
+    public static var defaultLegacyRoot: URL {
         FileManager.default
             .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("Kanban/claude", isDirectory: true)
     }
 
-    public init(canonicalRoot: URL = ClaudeAssetStore.defaultRoot,
+    /// Wo die Sets liegen, wenn die Config nichts sagt: im Kanban-Repo, das wie jedes andere
+    /// Projekt unter dem Basis-Pfad steht. Eine Konvention, kein Fund — deshalb ist der Pfad in der
+    /// Config überschreibbar, und die Übersicht sagt es, wenn dort nichts liegt.
+    public static let repoRelativeSetsPath = "Sources/Kanban/Resources/ClaudeAssets/sets"
+
+    public static func defaultSetsRoot(basePath: String) -> URL {
+        URL(fileURLWithPath: basePath)
+            .appendingPathComponent("kanban/\(repoRelativeSetsPath)", isDirectory: true)
+    }
+
+    public init(setsRoot: URL,
+                legacyRoot: URL = ClaudeAssetStore.defaultLegacyRoot,
                 userClaudeDir: URL = AgentKind.claude.homeDir,
                 userCodexDir: URL = AgentKind.codex.homeDir) {
-        self.canonicalRoot = canonicalRoot
+        self.setsRoot = setsRoot
+        self.legacyRoot = legacyRoot
         self.userClaudeDir = userClaudeDir
         self.userCodexDir = userCodexDir
+    }
+
+    /// Der Store, wie ihn die App benutzt: Sets-Ordner aus der Config.
+    ///
+    /// Die Config wird bei jedem Aufruf frisch gelesen — sie ist eine kleine Datei, und der Pfad
+    /// darf sich ändern, ohne dass die App neu starten muss. Eine kaputte Config heisst „Vorgabe",
+    /// nicht „keine Skills".
+    public static func configured() -> ClaudeAssetStore {
+        let config = try? KanbanConfig.load()
+        let root = config?.skillSetsPath ?? defaultSetsRoot(basePath: AppConfig.empty.basePath).path
+        return ClaudeAssetStore(setsRoot: URL(fileURLWithPath: root))
     }
 
     /// Home des Agents — in Tests umgebogen, im Betrieb `~/.claude` bzw. `~/.codex`.
@@ -78,19 +167,72 @@ public struct ClaudeAssetStore: Sendable {
         }
     }
 
+    /// Steht der gepflegte Ordner überhaupt da? Ein verschobenes oder nie ausgechecktes Repo ist
+    /// der eine Preis der direkten Verlinkung, und die Übersicht soll ihn benennen können.
+    public var setsRootExists: Bool {
+        FileManager.default.fileExists(atPath: setsRoot.path)
+    }
+
     // MARK: - Inventar
 
-    public func assets(_ kind: ClaudeAssetKind) -> [ClaudeAsset] {
-        Self.assets(kind, under: canonicalRoot)
+    public func sets() -> [ClaudeAssetSet] {
+        Self.sets(in: setsRoot)
     }
 
-    public func allAssets() -> [ClaudeAsset] {
-        ClaudeAssetKind.allCases.flatMap(assets)
+    public func set(named name: String?) -> ClaudeAssetSet? {
+        guard let name, !name.isEmpty else { return nil }
+        return sets().first { $0.name == name }
     }
 
-    /// Listet Assets unter beliebiger Wurzel — dieselbe Struktur gilt für Bundle und Bestand.
-    public static func assets(_ kind: ClaudeAssetKind, under root: URL) -> [ClaudeAsset] {
-        let dir = root.appendingPathComponent(kind.rawValue, isDirectory: true)
+    /// Liest die Sets in einem Ordner.
+    ///
+    /// Ein Unterordner ist erst ein Set, wenn er auch `skills/` oder `rules/` hat und sein Name
+    /// kebab-case ist. In einem über Jahre gewachsenen Ordner liegt allerlei herum
+    /// (`skills-backup-2026-08-20`, `projektkopien-backup-*`, `.versions`, ein ZIP) — nichts davon
+    /// darf als Set durchgehen, nur weil es ein Ordner ist.
+    public static func sets(in dir: URL) -> [ClaudeAssetSet] {
+        guard let entries = try? FileManager.default.contentsOfDirectory(
+            at: dir, includingPropertiesForKeys: [.isDirectoryKey],
+            options: .skipsHiddenFiles) else { return [] }
+        return entries.compactMap { url -> ClaudeAssetSet? in
+            let isDir = (try? url.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory ?? false
+            let name = url.lastPathComponent
+            guard isDir, ClaudeAssetName.istGueltig(name), hasAnyKindDir(url) else { return nil }
+            let info = SetInfo.read(url.appendingPathComponent("set.json"))
+            return ClaudeAssetSet(name: name, displayName: info?.displayName,
+                                  description: info?.description ?? "", url: url)
+        }
+        .sorted { $0.name < $1.name }
+    }
+
+    private static func hasAnyKindDir(_ setURL: URL) -> Bool {
+        ClaudeAssetKind.allCases.contains {
+            FileManager.default.fileExists(atPath: setURL.appendingPathComponent($0.rawValue).path)
+        }
+    }
+
+    /// Anzeigename und Beschreibung eines Sets. Fehlt die Datei oder ist sie unlesbar, heisst das
+    /// Set wie sein Ordner — eine kaputte `set.json` darf ein Set nicht verschwinden lassen.
+    private struct SetInfo: Decodable {
+        let displayName: String?
+        let description: String?
+
+        static func read(_ url: URL) -> SetInfo? {
+            guard let data = try? Data(contentsOf: url) else { return nil }
+            return try? JSONDecoder().decode(SetInfo.self, from: data)
+        }
+    }
+
+    public func assets(_ kind: ClaudeAssetKind, in set: ClaudeAssetSet) -> [ClaudeAsset] {
+        Self.assets(kind, in: set)
+    }
+
+    public func allAssets(in set: ClaudeAssetSet) -> [ClaudeAsset] {
+        ClaudeAssetKind.allCases.flatMap { Self.assets($0, in: set) }
+    }
+
+    public static func assets(_ kind: ClaudeAssetKind, in set: ClaudeAssetSet) -> [ClaudeAsset] {
+        let dir = set.url.appendingPathComponent(kind.rawValue, isDirectory: true)
         guard let entries = try? FileManager.default.contentsOfDirectory(
             at: dir, includingPropertiesForKeys: [.isDirectoryKey],
             options: .skipsHiddenFiles) else { return [] }
@@ -99,79 +241,76 @@ public struct ClaudeAssetStore: Sendable {
             switch kind {
             case .skill:
                 guard isDir else { return nil }
-                return ClaudeAsset(kind: kind, name: url.lastPathComponent, url: url)
-            case .command, .rule:
+                return ClaudeAsset(set: set.name, kind: kind, name: url.lastPathComponent, url: url)
+            case .rule:
                 guard !isDir, url.pathExtension == "md" else { return nil }
-                return ClaudeAsset(kind: kind, name: url.deletingPathExtension().lastPathComponent, url: url)
+                return ClaudeAsset(set: set.name, kind: kind,
+                                   name: url.deletingPathExtension().lastPathComponent, url: url)
             }
         }
         .sorted { $0.name < $1.name }
     }
 
-    // MARK: - Auslieferungsstand (Seeding + Reset)
+    // MARK: - Auflösung: welches Set gilt für ein Projekt?
 
-    /// Kopiert Assets, die im Bestand fehlen, aus dem Auslieferungsstand. Vorhandene — womöglich
-    /// vom User editierte — bleiben unangetastet. Liefert die neu angelegten Assets.
-    @discardableResult
-    public func seedMissing(from factoryRoot: URL) throws -> [ClaudeAsset] {
-        var seeded: [ClaudeAsset] = []
-        for kind in ClaudeAssetKind.allCases {
-            let targetDir = canonicalRoot.appendingPathComponent(kind.rawValue, isDirectory: true)
-            try FileManager.default.createDirectory(at: targetDir, withIntermediateDirectories: true)
-            for factory in Self.assets(kind, under: factoryRoot) {
-                let target = targetDir.appendingPathComponent(factory.url.lastPathComponent)
-                guard !FileManager.default.fileExists(atPath: target.path) else { continue }
-                try FileManager.default.copyItem(at: factory.url, to: target)
-                seeded.append(ClaudeAsset(kind: kind, name: factory.name, url: target))
-            }
+    /// Welches Set gilt — und ob dabei etwas nicht aufging.
+    public struct Resolution: Sendable, Equatable {
+        public let set: ClaudeAssetSet?
+        /// Gesetzt, wenn das ausdrücklich gewählte Set nicht (mehr) existiert und deshalb das
+        /// Standard-Set eingesprungen ist. Gehört in die Übersicht — sonst arbeitet ein Projekt
+        /// stillschweigend mit fremden Skills.
+        public let missingName: String?
+
+        public init(set: ClaudeAssetSet?, missingName: String? = nil) {
+            self.set = set
+            self.missingName = missingName
         }
-        return seeded
     }
 
-    /// Setzt ein Asset auf den Auslieferungsstand zurück (überschreibt den Bestand).
-    public func resetToFactory(_ asset: ClaudeAsset, from factoryRoot: URL) throws {
-        let factory = factoryRoot
-            .appendingPathComponent(asset.kind.rawValue, isDirectory: true)
-            .appendingPathComponent(asset.url.lastPathComponent)
-        guard FileManager.default.fileExists(atPath: factory.path) else {
-            throw ClaudeAssetError(message: "Kein Auslieferungsstand für \(asset.id) — Zurücksetzen unmöglich.")
-        }
-        if FileManager.default.fileExists(atPath: asset.url.path) {
-            try FileManager.default.removeItem(at: asset.url)
-        }
-        try FileManager.default.copyItem(at: factory, to: asset.url)
+    /// Das Set, das gilt, wenn ein Projekt keins wählt.
+    ///
+    /// Ohne Eintrag in der Config gilt das einzige vorhandene Set. Gibt es mehrere und ist keins
+    /// bestimmt, fällt die Wahl auf das erste — ein Projekt ganz ohne Skills wäre die schlechtere
+    /// Antwort; die Übersicht sagt dann, dass hier nichts entschieden ist.
+    public func defaultSet(configured: String?) -> ClaudeAssetSet? {
+        let alle = sets()
+        if let configured, let treffer = alle.first(where: { $0.name == configured }) { return treffer }
+        return alle.first
     }
 
-    /// Hat ein Asset einen Auslieferungsstand (= ist zurücksetzbar)?
-    public func hasFactoryVersion(_ asset: ClaudeAsset, in factoryRoot: URL) -> Bool {
-        FileManager.default.fileExists(atPath: factoryRoot
-            .appendingPathComponent(asset.kind.rawValue, isDirectory: true)
-            .appendingPathComponent(asset.url.lastPathComponent).path)
+    /// Das Set eines Projekts: seine eigene Wahl, sonst das Standard-Set.
+    public func resolve(skillSet: String?, default defaultName: String?) -> Resolution {
+        let standard = defaultSet(configured: defaultName)
+        guard let skillSet, !skillSet.isEmpty else { return Resolution(set: standard) }
+        if let treffer = set(named: skillSet) { return Resolution(set: treffer) }
+        return Resolution(set: standard, missingName: skillSet)
     }
 
-    // MARK: - Symlinks in die Claude-User-Ebene
+    // MARK: - Zielorte
 
-    /// Wohin der Symlink für dieses Asset bei diesem Agent gehört — nil, wo es keinen Ort gibt:
-    /// Rules (kein Mechanismus) und Commands unter Codex (kennt die Gattung nicht).
-    public func symlinkTarget(for asset: ClaudeAsset, agent: AgentKind = .claude) -> URL? {
-        switch asset.kind {
-        case .command:
-            return agent.userCommandsDir == nil ? nil
-                : homeDir(agent).appendingPathComponent("commands/\(asset.name).md")
-        case .skill:
+    /// Wohin dieses Asset in diesem Bereich gehört — nil, wo es keinen Ort gibt.
+    ///
+    /// Rules haben im Agent-Home keinen: dort existiert kein Rules-Mechanismus, und die Skills
+    /// verweisen ohnehin repo-relativ auf `.claude/rules/…`. Im Projekt haben sie einen, und zwar
+    /// immer unter `.claude/` — siehe Typ-Kommentar.
+    public func symlinkTarget(for asset: ClaudeAsset, scope: ClaudeLinkScope) -> URL? {
+        switch (asset.kind, scope) {
+        case (.skill, .home(let agent)):
             return homeDir(agent).appendingPathComponent("skills/\(asset.name)", isDirectory: true)
-        case .rule:
+        case (.skill, .project(let repoDir, let agent)):
+            return URL(fileURLWithPath: repoDir)
+                .appendingPathComponent("\(agent.projectDirName)/skills/\(asset.name)",
+                                        isDirectory: true)
+        case (.rule, .home):
             return nil
+        case (.rule, .project(let repoDir, _)):
+            return URL(fileURLWithPath: repoDir)
+                .appendingPathComponent("\(AgentKind.claude.projectDirName)/rules/\(asset.name).md")
         }
     }
 
-    /// Die Agents, für die dieses Asset überhaupt einen Zielort hat.
-    public func linkableAgents(for asset: ClaudeAsset) -> [AgentKind] {
-        AgentKind.allCases.filter { symlinkTarget(for: asset, agent: $0) != nil }
-    }
-
-    public func symlinkState(for asset: ClaudeAsset, agent: AgentKind = .claude) -> ClaudeSymlinkState {
-        guard let target = symlinkTarget(for: asset, agent: agent) else { return .notInstalled }
+    public func symlinkState(for asset: ClaudeAsset, scope: ClaudeLinkScope) -> ClaudeSymlinkState {
+        guard let target = symlinkTarget(for: asset, scope: scope) else { return .notInstalled }
         guard let dest = try? FileManager.default.destinationOfSymbolicLink(atPath: target.path) else {
             // Kein Symlink: entweder nichts, oder eine echte Datei/Ordner (fremd).
             return FileManager.default.fileExists(atPath: target.path)
@@ -180,23 +319,36 @@ public struct ClaudeAssetStore: Sendable {
         }
         let resolved = URL(fileURLWithPath: dest, relativeTo: target.deletingLastPathComponent())
             .standardizedFileURL.path
-        return resolved == asset.url.standardizedFileURL.path
-            ? .linked
-            : .foreign("Verknüpfung zeigt auf \(dest)")
+        if resolved == asset.url.standardizedFileURL.path { return .linked }
+        return isOurs(resolved) ? .otherSet(dest) : .foreign("Verknüpfung zeigt auf \(dest)")
     }
 
-    /// Legt den Symlink an. Fremde Dateien am Zielort werden nie überschrieben, sondern gemeldet.
-    public func installSymlink(for asset: ClaudeAsset, agent: AgentKind = .claude) throws {
-        guard let target = symlinkTarget(for: asset, agent: agent) else {
-            throw ClaudeAssetError(message: asset.kind == .rule
-                ? "Rules werden nicht verlinkt — sie werden per Pfad referenziert."
-                : "\(agent.displayName) kennt keine Commands — nur Skills werden dorthin verlinkt.")
+    /// Zeigt ein Pfad auf etwas, das **uns** gehört? Das entscheidet, ob ein vorgefundener Symlink
+    /// umgehängt werden darf.
+    ///
+    /// Zwei Wurzeln zählen: der Sets-Ordner (ein anderes Set) und der alte flache Bestand in
+    /// Application Support. Letzterer nur deshalb, damit die Links des Modells vor den Sets sich
+    /// beim ersten Start umhängen lassen — sonst wäre `/get-task` mit dem Umbau eingefroren.
+    private func isOurs(_ path: String) -> Bool {
+        [setsRoot, legacyRoot].contains {
+            path.hasPrefix($0.standardizedFileURL.path + "/")
         }
-        switch symlinkState(for: asset, agent: agent) {
+    }
+
+    /// Legt den Symlink an. Fremde Zielorte werden nie überschrieben, sondern gemeldet.
+    public func installSymlink(for asset: ClaudeAsset, scope: ClaudeLinkScope) throws {
+        guard let target = symlinkTarget(for: asset, scope: scope) else {
+            throw ClaudeAssetError(message:
+                "Für \(asset.id) gibt es hier keinen Zielort — Rules werden nur ins Projekt gelegt.")
+        }
+        switch symlinkState(for: asset, scope: scope) {
         case .linked:
             return
         case .foreign(let what):
             throw ClaudeAssetError(message: "\(target.path): \(what) — bitte manuell auflösen.")
+        case .otherSet:
+            try FileManager.default.removeItem(at: target)
+            try FileManager.default.createSymbolicLink(at: target, withDestinationURL: asset.url)
         case .notInstalled:
             try FileManager.default.createDirectory(at: target.deletingLastPathComponent(),
                                                     withIntermediateDirectories: true)
@@ -205,29 +357,111 @@ public struct ClaudeAssetStore: Sendable {
     }
 
     /// Entfernt unseren Symlink; Fremdes bleibt liegen.
-    public func removeSymlink(for asset: ClaudeAsset, agent: AgentKind = .claude) throws {
-        guard let target = symlinkTarget(for: asset, agent: agent),
-              symlinkState(for: asset, agent: agent) == .linked else { return }
-        try FileManager.default.removeItem(at: target)
+    public func removeSymlink(for asset: ClaudeAsset, scope: ClaudeLinkScope) throws {
+        guard let target = symlinkTarget(for: asset, scope: scope) else { return }
+        switch symlinkState(for: asset, scope: scope) {
+        case .linked, .otherSet:
+            try FileManager.default.removeItem(at: target)
+        case .notInstalled, .foreign:
+            return
+        }
     }
 
-    /// Zustand je Agent, für den es einen Zielort gibt — die Grundlage der Anzeige im Editor.
-    public func symlinkStates(for asset: ClaudeAsset) -> [AgentKind: ClaudeSymlinkState] {
-        Dictionary(uniqueKeysWithValues: linkableAgents(for: asset)
-            .map { ($0, symlinkState(for: asset, agent: $0)) })
-    }
+    // MARK: - Ein ganzes Set verlinken
 
-    /// Verlinkt alles Verlinkbare in **jedes** Agent-Home; fremde Zielorte werden übersprungen.
-    /// Liefert den Zustand danach, je Asset und Agent.
+    /// Verlinkt ein Set ins Projekt und räumt auf, was von einem vorher verlinkten Set übrig ist.
+    ///
+    /// Aufgeräumt wird auch das Skills-Verzeichnis des **anderen** Agents: ein Projekt hat genau
+    /// einen, ein Link im Ordner des anderen ist damit per Definition ein Überbleibsel. Fremdes
+    /// bleibt überall liegen.
     @discardableResult
-    public func installAllSymlinks() -> [ClaudeAsset: [AgentKind: ClaudeSymlinkState]] {
-        var result: [ClaudeAsset: [AgentKind: ClaudeSymlinkState]] = [:]
-        for asset in allAssets() where asset.kind != .rule {
-            for agent in linkableAgents(for: asset) {
-                try? installSymlink(for: asset, agent: agent)
-            }
-            result[asset] = symlinkStates(for: asset)
+    public func link(_ set: ClaudeAssetSet, toProject repoDir: String,
+                     agent: AgentKind) -> ClaudeLinkReport {
+        var report = ClaudeLinkReport()
+        let repo = URL(fileURLWithPath: repoDir)
+        let skills = assets(.skill, in: set)
+        let rules = assets(.rule, in: set)
+
+        for other in AgentKind.allCases where other != agent {
+            report.removed += cleanUp(
+                in: repo.appendingPathComponent("\(other.projectDirName)/skills", isDirectory: true),
+                keeping: [])
+        }
+        report.removed += cleanUp(
+            in: repo.appendingPathComponent("\(agent.projectDirName)/skills", isDirectory: true),
+            keeping: Set(skills.map(\.name)))
+        report.removed += cleanUp(
+            in: repo.appendingPathComponent("\(AgentKind.claude.projectDirName)/rules",
+                                            isDirectory: true),
+            keeping: Set(rules.map { "\($0.name).md" }))
+
+        for asset in skills + rules {
+            install(asset, scope: .project(repoDir: repoDir, agent: agent), into: &report)
+        }
+        return report
+    }
+
+    /// Verlinkt das Standard-Set in beide Agent-Homes — für Sitzungen ausserhalb eines Projekts.
+    /// Rules bleiben aussen vor: im Home gibt es keinen Ort, auf den ein Skill zeigen könnte.
+    @discardableResult
+    public func link(_ set: ClaudeAssetSet, toHomes agents: [AgentKind] = AgentKind.allCases)
+        -> [AgentKind: ClaudeLinkReport] {
+        let skills = assets(.skill, in: set)
+        var result: [AgentKind: ClaudeLinkReport] = [:]
+        for agent in agents {
+            var report = ClaudeLinkReport()
+            report.removed += cleanUp(in: homeDir(agent).appendingPathComponent("skills",
+                                                                               isDirectory: true),
+                                      keeping: Set(skills.map(\.name)))
+            for skill in skills { install(skill, scope: .home(agent), into: &report) }
+            result[agent] = report
         }
         return result
+    }
+
+    private func install(_ asset: ClaudeAsset, scope: ClaudeLinkScope,
+                         into report: inout ClaudeLinkReport) {
+        guard let target = symlinkTarget(for: asset, scope: scope) else { return }
+        do {
+            try installSymlink(for: asset, scope: scope)
+            report.linked.append(asset.id)
+        } catch {
+            report.foreign[target.path] = error.localizedDescription
+        }
+    }
+
+    /// Entfernt **unsere** Symlinks in `dir`, die nicht in `keeping` stehen. Alles andere — echte
+    /// Dateien, fremde Symlinks — bleibt unangetastet.
+    private func cleanUp(in dir: URL, keeping: Set<String>) -> [String] {
+        guard let entries = try? FileManager.default.contentsOfDirectory(
+            at: dir, includingPropertiesForKeys: nil, options: []) else { return [] }
+        var removed: [String] = []
+        for url in entries where !keeping.contains(url.lastPathComponent) {
+            guard let dest = try? FileManager.default.destinationOfSymbolicLink(atPath: url.path)
+            else { continue }
+            let resolved = URL(fileURLWithPath: dest, relativeTo: dir).standardizedFileURL.path
+            guard isOurs(resolved) else { continue }
+            if (try? FileManager.default.removeItem(at: url)) != nil {
+                removed.append(url.path)
+            }
+        }
+        return removed.sorted()
+    }
+
+    // MARK: - Zustand für die Übersicht
+
+    /// Zustand des ganzen Sets an einem Zielort: verlinkt nur, wenn **jedes** Asset verlinkt ist.
+    /// Ein halb verlinktes Projekt ist keins — ein fehlender Skill fällt erst im Betrieb auf.
+    public func state(of set: ClaudeAssetSet, scope: ClaudeLinkScope) -> ClaudeSymlinkState {
+        let ziele = allAssets(in: set).filter { symlinkTarget(for: $0, scope: scope) != nil }
+        guard !ziele.isEmpty else { return .notInstalled }
+        let zustaende = ziele.map { symlinkState(for: $0, scope: scope) }
+        if let fremd = zustaende.first(where: { if case .foreign = $0 { return true }; return false }) {
+            return fremd
+        }
+        if let anderes = zustaende.first(where: { if case .otherSet = $0 { return true }; return false }) {
+            return anderes
+        }
+        return zustaende.allSatisfy { $0 == .linked } ? .linked : .notInstalled
     }
 }

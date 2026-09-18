@@ -4,7 +4,7 @@ import Foundation
 /// the values shown in the block itself:
 ///   • 🎫 JIRA     `<url>`      → the URL itself               (browser)
 ///   • 🌳 WORKTREE `<path>`     → `kanban-ide://` scheme       (opens in PhpStorm, app-side)
-///   • 🌿 BRANCH   `<branch>`   → GitLab branch tree URL       (browser)
+///   • 🌿 BRANCH   `<branch>`   → Branch-URL der Forge          (browser)
 ///   • 🐳 STACK    `<url>`      → the URL itself               (browser)
 /// Die H1 bleibt unangetastet: eine Überschrift ist kein Navigationselement, und im Rohtext der
 /// Datei stand von der Verlinkung ohnehin nie etwas. Der Weg zum Ticket steht stattdessen als Zeile
@@ -22,11 +22,12 @@ public enum StatusLinks {
         return "\(ideScheme)://open?path=\(enc)"
     }
 
+    /// `forge` trägt Plattform, Web-Basis und Projekt-Pfad — nil, wenn dem Projekt keine Forge
+    /// zugeordnet ist. Dann bleibt der Branch ein blosser Code-Span, wie bisher ohne GitLab.
     public static func linkify(preamble: String,
                                ticketKey: String?,
                                jiraBaseUrl: String?,
-                               gitlabBaseUrl: String?,
-                               gitlabProjectPath: String?,
+                               forge: ForgeLocation?,
                                usesJira: Bool = true) -> String {
         // Bestandsdateien haben die Zeile nicht — sie wird für die Anzeige abgeleitet. Steht sie in
         // der Datei, gewinnt die Datei; ohne Jira-Anbindung entsteht gar keine.
@@ -42,7 +43,7 @@ public enum StatusLinks {
                 return linkFirstCode(in: line) { ideURL(forPath: $0) }
             }
             if line.contains("**BRANCH**") {
-                return linkFirstCode(in: line) { gitlabBranchURL(branch: $0, base: gitlabBaseUrl, projectPath: gitlabProjectPath) }
+                return linkFirstCode(in: line) { forge?.branchURL($0) }
             }
             if line.contains("**STACK**") {
                 return linkFirstCode(in: line) { $0.hasPrefix("http") ? $0 : nil }
@@ -108,18 +109,14 @@ public enum StatusLinks {
 
     // MARK: - URL builders
 
-    /// Eine `!<iid>`-Karte ist Arbeit **ohne** Ticketnummer — zu ihr gibt es per Definition kein
-    /// Jira-Issue. Ohne diese Ausnahme zeigte ihre Zeile auf `/browse/!49` und liefe ins Leere.
+    /// Eine `!<iid>`- bzw. `#<nummer>`-Karte ist Arbeit **ohne** Ticketnummer — zu ihr gibt es per
+    /// Definition kein Jira-Issue. Ohne diese Ausnahme zeigte ihre Zeile auf `/browse/!49` bzw.
+    /// `/browse/#49` und liefe ins Leere.
     public static func jiraURL(ticketKey: String?, base: String?) -> String? {
-        guard let key = ticketKey, !key.isEmpty, !key.hasPrefix("!"),
+        guard let key = ticketKey, !key.isEmpty,
+              !key.hasPrefix("!"), !key.hasPrefix("#"),
               let base, !base.isEmpty else { return nil }
         return "\(trimTrailingSlash(base))/browse/\(key)"
-    }
-
-    private static func gitlabBranchURL(branch: String, base: String?, projectPath: String?) -> String? {
-        guard let base, !base.isEmpty, let path = projectPath, !path.isEmpty else { return nil }
-        let enc = branch.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? branch
-        return "\(trimTrailingSlash(base))/\(path)/-/tree/\(enc)"
     }
 
     private static func trimTrailingSlash(_ s: String) -> String {

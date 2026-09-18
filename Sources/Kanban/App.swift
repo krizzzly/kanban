@@ -9,14 +9,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
+        // Die prozessweiten Rückkanäle (Terminal-Klick, Benachrichtigung) an die Fenster-Zuordnung
+        // hängen — hier und nicht im Model: es gibt N Models, aber nur einen Prozess. Der Aufruf legt
+        // zugleich `ProjectWindows.shared` an, solange die gemerkte Fensterliste noch unberührt ist.
+        MainActor.assumeIsolated { ProjectWindows.shared.starten() }
     }
 
+    /// Bleibt `true`, auch mit mehreren Fenstern: Kanban ist ein Board-Programm, kein
+    /// Dokument-Programm — ist das letzte Brett zu, gibt es nichts mehr zu tun, und ein Programm
+    /// ohne Fenster im Dock wäre nur ein Zustand, aus dem niemand herausfindet. `--select` und
+    /// „Öffnen mit" starten die App ohnehin neu.
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
 
     /// Beim Beenden die eigenen `claude -p`-Kinder mitnehmen. Ohne das überlebt ein laufender
     /// Watchdog-Scan die App als Waise (`ppid=1`, beobachtet: 5½ Minuten Restlaufzeit, 300 MB) —
     /// sein Zeitlimit lebte im Elternprozess und stirbt mit ihm.
     func applicationWillTerminate(_ notification: Notification) {
+        MainActor.assumeIsolated { ProjectWindows.shared.endstandFesthalten() }
         _ = ClaudeHeadless.alleBeenden()
     }
 
@@ -45,14 +54,29 @@ struct KanbanApp: App {
         if CommandLine.arguments.contains("--migrate-jira-line") {
             JiraLineMigrationCLI.runAndExit()
         }
-        ClaudeAssetFactory.seedAtLaunch()
+        // Das Standard-Set in die Agent-Homes; die Projekte bekommen ihres beim Config-Load und
+        // bei jedem Projektwechsel (AppModel.linkSkillSet).
+        ClaudeAssetFactory.linkAtLaunch()
     }
 
+    /// **Mehrere Board-Fenster, je eines mit eigenem Projekt.** Der Szenenwert ist der Projekt-Key;
+    /// `openWindow(value:)` holt ein vorhandenes Fenster nach vorn, statt ein zweites danebenzustellen
+    /// (siehe `ProjectWindows`). Aufgemacht werden sie über den +-Knopf der Kopfzeile und beim Start;
+    /// das Projekt-Menü schaltet weiter im eigenen Fenster um.
+    ///
+    /// Ohne Wert kommt das Fenster, das der Programmstart und ⌘N aufmachen; welches Projekt es zeigt,
+    /// entscheidet `ProjectWindows.vorschlag` — beim Start das zuletzt benutzte, danach das erste
+    /// ohne Fenster.
+    ///
+    /// `restorationBehavior(.disabled)`: das Wiederherstellen macht Kanban selbst aus
+    /// `SelectionStore.openProjectKeys`. Beides zusammen liefe auf zwei Quellen für dieselbe Frage
+    /// hinaus — und damit auf zwei Fenster für dasselbe Projekt.
     var body: some Scene {
-        Window("", id: "main") {
-            ContentView()
+        WindowGroup(for: String.self) { $projektKey in
+            ContentView(projectKey: projektKey)
                 .frame(minWidth: 900, minHeight: 540)
         }
         .defaultSize(width: 1280, height: 800)
+        .restorationBehavior(.disabled)
     }
 }

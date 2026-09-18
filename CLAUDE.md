@@ -43,8 +43,10 @@ Karte da, mit „Task erstellen …" im Kontextmenü (Titel und Branch sind vorb
 - **Nur offene MRs.** Ein gemergter ohne Nummer ist erledigte Geschichte, aus der nichts mehr zu
   erstellen ist; ihn mitzunehmen hiesse, Done mit Altlasten zu füllen — in `zba` wären das 10 von
   14, der älteste von 2023, gegen die 4, um die es geht.
-- **Der Key ist `!<iid>`** — GitLabs eigene Schreibweise für einen Merge Request, dieselbe, die
-  `/review-merge !<iid>` schon benutzt. Gefunden wird die Karte aber **nicht** über ihn: `!130` steht
+- **Der Key ist die Schreibweise der Forge** — `!<iid>` bei GitLab, `#<nummer>` bei GitHub,
+  dieselbe, die `review-merge` als Argument nimmt (`MergeRequestRef.numberLabel`). Task-Files
+  werden **nicht** rückwirkend umbenannt: `LocalTickets.mrKey(inFileName:)` erkennt beide
+  Schreibweisen, damit ein `!49_slug.md` aus GitLab-Zeiten seine Karte behält. Gefunden wird die Karte aber **nicht** über ihn: `!130` steht
   in keinem Branchnamen. Sie trägt ihren Branch (`Ticket.sourceBranch`), und
   `TicketMatching.matches` vergleicht dann den Branch statt den Key zu suchen. Damit funktionieren
   Spalte, Badges, 🔀-Nummer und der **Worktree** unverändert — `feature/e2e-test-sf7` in `zba` hat
@@ -256,11 +258,11 @@ schreibt auch in Jira nichts.
   und ein Schritt in der Arbeitsanweisung hinge daran, dass die KI ihn abarbeitet. Das Skill sagt
   deshalb nur, dass Kanban es tut — und dass es bei einem Aufruf ausserhalb von Kanban ausbleibt.
 
-### Review-Stand des offenen MR (Optik 1:1 aus GitLabs MR-Liste)
+### Review-Stand des offenen MR/PR (Optik 1:1 aus der Liste der jeweiligen Forge)
 
-Zwei Anzeigen in der zweiten Kartenzeile, beide nur für **opened** MRs geholt (je 2 Requests pro
-offenem MR über denselben Transport wie die MR-Liste, Fehlschlag zählt als 0/nicht-approved —
-gemergte MRs bleiben leer, ihr Review ist vorbei):
+Zwei Anzeigen in der zweiten Kartenzeile, beide nur für **opened** Requests geholt (je 2 Requests pro
+offenem MR/PR über denselben Transport wie die Liste, Fehlschlag zählt als 0/nicht-approved —
+gemergte bleiben leer, ihr Review ist vorbei):
 
 - **Verdikt** (grünes Pill rechtsbündig **unter der Ticketnummer**, `MRReviewBadge`): `Approved`,
   sobald jemand approved hat (`/merge_requests/:iid/approvals` → `approved`, Fallback nicht-leeres
@@ -273,14 +275,21 @@ gemergte MRs bleiben leer, ihr Review ist vorbei):
 Gezählt wird über `/discussions` (`GitLabClient.threadCounts`: ein Thread ist offen, sobald eine
 seiner *resolvable* Notes offen ist; System-Notes zählen nie). Bewusst **nicht** über
 `blocking_discussions_resolved` aus der MR-Liste: das Feld meldet auf dieser Instanz `true` auch bei
-vier offenen Threads (es beschreibt nur, was den Merge blockiert). Farben = GitLabs Tokens
-(`GitLabColors`, green-100/700 bzw. gray-100/700, dunkel gespiegelt).
+vier offenen Threads (es beschreibt nur, was den Merge blockiert). Farben = die Tokens der
+jeweiligen Plattform (`ForgeColors`: GitLab green-100/700 bzw. gray-100/700, GitHub Primer
+success-fg/muted bzw. neutral-fg/muted — beide dunkel gespiegelt).
+
+**Bei GitHub sind dieselben zwei Zahlen anders zu holen** (siehe „Zwei Forges"): die Zustimmung aus
+`/pulls/{n}/reviews` (je Person der letzte meinungsstarke Zustand), die Thread-Zähler über eine
+kleine GraphQL-Abfrage, weil GitHubs REST `isResolved` nicht kennt. Schlägt die fehl, sind es
+**0/0 und kein Badge** — fail-open, statt eine Karte in die falsche Spalte zu schieben.
 
 **Draft-MRs** sind in GitLab `state == "opened"`, aber nicht review-reif — sie schieben die Karte
 **nicht** nach Review (weder direkt noch über `shouldAutoSetReview`). `GitLabClient` erkennt den Draft
-am `draft`-Flag, dem Legacy-`work_in_progress` oder einem `Draft:`/`WIP:`-Titelpräfix. Die Karte bleibt
-in ihrer Arbeitsspalte und trägt statt 🔀 ein **🚧#iid**-Badge (orange), damit sichtbar ist, warum sie
-trotz MR nicht in Review steht.
+am `draft`-Flag, dem Legacy-`work_in_progress` oder einem `Draft:`/`WIP:`-Titelpräfix; GitHub führt
+ein echtes `draft`-Feld und braucht die Titel-Erkennung nicht. Die Karte bleibt in ihrer
+Arbeitsspalte und trägt statt 🔀 ein **🚧-Badge** (orange) mit der Nummer in der Schreibweise ihrer
+Forge („MR !42" / „PR #42"), damit sichtbar ist, warum sie trotz Request nicht in Review steht.
 
 **Unteraufgaben** (`issuetype.subtask`, sprachunabhängig) erscheinen **nicht** als eigene Karten — die
 Story trägt die Arbeit. `AppModel.refresh` filtert sie aus der Sprint-Liste; `--selftest` meldet, wie
@@ -688,170 +697,192 @@ lesend auf.
 - UI: `EpicColorStripe` (Farbbalken links auf der Karte) + `EpicPill` (Epic ausgeschrieben im
   Detail-Header, direkt nach dem Task-File/Feature-Branch). `--selftest` listet die Epic-Verteilung.
 
-## Gemerkte Auswahl (Projekt + Sprint überleben den Neustart)
+## Mehrere Board-Fenster (+-Knopf links vom Aktualisieren)
 
-`SelectionStore` (UserDefaults, **nicht** die Hermes-Config — das ist lokaler UI-State) hält das
-zuletzt gewählte Projekt und je Projekt den gewählten Sprint. `SprintSelection.resolve` stellt ihn
-wieder her, solange er auf dem Board liegt — auch einen geschlossenen, denn die Wahl war Absicht und
-der Picker markiert ihn „✓"; kennt das Board die Id nicht mehr, gewinnt der aktive Sprint.
-`Kanban --select <TICKET>` sticht die Erinnerung.
+Kanban hatte genau **ein** Board-Fenster; wer das Projekt wechselte, tauschte dessen Inhalt aus.
+Heute deklariert `KanbanApp` eine `WindowGroup(for: String.self)` über den Projekt-Key, und der
++-Knopf in der Kopfzeile macht ein weiteres Fenster auf — für das erste Projekt, das noch keines hat
+(steht jedes schon irgendwo, ist der Knopf aus). Zwei Projekte laufen damit nebeneinander statt
+nacheinander: in einem läuft ein Claude-Lauf, im anderen wird gelesen.
 
-## Claude-Assets auf Kanban-Ebene (HERMES-034)
+Das **Projekt-Menü schaltet weiterhin im eigenen Fenster um** — die Auswahl allein macht kein Fenster
+auf. Ein Projekt, das auch woanders offen steht, trägt im Menü ein Fenstersymbol statt des Häkchens;
+wer es dort haben will, wechselt dorthin. Dasselbe Projekt darf also zweimal dastehen.
 
-Kanban **besitzt** die 13 Workflow-**Skills** (create/get/start/solve/review/update-task,
-create/destroy-worktree, review-merge, fix-security, get-doc + impact-/quality-analysis) und 6 Rules (db-access,
-git-commits, serena-first, task, translations, worktree) kanonisch — konsolidiert aus bfezvm/even/zba
-(die Drift dort waren verpasste Backports; worktree.md stellte sich entgegen der ersten Analyse als
-~95 % generische iwf-Referenz heraus). Das Set ist **referenz-geschlossen**: jeder Command/Skill,
-den ein kanonisches Asset aufruft, ist selbst kanonisch — auch die worktree.md-Verweise zeigen auf
-den kanonischen Pfad. Projektlokal bleiben nur testing.md (+ bfezvms mail-testing.md) und die
-Nischen-Commands wie open-task/get-mr/solve-support.
+Die halbe Arbeit war schon getan, und zwar die aufwendige: **`AppModel` ist kein Singleton**
+(`ContentView` hält es als `@State`), jedes Fenster bringt seinen Zustand also selbst mit — Board,
+Auswahl, Sprint, Worktrees, Console. Zu klären waren die Stellen, an denen sonst „das letzte Fenster
+gewinnt" herauskäme; sie laufen in **`ProjectWindows`** zusammen (Zuordnung Fenster ↔ Model ↔
+Projekt, `@Observable`, damit die Leiste mitbekommt, was offen ist):
 
-- **Alles ist ein Skill** (`skills/<name>/SKILL.md`), seit die Assets **zwei** Agents bedienen: das
-  ist die einzige Gattung, die Claude Code *und* Codex kennen (siehe „Zwei Agents"). Die 10 Commands
-  sind dorthin umgezogen (`ClaudeAssetMigration`, einmalig beim App-Start): **verschoben**, nicht neu
-  geseedet — 7 von 10 waren gegenüber dem Auslieferungsstand editiert, ein Reseed hätte diese Arbeit
-  weggeworfen. Ergänzt wird nur fehlendes Frontmatter (`name` für Codex, `disable-model-invocation:
-  true`, damit ein Skill nicht von allein loslaufen kann, was ein Command nie konnte). Die Gattung
-  `commands` bleibt lesbar, damit ein von Hand angelegter Projekt-Command nicht verschwindet.
-- **Drei Orte**: Auslieferungsstand im App-Bundle (`Sources/Kanban/Resources/ClaudeAssets`, SPM-
-  Resource) → editierbarer Bestand `~/Library/Application Support/Kanban/claude/` (Seeding beim
-  App-Start: Fehlendes kopieren, Editiertes nie anfassen) → **Symlinks** nach `~/.claude/skills`
-  **und** `~/.codex/skills` (gelten in jedem Projekt). Ein Skill, ein Bestand, zwei Links — nichts
-  kann auseinanderlaufen. Rules werden **nicht** verlinkt (kein nativer Mechanismus, in beiden).
-  Verlinkt wird beim Start nur, was **schon erreichbar war** (`ClaudeAssetFactory.relink`: was in
-  einem Home hängt, hängt in allen) — sonst wäre `/get-task` nach dem Umzug weg, bis jemand im
-  Editor „Alle verlinken" drückt. Nie verlinkte Assets bleiben unverlinkt.
-- **Beiwerk-Dateien** (`methodology.md` bei impact-/quality-analysis) sind kein Sonderfall: der
-  Symlink zeigt auf das **Verzeichnis**, also reist alles mit, und ein Verweis wie
-  `[methodology.md](methodology.md)` bzw. `../impact-analysis/methodology.md` löst in beiden Homes
-  auf — lexikalisch wie physisch geprüft. Genau diese Schreibweise benutzen auch Codex' eigene
-  System-Skills (`[model-migration.md](references/model-migration.md)`), und seine Anleitung sagt
-  ausdrücklich, lange Referenz-Doku in Beiwerk-Dateien zu legen. **Keine agent-eigenen Platzhalter**:
-  `${CLAUDE_SKILL_DIR}` stand in beiden Skills, existiert aber nirgends — Claude nennt das
-  Skill-Verzeichnis beim Aufruf selbst („Base directory for this skill"), Codex setzt keine solche
-  Variable. Ebenso raus sind projekt-relative Verweise (`.claude/skills/…`): unter Codex heisst der
-  Ordner `.codex/`, der kanonische Nachbar-Skill gilt in jedem Projekt.
-- **Ein Ort für die Projektwerte, für beide Agents**: `ClaudeProjectFile` schreibt weiter
-  `<repo>/.claude/project.json`, auch bei `agent: codex`. Bewusst kein zweiter Pfad — die Datei ist
-  agent-neutral, alle Skills zeigen darauf, und zwei Orte würden auseinanderlaufen.
+| Prozessweit | Zuordnung |
+|---|---|
+| `TerminalCache.onTerminalClick` | meldet das **Fenster** mit; der Klick tickt das Model, dessen Fenster er traf |
+| `AttentionNotifier` | der Klick auf die Benachrichtigung sucht das Fenster, dessen Board das Ticket zeigt, holt es nach vorn und wählt dort; kennt keines es, entscheidet der Präfix (`TicketRouting`) — und ein Fenster geht dafür auf |
+| `WatchdogModel` | **eine** Instanz für den Prozess (`.shared`). Je Fenster eine hiesse N-mal `claude -p`, und das kostet Geld. `uebernehmen` ist deshalb ab dem zweiten Fenster wirkungslos; alle Fenster zeigen denselben Gesamtstand, weil der Watchdog ohnehin projektübergreifend scannt |
+| `CommitWindow` | **je Fenster** eines (Schlüssel ist das `AppModel`, wie bei `MarkdownDocumentWindow` der Dateipfad) — zwei Projekte dürfen gleichzeitig committen, und der Titel trägt den Projekt-Key |
+| `ClaudeWorkflowWindow` | **eines** für die App: Commands/Skills/Rules sind projektunabhängig, zwei Editoren auf denselben Dateien wären zwei Stände desselben Textes. Zumachen darf nur, wer aufgemacht hat |
+| Einstellungen speichern | lädt **alle** Fenster neu (`ProjectWindows.configNeuLaden`), nicht nur das, in dem gespeichert wurde |
+
+**Der Fenstertitel bleibt leer**, wie beim früheren `Window("", id: "main")`: welches Projekt ein
+Fenster zeigt, steht im Projekt-Menü der Kopfzeile. Ihn nur aus der Leiste zu nehmen und im
+Fenstermenü zu behalten (`toolbar(removing: .title)`), ging nicht — mit dem Titel-Element fällt auch
+der Zwischenraum weg, der die rechten Knöpfe nach rechts drückt.
+
+**Eine lebende Terminal-Ansicht, zwei Fenster.** `TerminalCache` hält je tmux-Session genau eine
+`KanbanTerminalView`, und eine `NSView` hat nur einen Superview. Dasselbe Ticket kann in zwei
+Fenstern stehen — bei Projekten, die sich ein Repo teilen (`support`/`even`,
+`tp1`/`zvmsupport`/`bfezvm`): deren `!<iid>`-Karten kommen aus demselben MR-Bestand und heissen in
+beiden `kanban-!130`. Das zweite Fenster zeigt deshalb einen Hinweis mit Knopf „Hierher holen" statt
+einer leeren Fläche; die Session läuft weiter, sichtbar ist sie nur an einer Stelle.
+
+## Gemerkte Auswahl (offene Fenster + Sprint überleben den Neustart)
+
+`SelectionStore` (UserDefaults, **nicht** die Hermes-Config — das ist lokaler UI-State) hält die
+offenen Projekte, das zuletzt benutzte und je Projekt den gewählten Sprint. `SprintSelection.resolve`
+stellt ihn wieder her, solange er auf dem Board liegt — auch einen geschlossenen, denn die Wahl war
+Absicht und der Picker markiert ihn „✓"; kennt das Board die Id nicht mehr, gewinnt der aktive
+Sprint. `Kanban --select <TICKET>` sticht die Erinnerung.
+
+Der Start macht die Fenster wieder auf, die beim letzten Mal offen waren (`openProjectKeys`, Regel in
+`OpenProjects.wiederherstellen`, gedeckelt bei 6):
+
+- Der **alte Einzelwert** `selectedProjectKey` gilt weiter — ohne Liste wird er als einelementige
+  gelesen; niemand verliert seine Auswahl, weil das Format gewachsen ist.
+- Er bleibt daneben als **zuletzt benutzt** stehen (gepflegt von dem Fenster, das gerade nach vorn
+  kommt): die Rückfallebene bei leerer Liste, und das Fenster, das nach dem Wiederherstellen vorn
+  steht.
+- Ein Projekt, das **nicht mehr in der Config** steht, öffnet kein Fenster; war es beim Entfernen
+  offen, sagt das Fenster das und bietet Einstellungen bzw. Schliessen an, statt ungefragt ein
+  anderes Board zu zeigen.
+- **Alle Fenster zu heisst: Kanban beendet sich** (`applicationShouldTerminateAfterLastWindowClosed`
+  bleibt `true`) — und die Liste ist leer. Der nächste Start kommt dann mit einem Fenster auf dem
+  zuletzt benutzten Projekt hoch; geschlossen ist geschlossen. Beim ⌘Q dagegen bleibt die Liste
+  stehen (`applicationWillTerminate` friert sie ein, bevor die Fenster abgebaut werden).
+
+## Skill-Sets: im Repo gepflegt, pro Projekt verlinkt (KANBAN-004)
+
+Die Workflow-Skills und Rules liegen in **Sets** — benannten Zusammenstellungen, von denen ein
+Projekt genau eine sieht. Ein Set ist ein **physisch gepflegter Ordner**, und genau dieser Ordner
+ist das Ziel der Symlinks in den Projekten. Vorher lagen sie flach in Application Support und wurden
+in einem GUI-Editor mit selbstgebauter Versionierung gepflegt — ein zweites, schwächeres Git neben
+dem richtigen; und die eine Unterscheidung, die wirklich gebraucht wird, fehlte: nicht jedes Projekt
+will dieselben Skills.
+
+Da liegt bisher **ein** Set, `iwf` (14 Skills, 7 Rules — der volle Satz mit Worktree-Stack, Jira und
+GitLab). Ein zweites entsteht, wenn es gebraucht wird; der Umbau macht es möglich, erfindet es nicht.
+
+- **Ein Ort, keine Kopie.** `claude.setsPath` sagt, wo die Sets gepflegt werden — per Vorgabe das
+  Kanban-Repo unter dem Basis-Pfad (`<basePath>/kanban/Sources/Kanban/Resources/ClaudeAssets/sets`,
+  eine Konvention, deshalb überschreibbar). Die Symlinks der Projekte zeigen **dorthin**: kein
+  Auslieferungsstand im App-Bundle, kein Sync, keine zweite Wahrheit. Eine Änderung an einem
+  `SKILL.md` wirkt damit sofort in jedem verlinkten Projekt — ohne `build-app.sh`, ohne Neustart,
+  ohne Knopfdruck im Übersichtsfenster. Deshalb ist `Resources/ClaudeAssets` in `Package.swift`
+  **`exclude`d** statt `.copy`: eine Kopie im Bundle wäre beim ersten Edit veraltet.
+- **Der Preis** ist die Kehrseite derselben Münze: verschiebst oder löschst du den Ordner, zeigen
+  alle Links ins Leere, und ein Branch-Wechsel im Kanban-Repo ändert die Skills aller Projekte mit.
+  `ClaudeAssetStore.setsRootExists` gibt es genau dafür — die Übersicht sagt „den Ordner gibt es
+  nicht" statt still leer zu bleiben.
+- **Verlinkt wird ins Projekt, nicht ins Home** — das ist der Kern. Ein Agent-Home kann nicht zwei
+  Sets gleichzeitig tragen, und Kanban fährt regelmässig mehrere tmux-Sitzungen parallel. Skills
+  gehen nach `<repo>/.claude/skills/<name>` bzw. `<repo>/.codex/skills/<name>` (je nach `agent`),
+  Rules nach `<repo>/.claude/rules/<name>.md` — **immer** `.claude/`, auch bei `agent: codex`: die
+  Skills verweisen im Text auf `.claude/rules/…`, und dieser Pfad muss unter beiden Agents aufgehen.
+  Dieselbe Überlegung wie bei `.claude/project.json`, und `.claude/` ist in den Projekt-Repos
+  ohnehin gitignored. Ein Skill-Symlink zeigt auf das **Verzeichnis**, also reist auch eine frisch
+  dazugelegte Beiwerk-Datei ohne Zutun mit.
+- **Das Standard-Set hängt zusätzlich in `~/.claude` und `~/.codex`** — damit eine Console
+  ausserhalb eines Projekts nicht leer dasteht. ⚠️ Das kollidiert mit der Präzedenz (siehe unten):
+  bei **Namensgleichheit** sticht die User-Ebene die Projektkopie, ein Projekt auf einem anderen
+  Set sähe also weiter die Skills des Standard-Sets. Verifiziert ist diese Präzedenz für Commands
+  (2026-08-07); für Skills steht die Gegenprobe noch aus. Solange es nur ein Set gibt, ist der Fall
+  nicht erreichbar — wer ein zweites anlegt, prüft das zuerst und lässt die Home-Verlinkung
+  nötigenfalls weg (`ClaudeAssetFactory.linkDefaultSetIntoHomes`).
+- **Aufgeräumt wird beim Verlinken**: Symlinks eines vorher verlinkten Sets verschwinden, ebenso die
+  im Ordner des *anderen* Agents (ein Projekt hat genau einen). Erkannt werden sie daran, dass sie
+  auf etwas zeigen, das **uns** gehört — der Sets-Ordner oder der alte flache Bestand in
+  `~/Library/Application Support/Kanban/claude/`. Letzterer zählt nur deshalb noch mit: so hängen
+  sich die Links des **Modells vor den Sets** beim ersten Start von selbst um
+  (`ClaudeSymlinkState.otherSet`), statt als fremd liegenzubleiben — sonst wäre `/get-task`
+  eingefroren. Geschrieben wird dort nie mehr etwas; der alte Ordner bleibt unangetastet liegen. **Fremdes wird nie angefasst**:
+  eine echte Datei oder ein Symlink ausserhalb des Bestands wird gemeldet, nicht überschrieben
+  (`ClaudeSymlinkState.foreign`) — und ein belegter Zielort blockiert den Rest des Sets nicht.
+- **Wer welches Set sieht**: `modules.jira.projects.<key>.skillSet` (leer = Standard-Set),
+  editierbar im Projekt-Formular und in den Einstellungen; das Standard-Set steht global in
+  `claude.defaultSkillSet`. Fehlt es, gilt das einzige vorhandene Set — gibt es mehrere und ist
+  keins bestimmt, das erste, und die Übersicht sagt „Standard (nicht gesetzt)". Ein Projekt, dessen
+  Set es nicht (mehr) gibt, fällt aufs Standard-Set zurück, **mit Hinweis** statt stillschweigend
+  (`ClaudeAssetStore.resolve` liefert dafür `missingName`).
+- **Das Command-Menü am Ticket zeigt, was das Set anbietet** — alles davon, nicht eine Liste im
+  Code (`ClaudeCommandScanner.commands(in:first:)`). Vorn stehen die vier Workflow-Skills in der
+  Reihenfolge, die ein Ticket nimmt (`get-` → `start-` → `solve-` → `review-task`), dahinter der
+  Rest alphabetisch. Ein Skill, der einem Set dazukommt, steht damit ohne Codeänderung im Menü.
+  Gelesen wird das **Set**, nicht der Scan der Zielorte: was ein Projekt sieht, ist sein Set, nicht
+  die Vereinigung aus Projekt-Ebene und Agent-Home. Gibt es gar kein Set, fällt das Menü auf den
+  Scan zurück — die Symlinks von gestern funktionieren ja weiter.
+- **Der Name des aufgelösten Sets steht in `.claude/project.json`** (`skillSet`) — ein Skill soll
+  wissen, mit welchem Satz er gerade läuft, und nicht, was jemand einmal in die Config geschrieben
+  hat. Geschrieben wird beides an einer Stelle (`AppModel.linkSkillSet`), beim Projektwechsel und
+  beim Config-Load für **alle** Projekte.
+- **Ein Unterordner ist erst ein Set, wenn er `skills/` oder `rules/` hat** und sein Name
+  kebab-case ist (`ClaudeAssetName`). In einem gewachsenen Ordner liegt allerlei
+  (`skills-backup-2026-08-20`, `projektkopien-backup-*`, `.versions`, ein ZIP); nichts davon darf
+  als Set durchgehen, nur weil es ein Ordner ist. `set.json` gibt Anzeigename und eine Zeile
+  Beschreibung — fehlt sie oder ist sie kaputt, heisst das Set wie sein Ordner.
+- **Keine Projektwerte in den Assets**: Platzhalter `<PREFIX>`/`<tasksPath>`/`<docsPath>`/
+  `<kbPath>`/`<worktreePrefix>`/`<dockerStack>`/`<stackDomain>` (nur die TLD; Hosts =
+  `<ordnername>.<stackDomain>`)/`<jiraBaseUrl>`/`<skillSet>` verweisen auf
+  `<repo>/.claude/project.json`, das `ClaudeProjectFile` beim Projektwechsel aus Kanbans Config
+  generiert (schreibt nur bei inhaltlicher Änderung). **Drei Schlüssel fehlen bewusst, wenn es sie
+  nicht gibt**: `kbPath` ohne konfigurierte Knowledgebase, `stackDomain` ohne Docker-Stack und
+  `jiraBaseUrl` ohne konfigurierte Jira-Instanz — ein Skill soll „hier ist sie" von „es gibt keine"
+  unterscheiden können, und eine TLD ohne Stack dahinter wäre eine Behauptung. `dockerStack` und
+  `usesJira` dagegen stehen **immer** drin (`true`/`false`): daran verzweigen die Skills, und ein
+  fehlender Schlüssel würde dort als `true` gelesen. Alle anderen Werte stehen immer da.
+- **`.claude/` ist nicht überall gitignored** — gemessen am 2026-09-18: in `bfezvm`, `even`,
+  `reactbp` und `zba` ja, in `core`, `hermes`, `iwf-local-dev`, `kanban` und `rhyblox` nein. Dort
+  stehen die Symlinks des Sets als untracked in `git status`. Kanbans eigenes Repo ignoriert
+  `.claude/` seit diesem Umbau; in fremden Repos ist das eine Entscheidung des jeweiligen Teams,
+  keine, die Kanban treffen darf.
+- **Beiwerk-Dateien** (`methodology.md` bei audit-security, impact-, quality- und review-analysis)
+  sind kein Sonderfall: der Symlink zeigt auf das **Verzeichnis**, also reist alles mit, und ein
+  Verweis wie `[methodology.md](methodology.md)` löst überall auf. **Keine agent-eigenen
+  Platzhalter** (`${CLAUDE_SKILL_DIR}` existiert nirgends): Claude nennt das Skill-Verzeichnis beim
+  Aufruf selbst, Codex setzt keine solche Variable.
+- **Alles ist ein Skill** (`skills/<name>/SKILL.md`) — die einzige Gattung, die Claude Code *und*
+  Codex kennen. Die Gattung `commands` ist mit den Sets **weggefallen**: der einmalige
+  Command→Skill-Umzug ist erledigt, `commands/` im Bestand war leer, und ein von Hand angelegter
+  Projekt-Command bleibt als Datei liegen — Kanban verwaltet ihn nur nicht mehr. `ClaudeCommandScanner`
+  liest ihn weiterhin, damit er im Kontextmenü nicht verschwindet.
 - **Präzedenz empirisch verifiziert** (CC 2.1.222, 2026-08-07): bei Namensgleichheit sticht die
   **User-Ebene** die Projektkopie — Gegenteil der verbreiteten Doku-Annahme. `ClaudeCommandScanner`
   liest beide Ebenen, überdeckte Projektkopien stehen in `shadowedProjectURL`.
-- **Keine Projektwerte in den Assets**: Platzhalter `<PREFIX>`/`<tasksPath>`/`<docsPath>`/
-  `<kbPath>`/`<worktreePrefix>`/`<dockerStack>`/`<stackDomain>` (nur die TLD; Hosts =
-  `<ordnername>.<stackDomain>`)/`<jiraBaseUrl>` verweisen auf `<repo>/.claude/project.json`, das
-  `ClaudeProjectFile` beim Projektwechsel aus Kanbans Config generiert (schreibt nur bei
-  inhaltlicher Änderung; `.claude/` ist überall gitignored). **Drei Schlüssel fehlen bewusst, wenn
-  es sie nicht gibt**: `kbPath` ohne konfigurierte Knowledgebase, `stackDomain` ohne Docker-Stack
-  und `jiraBaseUrl` ohne konfigurierte Jira-Instanz — ein Skill soll „hier ist sie" von „es gibt
-  keine" unterscheiden können, und eine TLD ohne Stack dahinter wäre eine Behauptung. `dockerStack`
-  und `usesJira` dagegen stehen **immer** drin (`true`/`false`): daran verzweigen die Skills, und
-  ein fehlender Schlüssel würde dort als `true` gelesen. Alle anderen Werte stehen immer da.
-- **Editor**: eigener ✨-Toolbar-Button → `ClaudeWorkflowWindow` (eigenständiges Fenster in
-  Commit-Dialog-Grösse; die Hermes-Einstellungen bleiben ein Sheet) — CodeEditorView über den
-  Bestand, Symlink-Status/-Verwaltung je Asset, „Auf Auslieferungsstand zurücksetzen" (aus dem Bundle).
-  Das Kettenglied ist grün, wenn **jedes** mögliche Home verlinkt ist — ein Skill nur in `~/.claude`
-  ist für ein Codex-Projekt nicht da.
-
-#### Anlegen und Löschen (+/− unter der Liste)
-
-Bis dahin liess sich der Bestand nur **bearbeiten**: ein eigener Skill musste von Hand in
-`~/Library/Application Support/Kanban/claude/skills/` angelegt und verlinkt werden.
-
-- **Skill oder Rule**, keine Commands: die sind Altbestand (`ClaudeAssetMigration` hat sie zu Skills
-  gemacht), Codex kennt die Gattung gar nicht, und ein neu angelegter wäre von Anfang an ein
-  Sonderfall.
-- **Der Name ist kebab-case, und das ist keine Kosmetik** (`ClaudeAssetName`): er ist Dateiname,
-  Symlink-Ziel **und** der Aufruf selbst (`/create-task` bzw. `$create-task`). Eingaben werden
-  normalisiert („Mein Neuer Skill" → `mein-neuer-skill`), alles andere abgelehnt; der Dialog zeigt
-  vorher, was daraus wird.
-- **Ein Skill entsteht als Ordner mit `SKILL.md`** und dem Frontmatter, das der ganze Bestand trägt
-  (`name`, `description`, `disable-model-invocation: true`) — samt `$ARGUMENTS`, der Form, die
-  **beide** Agents einsetzen. Er wird **sofort in beide Homes verlinkt**: ein Skill, der nirgends
-  hängt, ist nur eine Datei im Bestand.
-- **Löschen nimmt die Symlinks mit**, sonst zeigten sie ins Leere.
-
-#### Zwei Bäume links, lesen oder bearbeiten rechts
-
-Der Bestand **sind** zwei Ordner, und so steht er jetzt auch da: ein Baum je Gattung, überschrieben
-mit dem Ordnernamen und der Anzahl (`skills/ · 14`, `rules/ · 6`). Vorher war es eine durchgehende
-Liste, in der ein Skill mit Beiwerk als `impact-analysis/methodology.md` zwischen den anderen stand.
-
-- **Ein Dreieck nur, wo etwas drin ist.** Ein Skill, der aus nichts als `SKILL.md` besteht, ist eine
-  Zeile — dort *ist* der Ordner die Datei, und ein Aufklapp-Dreieck mit genau einer Zeile darunter
-  wäre ein Klick für nichts. Hier betrifft das 11 der 14 Skills; die drei mit `methodology.md`
-  (`audit-security`, `impact-analysis`, `quality-analysis`) klappen auf.
-- **Der gewählte Ordner klappt von selbst auf** — sonst zeigte die rechte Seite einen Inhalt, dessen
-  Zeile links hinter einem Dreieck steckt (dieselbe Regel wie im Knowledgebase-Baum).
-- **Das Kettenglied hängt am Asset**, nicht an der Datei: verlinkt wird der Skill-Ordner, nicht sein
-  `SKILL.md`.
-
-Rechts **ganz oben** steht ein 📁-Knopf und daneben „Gerendert | Bearbeiten". Der Knopf zeigt die
-gewählte Datei im Finder — den Ordner also, **mit ihr ausgewählt**: bei einem Skill sein eigener
-(dort liegt auch das Beiwerk), bei einer Rule der `rules/`-Ordner. Der Bestand liegt in Application
-Support und ist von Hand kaum zu finden; denselben Knopf gibt es aus demselben Grund in der
-Knowledgebase und im Dokumentfenster.
-
-„Gerendert | Bearbeiten": Gelesen wird hier mehr als geschrieben — ein
-`SKILL.md` hat bis zu 49 KB, und als Rohtext mit Sternchen und Tabellen-Pipes ist das mühsam.
-Vorgabe ist deshalb **gerendert**, wie im Commit-Dialog (Diff vor Editor) und im Dokumentfenster.
-
-- **Gerendert wird der Editor-Text**, nicht die Datei: wer etwas geändert und noch nicht gespeichert
-  hat, soll sehen, was er gleich speichert — und nicht den Stand von vorher. Die Kopfzeile sagt
-  „ungespeicherte Änderungen — hier zu sehen".
-- **Ein Link auf eine Nachbardatei springt in der Ansicht dorthin** (`[methodology.md](methodology.md)`
-  — genau die Schreibweise, die der Bestand benutzt), statt den Finder zu rufen. Alles andere geht
-  den gewohnten Weg nach draussen.
-- Die Wahl gilt fürs **Fenster**, nicht je Asset: beim Durchklicken will man nicht bei jeder Datei
-  neu umschalten.
-
-#### Inhalt aus einer Datei einlesen
-
-„Einlesen…" im Fuss übernimmt den Inhalt einer Markdown-Datei von der Platte in das gewählte Asset;
-im Anlegen-Dialog legt „Aus Datei…" gleich ein neues daraus an (der Name wird aus dem Dateinamen
-vorgeschlagen — bei `SKILL.md` aus dem Ordner darüber, der Dateiname sagt dort nichts).
-
-- **Das Frontmatter überlebt es** (`ClaudeAssetImport.zusammengefuegt`). Ein `SKILL.md` lebt von
-  seinem Kopf: `name` liest Codex, `description` zeigen beide im Menü,
-  `disable-model-invocation: true` hält den Skill davon ab, von allein loszulaufen. Eine beliebige
-  Markdown-Datei hat keinen — sie einfach hineinzukopieren machte aus einem funktionierenden Skill
-  eine Datei, die kein Agent mehr anbietet, und zwar lautlos. Fehlt der eingelesenen Datei der Kopf,
-  bleibt der bisherige stehen und nur der Rumpf wird ersetzt. Bringt sie **einen mit**, gilt er
-  unverändert — wer eins mitbringt, meint es auch, und zwei Köpfe übereinander wären in beiden
-  Agents ungültig.
-- **Erkannt wird der Block textuell**, nicht über einen YAML-Leser: der Kopf soll wortgleich stehen
-  bleiben, mit Reihenfolge und Kommentaren. Ein `---` als Trennlinie mitten im Text ist keins, ein
-  nie geschlossener Block auch nicht.
-- **Eingelesen heisst nicht gespeichert**: der Text landet im Editor, der Punkt zeigt „ungespeichert",
-  und der bisherige Stand wandert vorher in die **Fassungen** — auch dann, wenn diese Datei noch nie
-  über den Editor gespeichert wurde. Der Rückweg steht also bereit, bevor man hinsieht.
-- **Grenze 1 MB**: das grösste Asset im Bestand hat 49 KB; ein Megabyte ist kein Skill mehr, sondern
-  ein Versehen (ein Log, ein Export). Nicht-UTF-8 wird benannt, nicht stillschweigend verstümmelt.
-
-#### Fassungen (Versionsgeschichte je Datei)
-
-Es gab genau **eine** Fassung — die Datei — und daneben den Auslieferungsstand als Notausgang. Wer
-einen Skill umbaute und den alten Wortlaut wiederhaben wollte, konnte nur ganz auf Werk zurück und
-warf damit alle anderen eigenen Änderungen mit weg.
-
-- **Jedes Speichern legt eine Fassung an** (`ClaudeAssetVersionStore`), zusätzlich lässt sich der
-  aktuelle Stand **benennen** („Stand vor dem Umbau") — ein Name ist der Grund, warum man eine
-  Fassung später wiederfindet.
-- **Abgelegt neben dem Bestand**, in `claude/.versions/<pfad der datei>/<zeitstempel · name>.md`.
-  Der Zeitstempel steht **im Dateinamen** statt in einem Index: das bleibt im Finder lesbar, und
-  eine von Hand dazugelegte oder weggeworfene Datei macht nichts kaputt. Ein Index daneben wäre eine
-  zweite Wahrheit. `.versions` taucht nie als Asset auf — `assets(_:)` sieht nur in
-  `commands`/`skills`/`rules`.
-- **Aktivieren sichert den bisherigen Stand**, bevor es ihn überschreibt: ein Wechsel, kein Verlust.
-- **Zweimal Speichern ohne Änderung gibt keine zweite Fassung** — sonst wäre die Liste nach einem
-  Tag voller Wiederholungen. Eine **benannte** entsteht trotzdem; der Name ist ja der Punkt.
-- **Gedeckelt wird nur das Automatische** (50 je Datei, älteste zuerst). Benannte Fassungen bleiben
-  — sie sind genau die, die jemand behalten wollte.
-- **Ein Zurücksetzen auf Werk lässt die Fassungen stehen** (sie liegen neben dem Asset, nicht darin)
-  — von dort kommt der eigene Stand zurück. Der Dialog verspricht das, ein Test hält es fest.
 - `repoDir` ist von `tasksPath` **entkoppelt** (`modules.jira.projects.<key>.repoDir`, optional;
   absolut/`~`/relativ zum Basis-Pfad) — ohne Override gilt weiter das erste `tasksPath`-Segment.
+
+### Die Übersicht (✨-Toolbar-Button, eigenes Fenster)
+
+Das Fenster **zeigt und stellt her**, mehr nicht: je Set Name, Beschreibung, Anzahl Skills/Rules und
+die Markierung „Standard"; darunter die Projekte, die daran hängen, jeweils mit dem Zustand ihrer
+Verlinkung (verlinkt / nicht verlinkt / zeigt noch auf ein anderes Set / fremd belegt) und einem
+Knopf „Verlinkung herstellen"; im Fuss einer für alle, der zugleich das Standard-Set in die
+Agent-Homes legt. Ein 📁-Knopf führt in den Bestand bzw. in den `.claude/`-Ordner des Projekts —
+**bearbeitet wird im Repo**, und das steht auch so da.
+
+Drei Fälle stehen als Hinweis an der Zeile, statt still zu wirken:
+
+- **Kein Repo-Ordner** → es gibt keinen Ort zu verlinken; der Knopf ist aus.
+- **Zwei Projekte teilen ein Repo** (`support` in `even`, `tp1`/`zvmsupport` in `bfezvm`) → sie
+  teilen sich auch `<repo>/.claude/`. Stehen sie auf verschiedenen Sets, gewinnt das zuletzt
+  verlinkte. Das war bei `project.json` schon so, gehört aber sichtbar hierher.
+- **Das gewählte Set gibt es nicht** → das Standard-Set greift, der gesuchte Name steht daneben.
+
+Weggefallen sind mit dem Umbau: der Markdown-Editor über den Bestand, „Neues Asset", „Einlesen…",
+„Auf Auslieferungsstand zurücksetzen", die **Fassungen** (`ClaudeAssetVersions`, zeitgestempelte
+Kopien je Datei) und die Symlink-Schalter je Asset. Alles davon löste ein Problem, das eine Datei im
+Git-Repo nicht hat. Vorhandene `.versions/`-Ordner und der alte flache Bestand werden nicht gelöscht, nur nicht mehr
+gelesen. Der 📁-Knopf oben im Fenster führt in den gepflegten Sets-Ordner — dort wird editiert, und
+die Änderung ist ohne weiteres Zutun in jedem verlinkten Projekt da.
 
 ### Zwei Agents: Claude Code oder Codex (je Projekt)
 
@@ -861,7 +892,9 @@ kennt — Board, Console und Asset-Auslieferung fragen dort.
 
 | | Claude Code | Codex 0.147 |
 |---|---|---|
-| Assets | `~/.claude/skills/<name>/SKILL.md` | `~/.codex/skills/<name>/SKILL.md` |
+| Skill-Set des Projekts | `<repo>/.claude/skills/<name>/SKILL.md` | `<repo>/.codex/skills/<name>/SKILL.md` |
+| Rules des Sets | `<repo>/.claude/rules/<name>.md` | **ebenfalls** `<repo>/.claude/rules/…` |
+| Standard-Set (ohne Projekt) | `~/.claude/skills/<name>` | `~/.codex/skills/<name>` |
 | Projekt-Ebene | `<repo>/.claude/{skills,commands}` | `<repo>/.codex/skills` |
 | Aufruf | `/name args` | `$name args` (der `@`-Picker fügt genau das ein) |
 | Start | `claude --session-id`/`--resume` | `codex`, danach `/rename` |
@@ -1829,7 +1862,7 @@ geantwortet."` — vier Minuten Spinner nach jedem App-Start, für nichts.
 | Panel + Knopf | `Kanban/Watchdog/WatchdogPanel.swift` |
 | Einstellungen | `KanbanConfigSchema.watchdog` → `watchdog.*` in der Config (top-level wie `commit`, **kein** Modul — wandert nie nach Hermes) |
 
-Der Knopf steht in einer `ToolbarItemGroup` mit dem Claude-Workflow-Knopf: `ToolbarContent` nimmt nur
+Der Knopf steht in einer `ToolbarItemGroup` mit dem Skill-Set-Knopf: `ToolbarContent` nimmt nur
 zehn Elemente, und die waren vergeben — geteilt kostet er keinen eigenen Platz. Er steht **immer**
 da, auch bei ausgeschaltetem Watchdog: ausgeblendet wäre er genau dann weg, wenn man ihn sucht, und
 das Panel sagt selbst, wo geschaltet wird. Ein einzelner Lauf lässt sich dort auch ausgeschaltet
@@ -1844,26 +1877,35 @@ Livelauf gegen die echten Transcripts (kostet Tokens, deshalb Opt-in):
 Sources/
 ├── KanbanCore/            pure logic, no UI (testable)
 │   ├── Claude/            AgentKind (Claude vs. Codex: Ort, Präfix, Startbefehl) +
-│   │                      ClaudeAssets (kanonischer Bestand + Seeding + Symlinks in beide Homes) +
-│   │                      ClaudeAssetMigration (Command → Skill, einmalig) +
+│   │                      ClaudeAssets (Skill-Sets: Inventar im gepflegten Ordner, direkte
+│   │                      Verlinkung ins Projekt bzw. in die Agent-Homes, keine Kopie) +
+│   │                      ClaudeAssetName (kebab-case: Datei-, Symlink- und Aufrufname) +
 │   │                      ClaudeProjectFile (generiert <repo>/.claude/project.json)
 │   ├── Config/            KanbanConfig (eigene Config → AppConfig/ProjectConfig, repoDir +
 │   │                      docsPath, Pfade normalisiert) + HermesImport (einmalige Übernahme) +
 │   │                      HermesSync (Projekte zurück; absolute Pfade in Hermes' join-Form) +
 │   │                      ConfigStore/KanbanConfigSchema (Settings) + ProjectRegistry/-Projection
 │   ├── Domain/            Ticket, KanbanColumn, BoardMode (Sprint/Frei), TaskSection, Worktree,
-│   │                      MergeRequestRef, CardBadge,
+│   │                      MergeRequestRef (provider-neutral, trägt nur `forge` als Herkunft),
+│   │                      CardBadge, OpenProjects (welche Fenster beim Start aufgehen) +
+│   │                      TicketRouting (welchem Projekt ein Ticket-Key gehört),
 │   │                      EpicRef + EpicColors (Jira-Palette) + EpicResolution (Sub-Task erbt Epic)
 │   ├── Jira/              JiraClient (Board/Sprints/Sprint-Issues/Worklog) + SprintSelection +
 │   │                      JiraSolutionField (Feld „Lösung": editmeta-Auflösung, lesen, schreiben)
+│   ├── Forge/             ForgeKind (gitlab/github: Beschriftung, `!`/`#`, Branch-Pfad) +
+│   │                      ForgeRef/ForgeLocation + ForgeClient (was das Board von einer Forge braucht)
 │   ├── GitLab/            GitLabClient (MR-Liste + Thread-Zähler + Approval) + models
+│   ├── GitHub/            GitHubClient (PR-Liste + Zustands-Normalisierung + Reviews→Zustimmung +
+│   │                      GraphQL-Thread-Zähler, fail-open)
 │   ├── Modules/           die zwei Module in Hermes-Bauweise (siehe „Module")
 │   │   ├── ModuleHTTPClient  Transport: Auth je Modul, Host-Guard, Paging
 │   │   ├── Jira/             JiraFetch (Issue/Comments/Worklogs/…) + JiraModels +
 │   │   │                     JiraFieldExtraction (Custom/Extra Fields, Meta) + ADFToMarkdown +
 │   │   │                     JiraDuration (1d = 8h)
-│   │   └── GitLab/           GitLabFetch (MR/Notes/Discussions/Diffs/Schreibwege/Activity) +
-│   │                         GitLabModels + MRDiffPosition (Zeile → old/new für Inline-Kommentare)
+│   │   ├── GitLab/           GitLabFetch (MR/Notes/Discussions/Diffs/Schreibwege/Activity) +
+│   │   │                     GitLabModels + MRDiffPosition (Zeile → old/new für Inline-Kommentare)
+│   │   └── GitHub/           GitHubFetch (PR/Reviews/Kommentare/Files/Schreibwege) + GitHubModels +
+│   │                         PRDiffPosition (Zeile → path/line/side/commit_id, Gegenstück zu MRDiffPosition)
 │   ├── Git/               WorktreeScanner (`git worktree list --porcelain`) + BranchParent
 │   │                      (Abzweig-Basis abgeleitet: Kandidaten = langlebige Branches + Worktree-
 │   │                      Checkouts (Branches stacken!), Gewinner = wenigste fehlende Commits
@@ -1891,14 +1933,17 @@ Sources/
 │                          ClaudeTimingStore (incremental tail + cache), TimeFormatting +
 │                          LiveTurn (tickt der ⏱-Zähler? Lebenszeichen + Alters-Schranke)
 └── Kanban/                SwiftUI/AppKit app
-    ├── App.swift          @main, Window
+    ├── App.swift          @main, WindowGroup(for: String.self) — Board-Fenster je Projekt-Key
+    ├── ProjectWindows.swift  wer welches Projekt zeigt: Terminal-Klick und Benachrichtigung ins
+    │                      richtige Fenster, offene Projekte merken, beim Start wieder aufmachen
     ├── AppModel.swift     @Observable: config/selection/sprints/issues/MRs/worktrees/columns/refresh
-    ├── ContentView.swift  VStack(TopBar, HSplitView(Board, Detail))
+    ├── ContentView.swift  VStack(TopBar, HSplitView(Board, Detail)); nimmt den Projekt-Key der Szene
     ├── TopBar/            project picker + sprint/board picker (nur Sprint-Modus) +
     │                      Modus-Umschalter + 📚-Knopf (Knowledgebase, nur mit kbPath) +
-    │                      refresh + Σ Claude-Zeit
+    │                      +-Knopf (neues Fenster) + refresh + Σ Claude-Zeit
     ├── Knowledgebase/     KnowledgebaseView (Baum | Inhalt) + FileWebView (HTML-Artefakte)
-    ├── Settings/          SettingsSheet (Kanban-Config) + SelectionStore (gemerkte Auswahl)
+    ├── Settings/          SettingsSheet (Kanban-Config) + SelectionStore (gemerkte Auswahl:
+    │                      offene Projekte, zuletzt benutztes, Sprint/Modus je Projekt)
     ├── Board/             BoardSidebar / ColumnSection / TicketCard / EpicViews (Stripe + Pill) /
     │                      AvatarView (+ AvatarCache: Jira-Bilder mit Auth) / IssueTypeIcon /
     │                      NewTaskSheet (freier Modus)
@@ -1910,17 +1955,81 @@ Sources/
     │                      RichTextEditor (contenteditable in WKWebView) / MarkdownWebView +
     │                      HTMLTemplate (Stylesheet, lesend und beschreibbar) /
     │                      TerminalPlaceholderView / NewTaskConsoleView (Projekt-Console)
-    ├── Watchdog/          WatchdogModel (Takt + angezeigter Stand) + WatchdogPanel (Liste + Knopf)
+    ├── Watchdog/          WatchdogModel (Takt + angezeigter Stand, prozessweit `.shared`) +
+    │                      WatchdogPanel (Liste + Knopf)
     ├── Stack/             StackSweepSheet („N Stacks stoppen": Liste + Bestätigung + Ausgabe)
     ├── Timing/            ClaudeTimeBadge (Karte) / ClaudeTimeChip + Popover (Turn-Liste + Buchen) / BookingSheet
-    └── Theme/             MarkdownTheme (ported from kanban-code's chatMarkdownTheme)
+    └── Theme/             MarkdownTheme (ported from kanban-code's chatMarkdownTheme) +
+                            ForgeColors (Badge-Palette je Forge: GitLab-Tokens, GitHub Primer)
 ```
 
-## Module (Jira + GitLab, nach Hermes' Vorbild in Swift)
+## Zwei Forges: GitLab **oder** GitHub je Projekt
 
-Kanban betreibt die zwei Module, die es braucht, **selbst** — portiert aus `hermes/mcp-server`
-(`lib/http.js`, `modules/jira`, `modules/gitlab`). Damit hängt kein Board-Feature mehr an einem
-laufenden Daemon.
+Ein Projekt sagt, wo sein Code liegt, und bekommt danach dieselben Funktionen — Review- und
+Done-Spalte, Badge mit Zustimmung und Thread-Zähler, die Karten ohne Ticketnummer, die Branch-Links
+im Task-File, die Review-Skills. Nach aussen heisst es dort „PR" statt „MR"; darunter ist es
+dasselbe Modell.
+
+**Der Schnitt ist klein, und das liegt am Domänenmodell:** `MergeRequestRef` war schon
+provider-neutral (`iid`, `title`, `state`, Branches, `webUrl`, `draft`, Threads, `approved`), und die
+App ruft eine Forge an **genau einer** Stelle an (`AppModel.fetchMergeRequests`). Dazu kommt
+`ForgeClient` mit drei Methoden — Liste, Thread-Zähler, Zustimmung. Mehr nicht: die Detail-Ebene
+(Diffs, Notes, Schreibwege) hängt an keiner Oberfläche, weder hier noch dort, und aufs Protokoll
+gehoben bliebe sie Vorrat.
+
+**Normalisiert wird im Adapter, nicht in der Domäne.** Vier Dinge sind bei GitHub anders *gebaut*,
+nicht bloss anders benannt:
+
+| Sache | GitLab | GitHub |
+|---|---|---|
+| Auth | Header `PRIVATE-TOKEN` | `Authorization: Bearer …` + `Accept: application/vnd.github+json` |
+| Zustand | `opened` / `merged` / `closed` | nur `open` / `closed`, dazu `merged_at` — **„merged" ist dort kein Zustand** |
+| Zustimmung | `/approvals` → `approved_by` | `/pulls/{n}/reviews` → je Person der **letzte** Zustand, `APPROVED` zählt |
+| Threads aufgelöst | `/discussions` → `resolved` je Note | **gibt es im REST nicht** — `isResolved` steht nur in GraphQL |
+
+`GitHubClient` übersetzt deshalb `closed` + `merged_at != nil` → `"merged"` und `open` → `"opened"`,
+und `WorkflowStatus`, `TicketMatching`, die Badges und die Spaltenlogik bleiben **unverändert**
+(`WorkflowStatusTests` und `MRDiffPositionTests` laufen wörtlich weiter — das ist die Gegenprobe).
+Wer GitHubs Vokabular durchreichte, müsste jede dieser Stellen anfassen und bräche dabei die Tests.
+
+Was daraus im Einzelnen folgt:
+
+- **Der Zustand ist der gefährliche Fall.** Ein *abgelehnter* PR ist `closed` ohne `merged_at` — ohne
+  die Unterscheidung landete er in Done. Beide Richtungen sind getestet.
+- **Fail-open bei den Threads.** Die GraphQL-Abfrage (`pullRequest.reviewThreads { isResolved }`)
+  braucht ein Token mit Repo-Lesezugriff. Fehlt es, scheitert sie oder läuft in die Frist: dann
+  **0/0, kein Badge, keine Spaltenwirkung**. Eine Karte wegen einer fehlenden Antwort zu verschieben
+  wäre der schlechtere Ausgang.
+- **Ratenbegrenzung.** 30 offene PRs sind 60 Abfragen im 45-Sekunden-Takt. Meldet GitHub einmal
+  „rate limit" (403/429 **mit** Grund im Body — ein nacktes 403 ist ein fehlendes Recht), hört die
+  Runde auf zu fragen (`RateLimitGate`) und wiederholt **nichts**; der nächste Takt versucht es neu.
+- **Fork-PRs.** `head.label` trägt dort `owner:branch`. Verglichen wird mit lokalen Branches, also
+  gilt `head.ref` — sonst fände `TicketMatching` den Worktree nicht.
+- **Zwei Listen statt `state=all`.** `all` liefert eine Seite, und die besteht in einem Repo mit
+  Historie aus geschlossenen PRs; die offenen fielen hinten heraus. Getrennt geholt bekommt jede
+  Hälfte ihre Sortierung: offene vollständig, geschlossene nach letzter Änderung.
+- **Branch-Links.** GitLab schiebt `/-/` zwischen Projekt und Ressource, GitHub nicht
+  (`ForgeKind.branchPathSegment`). Ohne das ginge der Link im Task-File still ins Leere.
+- **Web- gegen API-Basis.** Die Config hält `https://api.github.com`; Branch- und PR-Links brauchen
+  `https://github.com`. Abgeleitet in `GitHubClient.webBaseURL(forApiBase:)`, ebenso die GraphQL-URL
+  (bei GitHub Enterprise `/api/graphql` neben `/api/v3`).
+- **Ein Projekt, eine Forge.** Steht derselbe Key in beiden Abschnitten, wirft `KanbanConfig.resolve`
+  mit dem Namen des Projekts (`ambiguousForge`) statt sich eine auszusuchen. Der Projekt-Editor
+  blendet den jeweils anderen Block aus, solange einer gesetzt ist.
+- **Umbenannt wurde nichts.** `MergeRequestRef`, `MRReviewState`, `CardBadge.mergeRequest`, `iid`
+  bleiben — `ChangeRequest`/`number` wäre neutraler, zöge aber durch die halbe Codebasis und durch
+  bestehende Task-Files. Die Herkunft ist ein **Feld** (`MergeRequestRef.forge`), und nur die
+  Anzeige hängt daran.
+- **Stufe 1.** Gebaut ist der Listen-Weg (Board vollständig) **und** die Detail-Ebene als Modul
+  (`Modules/GitHub`: PR, Reviews, Kommentare, Files, Schreibwege, `PRDiffPosition`). Angeschlossen
+  an die Oberfläche ist die Detail-Ebene bei **keiner** der beiden Forges — das ist so entschieden,
+  nicht vergessen.
+
+## Module (Jira + GitLab + GitHub, nach Hermes' Vorbild in Swift)
+
+Kanban betreibt die Module, die es braucht, **selbst** — portiert aus `hermes/mcp-server`
+(`lib/http.js`, `modules/jira`, `modules/gitlab`); das GitHub-Modul hat dort kein Vorbild, weil
+Hermes keins hat. Damit hängt kein Board-Feature mehr an einem laufenden Daemon.
 
 - **Transport** (`ModuleHTTPClient`, Zwilling von `lib/http.js`): Auth-Resolver je Modul und
   Host-Guard. Zwei Abweichungen von Hermes, beide bewusst: es gibt **nur** den direkten Weg mit dem
@@ -1981,6 +2090,16 @@ laufenden Daemon.
     es beim Umleiten auch nichts zu entziehen — und umgeleitet **wird**: Gravatar schickt auf
     `i1.wp.com` weiter, einen Host ausserhalb der Liste. Deshalb prüft die Allowlist den Einstieg,
     und begrenzt wird die Kette stattdessen über Länge (5) und Grösse (2 MB).
+- **GitHub**: PR-Liste, Thread-Zähler und Zustimmung in `GitHubClient` (siehe „Zwei Forges" für die
+  vier Unterschiede), der Rest in `Modules/GitHub` — einzelner PR inkl. `head.sha`, Reviews,
+  allgemeine Kommentare (GitHub führt sie als **Issue**-Kommentare) und Review-Kommentare, geänderte
+  Dateien mit `patch`, und die Schreibwege (Kommentar, Inline-Kommentar, Antwort).
+  - `PRDiffPosition` ist das Gegenstück zu `MRDiffPosition`: **dieselbe Eingabe, andere Ausgabe** —
+    `path` + `line` + `side` (+ `start_line`/`start_side`) statt `old_line`/`new_line`, dazu
+    `commit_id` statt des SHA-Tripels. Den **Hunk-Parser teilen sich beide**
+    (`MRDiffPosition.parseHunks`): ein Unified Diff ist ein Unified Diff, und zwei Kopien wären zwei
+    Stellen, an denen dieselbe Zählung schiefgehen kann. Die Tests laufen gegen denselben Diff wie
+    `MRDiffPositionTests`.
 - **GitLab**: MR-Liste, Thread-Zähler und Approval bleiben in `GitLabClient` (das braucht das Board),
   der Rest in `Modules/GitLab` — einzelner MR inkl. `diff_refs`, Notes, Threads, Changes, Diffs,
   Aktivität, Projekt-Auflösung und die Schreibwege (Kommentar, Inline-Discussion, Antwort).
@@ -2020,7 +2139,8 @@ und wer die eine Datei kennt, kennt die andere.
   kaputtem JSON wirft — stilles Ignorieren sähe aus wie Datenverlust. `isConfigured` = Jira-Zugang
   vollständig **und** mindestens ein Projekt.
 - **Hermes-Übernahme** (`HermesImport`): existiert `~/.hermes/config.json` und hat Kanban noch keine
-  `modules`, werden `basePath` sowie `modules.jira`/`modules.gitlab` **wortgleich** kopiert (auch
+  `modules`, werden `basePath` sowie `modules.jira`/`modules.gitlab` **wortgleich** kopiert
+  (GitHub bleibt aussen vor — Hermes hat kein solches Modul, es gäbe dort nichts zu übernehmen) (auch
   Schlüssel, die Kanban nie liest, wie `anonymize`). Einzige Ausnahme: **`backend` fliegt raus** —
   Hermes' Umschalter zwischen REST und Browser-Session täuschte eine Wahl vor, die es hier nicht gibt.
   Ein Bootstrap, **kein** Sync — sonst käme ein in Kanban geänderter Wert bei jedem Start zurück.
@@ -2031,14 +2151,33 @@ und wer die eine Datei kennt, kennt die andere.
   gelöscht. **Vorher gemischt** (`HermesSync.merged`): `ProjectProjection.apply` hält die Registry für
   den Owner *aller* Modul-Blöcke und löscht, was sie nicht kennt — ungemischt hätte jeder Sync Hermes'
   Confluence-, Vertec-, Jenkins- und DockerHub-Einträge weggeräumt (ein Test hat genau das gefangen).
+  Der `github`-Block wandert dabei **mit** hinüber, obwohl Hermes kein GitHub-Modul hat: er ist
+  additiv, stört dort nichts und dokumentiert, wo das Repo liegt. Eine Ausnahme dafür zu bauen
+  hiesse, `ProjectProjection` eine zweite Liste zu geben, die niemand pflegt.
 
 - `basePath` (e.g. `~/code`) — tasksPath + repoDir are resolved relative to it.
 - `modules.jira.{baseUrl,email,apiToken}` +
-  `modules.jira.projects.<key>.{prefix,tasksPath,baseUrl?,repoDir?,agent?}`
+  `modules.jira.projects.<key>.{prefix,tasksPath,baseUrl?,repoDir?,agent?,skillSet?}`
   (`agent` = `claude`|`codex`, siehe „Zwei Agents"; unbekannter Wert fällt auf `claude` zurück statt
-  das Projekt lahmzulegen). Auth = `Authorization: Basic base64(email:apiToken)`.
+  das Projekt lahmzulegen. `skillSet` = Name eines Sets im Bestand, leer = Standard-Set; ein Set,
+  das es nicht gibt, fällt ebenfalls aufs Standard-Set zurück — mit Hinweis in der Übersicht).
+  Auth = `Authorization: Basic base64(email:apiToken)`.
+- `claude.setsPath` — der Ordner, in dem die Skill-Sets **gepflegt** werden und auf den die
+  Symlinks der Projekte direkt zeigen (absolut, `~` oder relativ zum Basis-Pfad). Leer =
+  `<basePath>/kanban/Sources/Kanban/Resources/ClaudeAssets/sets`.
+- `claude.defaultSkillSet` — das Skill-Set für jedes Projekt ohne eigene Wahl und für die
+  Agent-Homes. Beides steht in einem Kanban-eigenen Abschnitt wie `commit` und `watchdog`, **kein**
+  Modul (steht nicht in `ProjectProjection.moduleNames` und wandert nie nach Hermes). Fehlt
+  `defaultSkillSet`, gilt das einzige vorhandene Set.
 - `modules.gitlab.{baseUrl,apiToken}` + `modules.gitlab.projects.<key>.{path}`.
   **Same key** as the Jira project → mapping. Auth = `PRIVATE-TOKEN` header. API base `${baseUrl}/api/v4`.
+- `modules.github.{baseUrl?,apiToken}` + `modules.github.projects.<key>.{path}` (`owner/repo`).
+  Ebenfalls derselbe Key → Zuordnung. Auth = `Authorization: Bearer` plus
+  `Accept: application/vnd.github+json`. `baseUrl` ist die **API**-Basis und hat eine Vorgabe
+  (`https://api.github.com`); bei GitHub Enterprise steht dort `https://<host>/api/v3`, und Kanban
+  leitet daraus GraphQL (`/api/graphql`) und die Web-Basis für Links ab. Ein Projekt gehört zu
+  **einer** Forge — derselbe Key unter `gitlab` *und* `github` ist ein Konfigurationsfehler, den
+  `KanbanConfig.resolve` mit dem Namen des Projekts meldet.
 - `modules.knowledgebase.projects.<key>.path` — ebenfalls kein Modul: nur der Ort der
   Knowledgebase, den Kanban als `kbPath` in `.claude/project.json` durchreicht (absolut, `~` oder
   relativ zum Basis-Pfad; leer = kein `kbPath`). Kanban liest den Ordner selbst nicht, und die
@@ -2073,7 +2212,7 @@ swift run Kanban --migrate-jira-line --dry-run          # zeigt, was die Migrati
 swift run Kanban --migrate-jira-line                    # trägt die 🎫-Zeile in Bestands-Task-Files ein
 swift run Kanban --migrate-jira-line --project even     # nur ein Projekt
 
-./build-app.sh      # ausrollen: Release + Bundle + ad-hoc-Signatur → /Applications/Kanban.app
+./build-app.sh      # ausrollen: Release + Bundle + Signatur → /Applications/Kanban.app
 ```
 
 **Ausgerollt wird ausschliesslich über `./build-app.sh`.** `swift run` startet eine zweite,
@@ -2083,6 +2222,75 @@ sehen will, muss das Skript laufen lassen. Das Skript installiert bewusst direkt
 (`ch.iwf.kanban`) ist sie bei macOS für Benachrichtigungen registriert. Ein zweites Bundle mit
 derselben ID hatte Launch Services und die Zustellung durcheinandergebracht, deshalb räumt das
 Skript ein altes `dist/Kanban.app` mit weg.
+
+## Signierung
+
+`build-app.sh` signiert mit der Schlüsselbund-Identität
+`Apple Development: c.hiller@iwf.ch (RVX4CBNYV9)`. `CODESIGN_IDENTITY` überschreibt sie, `-` erzwingt
+ad-hoc. Fehlt die Identität (fremder Rechner, abgelaufenes Zertifikat), fällt das Skript mit einer
+Meldung auf ad-hoc zurück statt abzubrechen; liegt ein abgelaufenes Zertifikat dieses Namens im
+Schlüsselbund, nennt die Meldung das Ablaufdatum.
+
+**Warum überhaupt.** Eine ad-hoc-Signatur hat keinen Team-Identifier. macOS hängt erteilte TCC-Rechte
+dann an den cdhash — und der ändert sich bei jedem Bau. Genau deshalb war die
+Benachrichtigungs-Erlaubnis nach jedem Rollout wieder weg, obwohl die ganze Attention-Kette
+(Hook → Marker → Benachrichtigung → Karte) daran hängt. Mit einer echten Identität lautet die
+Anforderung „Bundle-Id + Zertifikat":
+
+```
+designated => identifier "ch.iwf.kanban" and anchor apple generic
+              and certificate leaf[subject.CN] = "Apple Development: c.hiller@iwf.ch (RVX4CBNYV9)"
+              and certificate 1[field.1.2.840.113635.100.6.2.1]
+```
+
+Die überlebt jeden Neubau. **Einmalig** muss die Erlaubnis nach der Umstellung trotzdem neu erteilt
+werden: Für macOS ist die erste signierte Fassung eine andere App als die ad-hoc-Fassung davor.
+
+Der Team-Identifier in der Signatur lautet `C6X9XR4KXT` — das `OU` des Zertifikats. Das `RVX4CBNYV9`
+im Zertifikatsnamen ist die Kennung des Entwicklers, nicht die des Teams; in `codesign -dv` taucht
+es nur als `Authority` auf.
+
+**Was das Skript beim Signieren tut:**
+
+- Kein `--deep` (Apple rät ausdrücklich davon ab): verschachtelte Bundles zuerst, die App zuletzt.
+  Die beiden Ordner, die SwiftPM ablegt (`Kanban_Kanban.bundle`, `SwiftTerm_SwiftTerm.bundle`),
+  sind reine Ressourcen-Ordner ohne `Info.plist` — codesign erkennt sie nicht als Bundle und die
+  App-Signatur versiegelt sie als gewöhnliche Ressourcen. Geprüft werden sie trotzdem: Eine
+  nachträgliche Änderung darin lässt `codesign --verify --strict` auffliegen.
+- Hardened Runtime (`--options runtime`) mit `Kanban.entitlements`. Die Datei ist bewusst leer und
+  vor allem **ohne** `com.apple.security.app-sandbox`: Kanban startet tmux, `claude`, `git` und
+  `docker`, liest `~/code` und `~/.claude` und hängt an einem PTY — eine Sandbox schnitte das ab.
+  Warum kein einziges Entitlement nötig ist, steht begründet in der Datei selbst.
+- `--timestamp`, mit hörbarem Rückfall auf `--timestamp=none`, wenn der Zeitstempel-Dienst nicht
+  erreichbar ist (kein Netz). Ein anderer codesign-Fehler fällt dagegen durch, statt als
+  Netz-Problem ausgegeben zu werden.
+- Danach `codesign --verify --strict`. Schlägt das fehl, wird das Bundle entfernt und der Bau bricht
+  ab, statt eine kaputte App in `/Applications` zu hinterlassen.
+
+**Für die Weitergabe reicht das nicht.** `spctl -a -t exec` sagt `rejected`; mit einem
+Entwicklungs-Zertifikat ist das der erwartete Befund, deshalb gibt das Skript die Auskunft nur aus
+und bricht nicht ab.
+
+**Der Notarisierungs-Schritt steht schon im Skript, schläft aber.** ZIP via `ditto` →
+`xcrun notarytool submit --wait` → `xcrun stapler staple` läuft nur an, wenn `CODESIGN_IDENTITY`
+mit `Developer ID Application` beginnt — Apple notarisiert keine Entwicklungs-Signaturen. Zum
+Aufwecken braucht es dreierlei:
+
+1. Apple-Developer-Programm (99 $/Jahr) und daraus ein **Developer ID Application**-Zertifikat im
+   Schlüsselbund.
+2. Ein notarytool-Profil im Schlüsselbund — **nicht** im Repo:
+   `xcrun notarytool store-credentials kanban-notary --apple-id <apple-id> --team-id <team-id> --password <app-spezifisches Passwort>`.
+   Ein anderer Profilname geht über `NOTARY_PROFILE`.
+3. Den Bau mit dieser Identität starten:
+   `CODESIGN_IDENTITY="Developer ID Application: … (…)" ./build-app.sh`.
+
+Scheitert die Notarisierung, warnt das Skript und läuft weiter — die App in `/Applications` ist
+signiert und läuft hier, sie taugt nur nicht zur Weitergabe. Gelingt sie, sagt `spctl` danach
+`accepted / source=Notarized Developer ID`.
+
+Offen bleibt dafür die Versionsnummer: `CFBundleVersion` und `CFBundleShortVersionString` stehen in
+`build-app.sh` fest auf `1.0`. Für eine notarisierte Auslieferung müssten sie je Bau steigen, sonst
+ist eine neuere Fassung von der älteren nicht zu unterscheiden.
 
 ## Not in step 1 (deliberately)
 

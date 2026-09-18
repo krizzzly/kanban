@@ -122,6 +122,28 @@ public enum ClaudeCommandScanner {
         return result
     }
 
+    // MARK: - Aus dem Skill-Set statt von der Platte
+
+    /// Die Skills eines Sets — **alle**, die das Set anbietet.
+    ///
+    /// Das ist die Quelle für das Command-Menü am Ticket, und zwar bewusst das **Set** und nicht
+    /// der Scan der Zielorte: was ein Projekt sieht, ist sein Set, nicht die Vereinigung aus
+    /// Projekt-Ebene und Agent-Home. Ein Skill, der einem Set dazukommt, steht damit ohne
+    /// Codeänderung im Menü — vorher entschied das eine fest verdrahtete Liste aus vier Namen.
+    ///
+    /// - Parameter first: Namen, die vorn stehen sollen (Workflow-Reihenfolge). Alles andere folgt
+    ///   alphabetisch; ein Name, den das Set nicht führt, wird übersprungen.
+    public static func commands(in set: ClaudeAssetSet, first: [String] = []) -> [ClaudeCommand] {
+        let skills = ClaudeAssetStore.assets(.skill, in: set)
+        let nachName = Dictionary(uniqueKeysWithValues: skills.map { ($0.name, $0) })
+        let vorn = first.compactMap { nachName[$0] }
+        let rest = skills.filter { !first.contains($0.name) }   // `assets` liefert bereits sortiert
+        return (vorn + rest).map { skill in
+            command(name: skill.name, url: skill.url.appendingPathComponent("SKILL.md"),
+                    level: .project, shadowedProjectURL: nil)
+        }
+    }
+
     /// Minimal YAML frontmatter reader: `key: value` lines between the leading `---` fences.
     static func frontmatter(of content: String) -> [String: String] {
         var lines = content.split(separator: "\n", omittingEmptySubsequences: false)[...]

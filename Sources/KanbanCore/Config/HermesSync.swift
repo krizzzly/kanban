@@ -7,7 +7,7 @@ import Foundation
 /// Projekt dort niemand.
 ///
 /// Die Projektion ist **additiv**: `ProjectProjection.apply` fasst nur die Felder an, die die
-/// Registry besitzt (`prefix`, `tasksPath`, `repoDir`, `baseUrl`, GitLab-`path`, …). Tokens, URLs,
+/// Registry besitzt (`prefix`, `tasksPath`, `repoDir`, `baseUrl`, Forge-`path`, …). Tokens, URLs,
 /// `backend` und jeder unbekannte Schlüssel bleiben stehen, und ein Projekt, das nur Hermes kennt,
 /// wird nie gelöscht.
 ///
@@ -64,10 +64,10 @@ public enum HermesSync {
 
     /// Der Grund, warum hier überhaupt gemischt wird: `ProjectProjection.apply` betrachtet die
     /// Registry als Owner **aller** Modul-Blöcke und löscht einen Eintrag, dessen Block sie nicht
-    /// kennt. Kanbans Config kennt aber nur Jira und GitLab — ungemischt würde jeder Sync Hermes'
-    /// Confluence-, Vertec-, Jenkins- und DockerHub-Einträge wegräumen.
+    /// kennt. Kanbans Config kennt aber nur Jira, GitLab und GitHub — ungemischt würde jeder Sync
+    /// Hermes' Confluence-, Vertec-, Jenkins- und DockerHub-Einträge wegräumen.
     ///
-    /// Also: Kanbans Werte gewinnen, wo Kanban welche hat (Jira, GitLab und alles, was im
+    /// Also: Kanbans Werte gewinnen, wo Kanban welche hat (Jira, die Forge und alles, was im
     /// Projekt-Editor eingetragen wurde), und für die übrigen Module bleibt stehen, was in Hermes
     /// steht.
     static func merged(kanban: ProjectRegistry, hermes: ProjectRegistry) -> ProjectRegistry {

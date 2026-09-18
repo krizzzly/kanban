@@ -40,8 +40,14 @@ public struct ProjectRecord: Codable, Sendable, Equatable {
     /// Jira-Eintrag: gleiche Form wie `usesJira`, andere Sache. Und in `kanbanOnlySections` statt
     /// `moduleNames` — Hermes kennt keinen Stack-Schalter (siehe `applyKanbanOnly`).
     public var usesDockerStack: Bool?
+    /// Welches Skill-Set das Projekt sieht. Nil = Standard-Set — genau wie ein fehlendes `agent`
+    /// den Default-Agent meint.
+    public var skillSet: String?
 
     public var gitlab: GitlabInfo?
+    /// Die zweite Forge. **Entweder** `gitlab` **oder** `github` — beides zusammen ist ein
+    /// Konfigurationsfehler, den `KanbanConfig.resolve` beim Namen nennt.
+    public var github: GithubInfo?
     public var confluence: ConfluenceInfo?
     public var vertec: VertecInfo?
     public var jenkins: JenkinsInfo?
@@ -49,6 +55,11 @@ public struct ProjectRecord: Codable, Sendable, Equatable {
 
     public struct GitlabInfo: Codable, Sendable, Equatable {
         public var path: String          // Namespace-Pfad, z.B. "applications/even"
+        public init(path: String) { self.path = path }
+    }
+
+    public struct GithubInfo: Codable, Sendable, Equatable {
+        public var path: String          // owner/repo, z.B. "krizzzly/kanban"
         public init(path: String) { self.path = path }
     }
 
@@ -94,7 +105,9 @@ public struct ProjectRecord: Codable, Sendable, Equatable {
                 tasksPath: String? = nil,
                 repoDir: String? = nil,
                 jiraBaseUrl: String? = nil,
+                skillSet: String? = nil,
                 gitlab: GitlabInfo? = nil,
+                github: GithubInfo? = nil,
                 confluence: ConfluenceInfo? = nil,
                 vertec: VertecInfo? = nil,
                 jenkins: JenkinsInfo? = nil,
@@ -103,7 +116,9 @@ public struct ProjectRecord: Codable, Sendable, Equatable {
         self.tasksPath = tasksPath
         self.repoDir = repoDir
         self.jiraBaseUrl = jiraBaseUrl
+        self.skillSet = skillSet
         self.gitlab = gitlab
+        self.github = github
         self.confluence = confluence
         self.vertec = vertec
         self.jenkins = jenkins
@@ -114,7 +129,8 @@ public struct ProjectRecord: Codable, Sendable, Equatable {
     /// überspringt solche Einträge.
     public var isEmpty: Bool {
         prefix == nil && tasksPath == nil && repoDir == nil && jiraBaseUrl == nil
-            && gitlab == nil && confluence == nil && vertec == nil
+            && skillSet == nil
+            && gitlab == nil && github == nil && confluence == nil && vertec == nil
             && jenkins == nil && dockerhub == nil
     }
 
@@ -131,6 +147,9 @@ public struct ProjectRecord: Codable, Sendable, Equatable {
         var record = self
         if record.gitlab?.path.trimmingCharacters(in: .whitespaces).isEmpty ?? false {
             record.gitlab = nil
+        }
+        if record.github?.path.trimmingCharacters(in: .whitespaces).isEmpty ?? false {
+            record.github = nil
         }
         if record.confluence == ConfluenceInfo() { record.confluence = nil }
         if record.vertec == VertecInfo() { record.vertec = nil }

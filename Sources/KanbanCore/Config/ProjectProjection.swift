@@ -13,8 +13,10 @@ import Foundation
 /// Einträge sollen nicht stillschweigend verschwinden. Umgekehrt gilt für Keys, die die Registry
 /// kennt: fehlt dort ein Modul-Block, verschwindet der zugehörige Eintrag — dafür ist sie ja Owner.
 public enum ProjectProjection {
-    private static let jiraOwnedKeys = ["prefix", "tasksPath", "repoDir", "baseUrl", "useJira"]
+    private static let jiraOwnedKeys = ["prefix", "tasksPath", "repoDir", "baseUrl", "useJira",
+                                        "skillSet"]
     private static let gitlabOwnedKeys = ["path"]
+    private static let githubOwnedKeys = ["path"]
     private static let confluenceOwnedKeys = ["space", "path"]
     private static let vertecOwnedKeys = ["project", "phase", "task", "additionalKeys"]
     private static let jenkinsOwnedKeys = ["jobs"]
@@ -25,7 +27,8 @@ public enum ProjectProjection {
 
     /// Die Module, deren `projects`-Section dieselben Projekt-Keys benutzt. (Argo CDs `instances`
     /// sieht ähnlich aus, meint aber Umgebungen — bewusst nicht dabei.)
-    public static let moduleNames = ["jira", "gitlab", "confluence", "vertec", "jenkins", "dockerhub"]
+    public static let moduleNames = ["jira", "gitlab", "github", "confluence", "vertec",
+                                     "jenkins", "dockerhub"]
 
     private static func projectsPath(_ module: String) -> [String] {
         ["modules", module, "projects"]
@@ -59,6 +62,7 @@ public enum ProjectProjection {
     public static func importing(from config: JSONValue) -> ProjectRegistry {
         let jira = section(config, "jira")
         let gitlab = section(config, "gitlab")
+        let github = section(config, "github")
         let confluence = section(config, "confluence")
         let vertec = section(config, "vertec")
         let jenkins = section(config, "jenkins")
@@ -66,8 +70,8 @@ public enum ProjectProjection {
         let docker = section(config, "docker")
 
         var registry = ProjectRegistry()
-        let keys = Set(jira.keys).union(gitlab.keys).union(confluence.keys).union(vertec.keys)
-            .union(jenkins.keys).union(dockerhub.keys)
+        let keys = Set(jira.keys).union(gitlab.keys).union(github.keys).union(confluence.keys)
+            .union(vertec.keys).union(jenkins.keys).union(dockerhub.keys)
 
         for key in keys {
             var record = ProjectRecord()
@@ -78,12 +82,16 @@ public enum ProjectProjection {
                 record.repoDir = entry["repoDir"]?.stringValue
                 record.jiraBaseUrl = entry["baseUrl"]?.stringValue
                 record.usesJira = entry["useJira"]?.boolValue
+                record.skillSet = entry["skillSet"]?.stringValue
             }
             // Eigene Section, bewusst **nicht** in der Key-Vereinigung oben: ein Eintrag, der nur
             // sagt „kein Stack", beschreibt kein Projekt.
             record.usesDockerStack = docker[key]?.objectValue?["stack"]?.boolValue
             if let path = gitlab[key]?.objectValue?["path"]?.stringValue {
                 record.gitlab = .init(path: path)
+            }
+            if let path = github[key]?.objectValue?["path"]?.stringValue {
+                record.github = .init(path: path)
             }
             if let entry = confluence[key]?.objectValue {
                 let info = ProjectRecord.ConfluenceInfo(space: entry["space"]?.stringValue,
@@ -163,12 +171,17 @@ public enum ProjectProjection {
             // Nur die Abschaltung wird geschrieben: `true` ist die Vorgabe, und ein Schlüssel,
             // der nur den Normalfall wiederholt, stünde in jedem Projekt herum.
             if record.usesJira == false { fields["useJira"] = .bool(false) }
+            // Nur die ausdrückliche Wahl steht da; ohne Eintrag gilt das Standard-Set.
+            fields["skillSet"] = record.skillSet.map(JSONValue.string)
             jira = fields
         }
         write(jira, ownedKeys: jiraOwnedKeys, at: projectsPath("jira") + [key], in: &config)
 
         write(record.gitlab.map { ["path": .string($0.path)] },
               ownedKeys: gitlabOwnedKeys, at: projectsPath("gitlab") + [key], in: &config)
+
+        write(record.github.map { ["path": .string($0.path)] },
+              ownedKeys: githubOwnedKeys, at: projectsPath("github") + [key], in: &config)
 
         write(record.confluence.map {
             var fields: [String: JSONValue] = [:]

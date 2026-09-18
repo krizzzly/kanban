@@ -15,13 +15,17 @@ final class StatusLinksTests: XCTestCase {
     🟢 Fertig
     """
 
+    private let gitlab = ForgeLocation(kind: .gitlab, webBaseUrl: "https://gitlab.example.com",
+                                       projectPath: "applications/even")
+    private let github = ForgeLocation(kind: .github, webBaseUrl: "https://github.com",
+                                       projectPath: "krizzzly/kanban")
+
     private func linkify() -> String {
         StatusLinks.linkify(
             preamble: preamble,
             ticketKey: "EVEN-3530",
             jiraBaseUrl: "https://jira.example.com/",     // trailing slash trimmed
-            gitlabBaseUrl: "https://gitlab.example.com",
-            gitlabProjectPath: "applications/even")
+            forge: gitlab)
     }
 
     /// Die Überschrift ist eine Überschrift, kein Navigationselement — sie läuft unverändert durch.
@@ -36,8 +40,7 @@ final class StatusLinksTests: XCTestCase {
     func testJiraLineInFileLinksToItself() {
         let out = StatusLinks.linkify(
             preamble: "# EVEN-1 - X\n\n> 🎫 **JIRA**: `https://jira.example.com/browse/EVEN-1`\\\n> 🌿 **BRANCH**: `feature/x`",
-            ticketKey: "EVEN-1", jiraBaseUrl: "https://jira.example.com",
-            gitlabBaseUrl: nil, gitlabProjectPath: nil)
+            ticketKey: "EVEN-1", jiraBaseUrl: "https://jira.example.com", forge: nil)
         XCTAssertTrue(out.contains(
             "[`https://jira.example.com/browse/EVEN-1`](https://jira.example.com/browse/EVEN-1)"))
     }
@@ -61,8 +64,7 @@ final class StatusLinksTests: XCTestCase {
     func testExistingJiraLineIsNotDuplicated() {
         let head = "# EVEN-1 - X\n\n> 🎫 **JIRA**: `https://anders.example/browse/EVEN-1`\\\n> 🌿 **BRANCH**: `feature/x`"
         let out = StatusLinks.linkify(preamble: head, ticketKey: "EVEN-1",
-                                      jiraBaseUrl: "https://jira.example.com",
-                                      gitlabBaseUrl: nil, gitlabProjectPath: nil)
+                                      jiraBaseUrl: "https://jira.example.com", forge: nil)
         XCTAssertEqual(out.components(separatedBy: "**JIRA**").count - 1, 1)
         XCTAssertFalse(out.contains("jira.example.com"))
     }
@@ -71,8 +73,7 @@ final class StatusLinksTests: XCTestCase {
     /// nicht gibt, ist schlechter als keiner.
     func testNoJiraLineWithoutJiraProject() {
         let out = StatusLinks.linkify(preamble: preamble, ticketKey: "KANBAN-1",
-                                      jiraBaseUrl: "https://jira.example.com",
-                                      gitlabBaseUrl: nil, gitlabProjectPath: nil,
+                                      jiraBaseUrl: "https://jira.example.com", forge: nil,
                                       usesJira: false)
         XCTAssertFalse(out.contains("**JIRA**"))
         XCTAssertFalse(out.contains("browse"))
@@ -81,7 +82,7 @@ final class StatusLinksTests: XCTestCase {
     /// Ohne konfigurierte Basis-URL gibt es nichts abzuleiten.
     func testNoJiraLineWithoutBaseUrl() {
         let out = StatusLinks.linkify(preamble: preamble, ticketKey: "EVEN-3530", jiraBaseUrl: nil,
-                                      gitlabBaseUrl: nil, gitlabProjectPath: nil)
+                                      forge: nil)
         XCTAssertFalse(out.contains("**JIRA**"))
     }
 
@@ -89,7 +90,7 @@ final class StatusLinksTests: XCTestCase {
     func testJiraLineBecomesItsOwnBlockWhenNoBlockExists() {
         let out = StatusLinks.linkify(preamble: "# EVEN-1 - X\n\nTyp: Task",
                                       ticketKey: "EVEN-1", jiraBaseUrl: "https://jira.example.com",
-                                      gitlabBaseUrl: nil, gitlabProjectPath: nil)
+                                      forge: nil)
         let expected = "# EVEN-1 - X\n\n"
             + "> 🎫 **JIRA**: [`https://jira.example.com/browse/EVEN-1`](https://jira.example.com/browse/EVEN-1)\n\n"
             + "Typ: Task"
@@ -111,7 +112,7 @@ final class StatusLinksTests: XCTestCase {
 
     func testWorktreePathWithSpaceIsEncoded() {
         let out = StatusLinks.linkify(preamble: "> 🌳 **WORKTREE**: `/Users/x/my code/wt`",
-                                      ticketKey: nil, jiraBaseUrl: nil, gitlabBaseUrl: nil, gitlabProjectPath: nil)
+                                      ticketKey: nil, jiraBaseUrl: nil, forge: nil)
         XCTAssertTrue(out.contains("path=/Users/x/my%20code/wt"))   // space encoded, slashes kept
     }
 
@@ -129,31 +130,56 @@ final class StatusLinksTests: XCTestCase {
         XCTAssertTrue(linkify().contains("\n### Status\n"))
     }
 
+    /// GitHub hat GitLabs `/-/` nicht — derselbe Branch, ein anderer Pfad.
+    func testBranchLinksToGithubTree() {
+        let out = StatusLinks.linkify(preamble: preamble, ticketKey: "EVEN-3530",
+                                      jiraBaseUrl: nil, forge: github)
+        XCTAssertTrue(out.contains(
+            "[`feature/EVEN-3530_status`](https://github.com/krizzzly/kanban/tree/feature/EVEN-3530_status)"))
+        XCTAssertFalse(out.contains("/-/tree/"))
+    }
+
     /// Eine `!<iid>`-Karte hat kein Jira-Issue — sie bekommt keine JIRA-Zeile auf `/browse/!49`.
     func testMRCardGetsNoJiraLine() {
         let linked = StatusLinks.linkify(
             preamble: "# !49 - CLI-Option --version",
             ticketKey: "!49",
             jiraBaseUrl: "https://jira.example.com",
-            gitlabBaseUrl: "https://gitlab.example.com",
-            gitlabProjectPath: "docker/iwf-local-dev")
+            forge: ForgeLocation(kind: .gitlab, webBaseUrl: "https://gitlab.example.com",
+                                 projectPath: "docker/iwf-local-dev"))
         XCTAssertEqual(linked, "# !49 - CLI-Option --version")
         XCTAssertFalse(linked.contains("browse"))
     }
 
-    func testGitlabSkippedWhenConfigMissing() {
+    /// Dasselbe für GitHubs Schreibweise: `#49` ist auch keine Jira-Nummer.
+    func testPRCardGetsNoJiraLine() {
+        let linked = StatusLinks.linkify(preamble: "# #49 - CLI-Option --version",
+                                         ticketKey: "#49",
+                                         jiraBaseUrl: "https://jira.example.com",
+                                         forge: github)
+        XCTAssertEqual(linked, "# #49 - CLI-Option --version")
+        XCTAssertFalse(linked.contains("browse"))
+    }
+
+    func testForgeSkippedWhenConfigMissing() {
         let out = StatusLinks.linkify(preamble: preamble, ticketKey: "EVEN-3530",
-                                      jiraBaseUrl: "https://jira.example.com",
-                                      gitlabBaseUrl: nil, gitlabProjectPath: nil)
-        // Branch stays a plain code span (no link) when GitLab isn't configured.
+                                      jiraBaseUrl: "https://jira.example.com", forge: nil)
+        // Branch stays a plain code span (no link) when no forge is configured.
         XCTAssertTrue(out.contains("**BRANCH**: `feature/EVEN-3530_status`"))
         XCTAssertFalse(out.contains("/-/tree/"))
     }
 
+    /// Ohne Projekt-Pfad (oder ohne Basis) gibt es keine `ForgeLocation` — die Stelle, an der der
+    /// Branch-Link ausfällt, statt eine halbe URL zu bauen.
+    func testForgeLocationNeedsBaseAndPath() {
+        XCTAssertNil(ForgeLocation(kind: .gitlab, webBaseUrl: "https://gitlab.example.com",
+                                   projectPath: nil))
+        XCTAssertNil(ForgeLocation(kind: .github, webBaseUrl: nil, projectPath: "owner/repo"))
+    }
+
     func testOldStackFormatLinksTheUrlNotThePlainToken() {
         let old = "> 🐳 **STACK**: `even-3530` (URL nach Stack-Start: `https://even-3530.test`)"
-        let out = StatusLinks.linkify(preamble: old, ticketKey: nil, jiraBaseUrl: nil,
-                                      gitlabBaseUrl: nil, gitlabProjectPath: nil)
+        let out = StatusLinks.linkify(preamble: old, ticketKey: nil, jiraBaseUrl: nil, forge: nil)
         XCTAssertTrue(out.contains("`even-3530` (URL nach Stack-Start: [`https://even-3530.test`](https://even-3530.test))"))
     }
 }

@@ -4,7 +4,7 @@ import KanbanCore
 /// Modal settings editor for Kanban's own config, styled after the macOS System Settings:
 /// section sidebar on the left, a grouped form on the right, save footer at the bottom.
 /// Round-trip-safe — unknown keys in the config survive (see `ConfigStore`).
-/// Der Claude-Workflow-Editor lebt bewusst NICHT hier, sondern im eigenen `ClaudeWorkflowWindow`.
+/// Die Skill-Set-Übersicht lebt bewusst NICHT hier, sondern im eigenen `ClaudeWorkflowWindow`.
 struct SettingsSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var settings = SettingsModel()

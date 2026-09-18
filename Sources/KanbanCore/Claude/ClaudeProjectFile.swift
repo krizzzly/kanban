@@ -28,6 +28,15 @@ public enum ClaudeProjectFile {
         /// TLD des lokalen Stacks; URL = `https://<worktree-name>.<stackDomain>`. **Fehlt** ohne
         /// Stack: ein Wert, hinter dem keine Domain steht, wäre eine Behauptung.
         public let stackDomain: String?
+        /// Auf welcher Forge das Repo liegt: `gitlab` oder `github`. **Fehlt**, wenn keine
+        /// zugeordnet ist — ein Skill soll „liegt auf GitLab" von „liegt nirgends" unterscheiden
+        /// können, und davon hängt ab, ob er Hermes oder `gh` benutzt.
+        public let forge: String?
+        /// Der Projekt-Pfad auf dieser Forge: `applications/even` bei GitLab, `owner/repo` bei GitHub.
+        public let forgeProjectPath: String?
+        /// **Übergangsweise** weitergeführt: derselbe Pfad, aber nur bei GitLab gesetzt. Es lesen
+        /// ihn die Stellen, die vor der zweiten Forge geschrieben wurden; alles Neue nimmt `forge`
+        /// und `forgeProjectPath`.
         public let gitlabProjectPath: String?
         /// Basis-URL der Jira-Instanz dieses Projekts — **fehlt**, wenn keine konfiguriert ist.
         /// Die Skills bauen daraus die `🎫 **JIRA**`-Zeile des Status-Blocks (`<jiraBaseUrl>/browse/<KEY>`).
@@ -35,13 +44,18 @@ public enum ClaudeProjectFile {
         /// Hängt das Projekt an Jira? `false` heisst für die Skills: die JIRA-Zeile **entfällt** — eine
         /// Zeile auf ein nicht existierendes Ticket ist schlechter als keine.
         public let usesJira: Bool
+        /// Das Set, aus dem die Skills dieses Projekts stammen — **aufgelöst**, nicht der Rohwert
+        /// aus der Config: ein Skill soll wissen, mit welchem Satz er gerade läuft, und nicht, was
+        /// jemand einmal hingeschrieben hat. Fehlt, solange es gar kein Set gibt.
+        public let skillSet: String?
         /// Hinweis an menschliche Leser — Kanban überschreibt die Datei beim Projektwechsel.
         public let generatedBy: String
     }
 
     public static let fileName = ".claude/project.json"
 
-    public static func values(for project: ProjectConfig) -> Values {
+    /// - Parameter skillSet: Name des aufgelösten Sets (siehe `ClaudeAssetStore.resolve`).
+    public static func values(for project: ProjectConfig, skillSet: String? = nil) -> Values {
         Values(prefix: project.prefix,
                tasksPath: project.tasksPathAbsolute,
                docsPath: project.docsPathAbsolute,
@@ -50,20 +64,23 @@ public enum ClaudeProjectFile {
                worktreePrefix: project.repoDir + "-worktree",
                dockerStack: project.usesDockerStack,
                stackDomain: project.usesDockerStack ? "test" : nil,
+               forge: project.forge?.kind.rawValue,
+               forgeProjectPath: project.forge?.path,
                gitlabProjectPath: project.gitlabProjectPath,
                jiraBaseUrl: project.jiraBaseUrl.isEmpty ? nil : project.jiraBaseUrl,
                usesJira: project.usesJira,
+               skillSet: skillSet,
                generatedBy: "Kanban — generiert aus der Kanban-Config, nicht von Hand editieren")
     }
 
     /// Schreibt die Datei nur bei inhaltlicher Änderung (kein mtime-Rauschen für File-Watcher).
     /// Liefert true, wenn geschrieben wurde.
     @discardableResult
-    public static func write(for project: ProjectConfig) throws -> Bool {
+    public static func write(for project: ProjectConfig, skillSet: String? = nil) throws -> Bool {
         let url = URL(fileURLWithPath: project.repoDir).appendingPathComponent(fileName)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        var data = try encoder.encode(values(for: project))
+        var data = try encoder.encode(values(for: project, skillSet: skillSet))
         data.append(UInt8(ascii: "\n"))
 
         if let existing = try? Data(contentsOf: url), existing == data { return false }

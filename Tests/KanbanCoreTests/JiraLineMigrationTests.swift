@@ -19,7 +19,7 @@ final class JiraLineMigrationTests: XCTestCase {
                          usesJira: Bool = true) -> ProjectConfig {
         ProjectConfig(key: "even", prefix: prefix, jiraBaseUrl: baseUrl,
                       tasksPathAbsolute: tasksDir.path,
-                      repoDir: "/Users/x/code/even", gitlabProjectPath: nil,
+                      repoDir: "/Users/x/code/even", forge: nil,
                       usesJira: usesJira)
     }
 
