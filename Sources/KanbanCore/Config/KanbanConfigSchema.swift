@@ -297,15 +297,14 @@ public enum KanbanConfigSchema {
     /// Die Werte **einer** Markdown-Fassung. Leer heisst überall Vorgabe, deshalb steht der
     /// Vorgabewert im Platzhalter statt im Feld.
     static let markdownThemeFelder: [ThemeFieldSpec] = [
-        ThemeFieldSpec(["fontFamily"], "Schrift (Fliesstext)", kind: .string,
+        ThemeFieldSpec(["fontFamily"], "Schrift (Fliesstext)", kind: .fontFamily(monospaceOnly: false),
                        placeholder: "Systemschrift",
-                       help: "Name wie in der Schriftsammlung, z.B. „Iowan Old Style\" — ohne "
-                           + "Anführungszeichen. Unbekannte Namen fallen still auf die Systemschrift "
-                           + "zurück. Code-Blöcke behalten ihre feste Monospace-Schrift."),
-        ThemeFieldSpec(["headingFont"], "Schrift (Überschriften)", kind: .string,
-                       placeholder: "wie Fliesstext",
-                       help: "Gilt für alle sechs Ebenen H1–H6. Nur H1 anders zu setzen würde eine "
-                           + "Datei zerreissen, in der H2 dann wieder wie Fliesstext aussieht."),
+                       help: "Aus den installierten Schriften. Code-Blöcke behalten ihre feste "
+                           + "Monospace-Schrift."),
+        ThemeFieldSpec(["headingFont"], "Schrift (alle Überschriften)",
+                       kind: .fontFamily(monospaceOnly: false), placeholder: "wie Fliesstext",
+                       help: "Der gemeinsame Wert für H1–H6. Je Ebene lässt er sich unten "
+                           + "überschreiben — leer heisst dort „wie hier eingestellt\"."),
         ThemeFieldSpec(["background"], "Hintergrund",
                        help: "Vorgabe #ffffff. Die Helligkeit dieses Werts entscheidet auch, ob "
                            + "WebKit die Bedienelemente hell oder dunkel zeichnet."),
@@ -320,14 +319,23 @@ public enum KanbanConfigSchema {
         ThemeFieldSpec(["fontSize"], "Schriftgrösse Fliesstext", kind: .number(min: 8, max: 72),
                        placeholder: "15",
                        help: "In Punkt. Alles darüber oder darunter wird auf 8 bzw. 72 gezogen."),
-        ThemeFieldSpec(["headings", "h1"], "H1", kind: .number(min: 8, max: 72), placeholder: "26"),
-        ThemeFieldSpec(["headings", "h2"], "H2", kind: .number(min: 8, max: 72), placeholder: "21"),
-        ThemeFieldSpec(["headings", "h3"], "H3", kind: .number(min: 8, max: 72), placeholder: "17"),
-        ThemeFieldSpec(["headings", "h4"], "H4", kind: .number(min: 8, max: 72), placeholder: "15",
-                       help: "Auf Textgrösse — hier gliedert die Fettung, nicht die Grösse."),
-        ThemeFieldSpec(["headings", "h5"], "H5", kind: .number(min: 8, max: 72), placeholder: "14"),
-        ThemeFieldSpec(["headings", "h6"], "H6", kind: .number(min: 8, max: 72), placeholder: "13"),
-    ]
+    ] + ueberschriftenFelder
+
+    /// Je Ebene Grösse **und** Schrift, direkt untereinander — man stellt eine Überschrift ein,
+    /// nicht sechs Grössen und danach sechs Schriften.
+    static let ueberschriftenFelder: [ThemeFieldSpec] = [1, 2, 3, 4, 5, 6].flatMap { ebene in
+        [
+            ThemeFieldSpec(["headings", "h\(ebene)"], "H\(ebene) Grösse",
+                           kind: .number(min: 8, max: 72),
+                           placeholder: String(Int(MarkdownFontSizes.standard.groesse(fuer: ebene))),
+                           help: ebene == 4
+                               ? "Auf Textgrösse — hier gliedert die Fettung, nicht die Grösse."
+                               : nil),
+            ThemeFieldSpec(["headingFonts", "h\(ebene)"], "H\(ebene) Schrift",
+                           kind: .fontFamily(monospaceOnly: false),
+                           placeholder: "wie alle Überschriften"),
+        ]
+    }
 
     /// Das Terminal: Fassung, Schrift und die zwei Schalter. Farben einer Fassung im Editor
     /// darunter — 22 Stück, deshalb wählt man eine Fassung, statt sie hier zusammenzumischen.
@@ -339,11 +347,12 @@ public enum KanbanConfigSchema {
             ConfigFieldSpec(["terminal", "theme"], "Aktive Fassung",
                             kind: .choiceFromKeys(["terminal", "themes"]),
                             help: "„Standard\" nimmt die erste Fassung der Liste."),
-            ConfigFieldSpec(["terminal", "font", "family"], "Schrift", kind: .string,
+            ConfigFieldSpec(["terminal", "font", "family"], "Schrift",
+                            kind: .fontFamily(monospaceOnly: true),
                             placeholder: "Meslo LG S DZ Regular for Powerline",
-                            help: "Monospace-Schrift mit Powerline-Zeichen. Unbekannte Namen fallen "
-                                + "auf die eingebauten Kandidaten zurück, zuletzt auf die "
-                                + "System-Monospace."),
+                            help: "Nur Festbreitenschriften — alles andere zerlegt die "
+                                + "Zeichenraster-Ausgabe. Unbekannte Namen fallen auf die "
+                                + "eingebauten Kandidaten zurück, zuletzt auf die System-Monospace."),
             ConfigFieldSpec(["terminal", "font", "size"], "Schriftgrösse",
                             kind: .number(min: 6, max: 72), placeholder: "16",
                             help: "In Punkt, vor der App-Skalierung."),

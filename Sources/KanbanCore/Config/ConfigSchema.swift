@@ -46,6 +46,11 @@ public struct ConfigFieldSpec: Identifiable, Sendable {
         /// Pfad (`terminal.themes`). Ohne das müsste das Schema Namen kennen, die der Benutzer
         /// gerade erst vergeben hat.
         case choiceFromKeys([String])
+        /// Schriftauswahl aus den **installierten** Schriften des Rechners. Leer = nicht gesetzt.
+        /// `monospaceOnly` filtert auf Festbreitenschriften — für das Terminal ist alles andere
+        /// unbrauchbar. Ein Name, der hier nicht installiert ist, bleibt trotzdem stehen: die Config
+        /// kann von einem anderen Rechner stammen.
+        case fontFamily(monospaceOnly: Bool)
     }
 
     public let path: [String]

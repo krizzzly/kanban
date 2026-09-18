@@ -256,6 +256,34 @@ final class DarstellungSchemaTests: XCTestCase {
         }
     }
 
+    /// Der eigentliche Wunsch: hinter jeder Überschrift eine Schriftauswahl, nicht nur eine für
+    /// alle sechs. Grösse und Schrift stehen dabei nebeneinander — man stellt eine Überschrift ein.
+    func testHinterJederUeberschriftStehtEineSchriftauswahl() {
+        let felder = KanbanConfigSchema.markdownThemeFelder
+        for ebene in 1...6 {
+            let schrift = felder.first { $0.subpath == ["headingFonts", "h\(ebene)"] }
+            guard case .fontFamily(let monospaceOnly)? = schrift?.kind else {
+                return XCTFail("H\(ebene) hat keine Schriftauswahl")
+            }
+            XCTAssertFalse(monospaceOnly, "gerendertes Markdown ist nicht auf Festbreite angewiesen")
+            let groesse = felder.firstIndex { $0.subpath == ["headings", "h\(ebene)"] }
+            let index = felder.firstIndex { $0.subpath == ["headingFonts", "h\(ebene)"] }
+            XCTAssertEqual(index, groesse.map { $0 + 1 }, "Schrift steht direkt hinter der Grösse")
+        }
+    }
+
+    func testDieSchriftauswahlGiltAuchFuerFliesstextUndTerminal() {
+        let fliesstext = KanbanConfigSchema.markdownThemeFelder.first { $0.subpath == ["fontFamily"] }
+        guard case .fontFamily(false)? = fliesstext?.kind else {
+            return XCTFail("auch der Fliesstext wählt aus den installierten Schriften")
+        }
+        let terminalSchrift = KanbanConfigSchema.terminalGruppe.fields
+            .first { $0.path == ["terminal", "font", "family"] }
+        guard case .fontFamily(true)? = terminalSchrift?.kind else {
+            return XCTFail("das Terminal braucht Festbreite — alles andere zerlegt das Zeichenraster")
+        }
+    }
+
     func testTerminalSchriftgroesseIstEinZahlenfeld() {
         let feld = KanbanConfigSchema.terminalGruppe.fields
             .first { $0.path == ["terminal", "font", "size"] }

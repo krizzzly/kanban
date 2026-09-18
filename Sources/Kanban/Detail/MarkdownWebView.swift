@@ -257,6 +257,14 @@ enum HTMLTemplate {
     /// geladen, nicht je Aufruf von der Platte.
     static var theme: MarkdownTheme { KanbanTerminalView.settings.markdown }
 
+    /// Die eigene Schrift **dieser** Ebene als CSS-Zusatz — leer, solange keine gesetzt ist. Nur
+    /// dann steht sie in der Regel: sonst stünde sechsmal dieselbe Kette da, die die gemeinsame
+    /// Regel darüber schon sagt.
+    private static func schrift(_ theme: MarkdownTheme, _ ebene: Int) -> String {
+        guard theme.headingFonts.schrift(fuer: ebene) != nil else { return "" }
+        return " font-family: \(MarkdownTheme.cssFontStack(theme.schrift(fuerUeberschrift: ebene)));"
+    }
+
     /// Punktwerte ohne Nachkomma-Rauschen: `15.0px` schreibt niemand, `15.5px` soll aber gehen.
     private static func zahl(_ wert: Double) -> String {
         wert == wert.rounded() ? String(Int(wert)) : String(format: "%.1f", wert)
@@ -298,20 +306,21 @@ enum HTMLTemplate {
            Config ändert. Vorher standen feste 6 px darunter — nach einer H1 derselbe Zwischenraum
            wie zwischen zwei Absätzen, weshalb die Überschrift am Text klebte.
            Oben mehr als unten (2,3 : 1): eine Überschrift gehört zu dem, was **unter** ihr steht. */
-        /* Eigene Schrift fuer die Ueberschriften (`markdown.headingFont`) — ohne Eintrag faellt
-           sie auf dieselbe Kette wie der Fliesstext zurueck, die Regel ist dann ein No-Op. */
+        /* Gemeinsame Schrift der Ueberschriften (`markdown.headingFont`) — ohne Eintrag dieselbe
+           Kette wie der Fliesstext, die Regel ist dann ein No-Op. Je Ebene ueberschreibt
+           `markdown.headingFonts.h<n>` sie unten (typisch: H1 setzt sich ab). */
         h1, h2, h3, h4, h5, h6 {
           font-family: \(MarkdownTheme.cssFontStack(theme.headingFont ?? theme.fontFamily));
           line-height: 1.25; margin: 1.15em 0 0.5em; font-weight: 600;
         }
-        h1 { font-size: \(zahl(theme.fontSizes.h1))px; font-weight: 700; }
-        h2 { font-size: \(zahl(theme.fontSizes.h2))px; }
-        h3 { font-size: \(zahl(theme.fontSizes.h3))px; }
-        h4 { font-size: \(zahl(theme.fontSizes.h4))px; }
+        h1 { font-size: \(zahl(theme.fontSizes.h1))px; font-weight: 700;\(schrift(theme, 1)) }
+        h2 { font-size: \(zahl(theme.fontSizes.h2))px;\(schrift(theme, 2)) }
+        h3 { font-size: \(zahl(theme.fontSizes.h3))px;\(schrift(theme, 3)) }
+        h4 { font-size: \(zahl(theme.fontSizes.h4))px;\(schrift(theme, 4)) }
         /* Unterhalb der Textgrösse gliedert die Farbe mit, sonst sähe H5 nur nach Kleingedrucktem
            aus (dieselbe Staffel wie GitHub). */
-        h5 { font-size: \(zahl(theme.fontSizes.h5))px; }
-        h6 { font-size: \(zahl(theme.fontSizes.h6))px; color: var(--secondary-text); }
+        h5 { font-size: \(zahl(theme.fontSizes.h5))px;\(schrift(theme, 5)) }
+        h6 { font-size: \(zahl(theme.fontSizes.h6))px; color: var(--secondary-text);\(schrift(theme, 6)) }
         /* Eine H1/H2 am Textanfang braucht keinen Abstand nach oben. */
         h1:first-child, h2:first-child, h3:first-child { margin-top: 0; }
         p { margin: 6px 0; }

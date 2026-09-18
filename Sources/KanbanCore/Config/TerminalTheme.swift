@@ -254,7 +254,13 @@ public enum KanbanSettingsStore {
             border: farbe(raw.border, vorgabe.border),
             fontSizes: resolveFontSizes(body: raw.fontSize, headings: raw.headings),
             fontFamily: schrift(raw.fontFamily),
-            headingFont: schrift(raw.headingFont))
+            headingFont: schrift(raw.headingFont),
+            headingFonts: MarkdownHeadingFonts(h1: schrift(raw.headingFonts?.h1),
+                                               h2: schrift(raw.headingFonts?.h2),
+                                               h3: schrift(raw.headingFonts?.h3),
+                                               h4: schrift(raw.headingFonts?.h4),
+                                               h5: schrift(raw.headingFonts?.h5),
+                                               h6: schrift(raw.headingFonts?.h6)))
     }
 
     /// Grössen wie die Farben: einzeln, mit Rückfallwert, und **begrenzt** (8–72 pt). Eine 0 oder
@@ -308,14 +314,26 @@ struct RawMarkdown: Decodable {
     let border: String?
     let fontSize: LenientNumber?
     let headings: RawHeadings?
+    /// Schrift je Überschriftenebene — die Grössen stehen nebenan in `headings`, damit die alte
+    /// Form dieses Blocks unverändert gültig bleibt.
+    let headingFonts: RawHeadingFonts?
 
     /// Trägt der Block selbst etwas, oder steht dort nur die Auswahl? Entscheidet, ob ein Altblock
     /// als Fassung `Eigene` gilt oder die mitgelieferten greifen.
     var istLeer: Bool {
         fontFamily == nil && headingFont == nil && background == nil && text == nil
             && secondaryText == nil && codeBackground == nil && link == nil && border == nil
-            && fontSize == nil && headings == nil
+            && fontSize == nil && headings == nil && headingFonts == nil
     }
+}
+
+struct RawHeadingFonts: Decodable {
+    let h1: String?
+    let h2: String?
+    let h3: String?
+    let h4: String?
+    let h5: String?
+    let h6: String?
 }
 
 /// Eine Zahl, die in der Datei als Zahl **oder** als Zeichenkette stehen darf.

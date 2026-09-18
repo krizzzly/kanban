@@ -1,4 +1,5 @@
 import AppKit
+import CoreText
 import SwiftUI
 import KanbanCore
 
@@ -41,6 +42,9 @@ struct SchemaFieldView: View {
             }
         case .color:
             ColorField(label: spec.label, hex: settings.stringBinding(spec.path))
+        case .fontFamily(let monospaceOnly):
+            FontFamilyField(label: spec.label, path: spec.path, monospaceOnly: monospaceOnly,
+                            placeholder: spec.placeholder, settings: settings)
         case .number(let min, let max):
             NumberField(label: spec.label, path: spec.path, min: min, max: max,
                         placeholder: spec.placeholder, settings: settings)
@@ -70,6 +74,51 @@ struct SchemaFieldView: View {
         default:
             return nil
         }
+    }
+}
+
+/// Auswahl aus den **installierten** Schriften des Rechners.
+///
+/// Eine Liste statt eines Textfelds, weil ein vertippter Schriftname still auf die Vorgabe
+/// zurückfällt: man sieht dann nur, dass nichts passiert, und sucht den Fehler woanders.
+struct FontFamilyField: View {
+    let label: String
+    let path: [String]
+    let monospaceOnly: Bool
+    var placeholder: String?
+    let settings: SettingsModel
+
+    var body: some View {
+        let gesetzt = settings.stringValue(at: path)
+        let familien = Self.familien(monospaceOnly: monospaceOnly)
+        Picker(label, selection: settings.stringBinding(path)) {
+            Text(placeholder ?? "Standard").tag("")
+            Divider()
+            ForEach(familien, id: \.self) { Text($0).tag($0) }
+            // Eine Schrift, die hier nicht installiert ist — die Config kann von einem anderen
+            // Rechner stammen. Stehen lassen, sonst sähe die Auswahl leer aus, obwohl etwas gilt.
+            if !gesetzt.isEmpty && !familien.contains(gesetzt) {
+                Divider()
+                Text("\(gesetzt) — hier nicht installiert").tag(gesetzt)
+            }
+        }
+    }
+
+    static func familien(monospaceOnly: Bool) -> [String] { monospaceOnly ? festbreite : alle }
+
+    /// Einmal ermittelt, nicht bei jedem Zeichnen: es sind einige hundert Familien, und die
+    /// Festbreiten-Prüfung lädt je Familie einen Deskriptor. Über Core Text statt `NSFontManager`,
+    /// damit die Liste nicht am Hauptthread hängt.
+    private static let alle: [String] = {
+        let namen = CTFontManagerCopyAvailableFontFamilyNames() as? [String] ?? []
+        // Familien mit führendem Punkt sind Systeminterna (`.AppleSystemUIFont`) und in einer
+        // Auswahl nur Rauschen.
+        return namen.filter { !$0.hasPrefix(".") }.sorted()
+    }()
+
+    private static let festbreite: [String] = alle.filter { familie in
+        let deskriptor = NSFontDescriptor(fontAttributes: [.family: familie])
+        return NSFont(descriptor: deskriptor, size: 12)?.isFixedPitch == true
     }
 }
 

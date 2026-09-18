@@ -44,6 +44,55 @@ public struct MarkdownFontSizes: Sendable, Hashable {
     }
 }
 
+/// Eine Schriftart je Überschriftenebene — typischerweise, um H1 abzusetzen.
+///
+/// nil heisst „wie die anderen Überschriften": darunter liegt `headingFont` (gemeinsam für alle
+/// sechs), darunter `fontFamily`, darunter die Systemschrift. Eine leere Ebene ändert also nichts.
+public struct MarkdownHeadingFonts: Sendable, Hashable {
+    public let h1: String?
+    public let h2: String?
+    public let h3: String?
+    public let h4: String?
+    public let h5: String?
+    public let h6: String?
+
+    public init(h1: String? = nil, h2: String? = nil, h3: String? = nil,
+                h4: String? = nil, h5: String? = nil, h6: String? = nil) {
+        self.h1 = h1
+        self.h2 = h2
+        self.h3 = h3
+        self.h4 = h4
+        self.h5 = h5
+        self.h6 = h6
+    }
+
+    public static let keine = MarkdownHeadingFonts()
+
+    public var istLeer: Bool {
+        h1 == nil && h2 == nil && h3 == nil && h4 == nil && h5 == nil && h6 == nil
+    }
+
+    public func schrift(fuer ebene: Int) -> String? {
+        switch ebene {
+        case 1: return h1
+        case 2: return h2
+        case 3: return h3
+        case 4: return h4
+        case 5: return h5
+        default: return h6
+        }
+    }
+
+    /// Die sechs Ebenen als JSON — nur, was gesetzt ist.
+    public var werte: JSONValue? {
+        var obj: [String: JSONValue] = [:]
+        for ebene in 1...6 {
+            if let name = schrift(fuer: ebene) { obj["h\(ebene)"] = .string(name) }
+        }
+        return obj.isEmpty ? nil : .object(obj)
+    }
+}
+
 /// Die Farben der **gerenderten** Markdown-Ansichten: Task-File-Tabs, Knowledgebase, das
 /// Dokumentfenster aus dem Finder und die Lese-Ansicht des Asset-Editors.
 ///
@@ -75,16 +124,18 @@ public struct MarkdownTheme: Sendable, Hashable {
     /// Schriftart des Fliesstextes — **nil heisst Systemschrift**, nicht „keine". Der Name ist der,
     /// den die Schriftsammlung zeigt (`Iowan Old Style`), ohne Anführungszeichen.
     public let fontFamily: String?
-    /// Schriftart der Überschriften. Gilt für **alle sechs Ebenen**: eine Datei, in der nur H1 aus
-    /// der Reihe tanzt und H2 wieder wie Fliesstext aussieht, liest sich zerrissen. nil = wie der
+    /// Schriftart der Überschriften als **gemeinsamer** Wert für alle sechs Ebenen. nil = wie der
     /// Fliesstext.
     public let headingFont: String?
+    /// Schrift je Ebene, wo eine Ebene aus der Reihe tanzen soll (typischerweise H1).
+    public let headingFonts: MarkdownHeadingFonts
 
     public init(name: String = MarkdownTheme.eigeneName,
                 background: TerminalRGB, text: TerminalRGB, secondaryText: TerminalRGB,
                 codeBackground: TerminalRGB, link: TerminalRGB, border: TerminalRGB,
                 fontSizes: MarkdownFontSizes = .standard,
-                fontFamily: String? = nil, headingFont: String? = nil) {
+                fontFamily: String? = nil, headingFont: String? = nil,
+                headingFonts: MarkdownHeadingFonts = .keine) {
         self.name = name
         self.background = background
         self.text = text
@@ -95,6 +146,13 @@ public struct MarkdownTheme: Sendable, Hashable {
         self.fontSizes = fontSizes
         self.fontFamily = fontFamily
         self.headingFont = headingFont
+        self.headingFonts = headingFonts
+    }
+
+    /// Die Schrift **dieser** Überschriftenebene, mit den Rückfällen in der Reihenfolge, in der sie
+    /// gemeint sind: eigene Ebene → gemeinsame Überschriftenschrift → Fliesstext → Systemschrift.
+    public func schrift(fuerUeberschrift ebene: Int) -> String? {
+        headingFonts.schrift(fuer: ebene) ?? headingFont ?? fontFamily
     }
 
     /// Der CSS-Wert für `font-family`: der konfigurierte Name, gefolgt von der bisherigen Kette als
@@ -165,6 +223,7 @@ public struct MarkdownTheme: Sendable, Hashable {
         ]
         if let fontFamily { obj["fontFamily"] = .string(fontFamily) }
         if let headingFont { obj["headingFont"] = .string(headingFont) }
+        if let schriften = headingFonts.werte { obj["headingFonts"] = schriften }
         return .object(obj)
     }
 
