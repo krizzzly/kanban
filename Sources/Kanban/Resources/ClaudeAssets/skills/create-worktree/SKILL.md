@@ -19,7 +19,7 @@ Folgenden für die entsprechenden Werte aus `.claude/project.json` — im Task-F
 läuft auf `https://<repo-ordnername>.<stackDomain>`, ein Worktree-Stack auf
 `https://<worktree-ordnername>.<stackDomain>` (Ordnername = letzter Pfadbestandteil).
 
-> Vollständige Befehls-/Flag-Referenz zu `iwf worktree`: `~/Library/Application Support/Kanban/claude/rules/worktree.md`.
+> Vollständige Befehls-/Flag-Referenz zu `iwf worktree`: `.claude/rules/worktree.md`.
 
 ## Input
 

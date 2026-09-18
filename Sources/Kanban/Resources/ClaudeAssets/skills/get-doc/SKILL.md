@@ -1,7 +1,7 @@
 ---
 name: get-doc
 description: Confluence-Seite als Markdown in den Doku-Ordner des Projekts holen
-argument-hint: <PAGE-ID oder Confluence-URL>
+argument-hint: <PAGE-ID oder URL> [mit Unterseiten] | check
 disable-model-invocation: true
 ---
 
@@ -10,9 +10,22 @@ disable-model-invocation: true
 > ⚙️ **Projektwerte** (`docsPath`, `prefix`, `tasksPath`, `repoDir`, …): stehen in
 > `.claude/project.json` im Repo-Root. Lies die Datei, bevor du einen Projektwert brauchst — nie raten.
 
-## Seite
+## Argument
 
 $ARGUMENTS
+
+**Lies das Argument, gib es nicht roh weiter.** Es enthält zweierlei:
+
+| Argument | Bedeutung |
+|---|---|
+| `13369356` oder eine Confluence-URL | Diese eine Seite holen |
+| zusätzlich „mit Unterseiten", „ganzer Baum", „alles darunter", „rekursiv" | `children: true` — siehe Schritt 1 |
+| `check`, `status`, `prüfen` (ohne Page-Id) | Nicht exportieren, sondern **Schritt 1c** ausführen |
+| leer | Frag, welche Seite gemeint ist |
+
+Zieh die Page-Id selbst heraus, bevor du das Tool rufst — `13369356 mit Unterseiten` ist keine
+gültige `pageId` und das Tool bricht damit ab. Eine reine URL darfst du unverändert übergeben, die
+zerlegt das Tool selbst.
 
 ## Wohin die Seite gehört
 
@@ -34,6 +47,47 @@ Tool ebenfalls, es zieht die Id selbst heraus). Es schreibt:
 - die Seite als `<PAGE_ID>-<slug>.md` (Confluence-Storage → Markdown),
 - alle Anhänge und eingebetteten Bilder nach `<PAGE_ID>/`,
 - und ersetzt die Bild-URLs im Text durch die lokalen Pfade.
+
+**`children: true`** exportiert zusätzlich den gesamten Seitenbaum unterhalb der Seite — alles, was
+in der Confluence-Navigation links darunter hängt — als je eigene Datei.
+
+Nur setzen, **wenn der Benutzer den Unterbaum ausdrücklich will** ("mit Unterseiten", "ganzer Baum",
+"alles darunter"). Der Default ist `false`. Grund: ein Baum kann Dutzende Seiten und hunderte
+Anhänge umfassen und mehrere Minuten laufen (CORE-Kundendoku: 34 Seiten / 222 Anhänge / ~2 min).
+Schätz vorher grob ab und sag dem Benutzer, was auf ihn zukommt.
+
+Bereits vorhandene Unterseiten werden übersprungen statt überschrieben und trotzdem verlinkt — ein
+zweiter Lauf ist damit billig und ergänzt nur, was fehlt. Seiten, deren Export scheitert, bleiben in
+der Liste, zeigen aber auf Confluence statt auf eine fehlende Datei.
+
+**Schritt 1b — was der Export sonst noch schreibt**
+
+Jede Seite bekommt oben einen Abschnitt `## Unterseiten` mit ihren **direkten** Kindern — nicht dem
+ganzen Unterbaum. So referenziert genau eine Datei jede Seite; eine Umbenennung kann keine veraltete
+Kopie anderswo hinterlassen. Der Gesamtbaum steht stattdessen an zwei Stellen:
+
+| Datei | Zweck |
+|---|---|
+| `_index.md` | Menschenlesbar: alle Wurzeln mit vollständig verschachteltem Baum. Wird bei jedem Export komplett neu geschrieben. |
+| `_confluence.json` | Maschinenlesbar: flache Map `pageId → { title, parentId, childPosition, filename, spaceKey, pageVersion, lastModified, exportedAt, attachments }`. Der Baum steckt in `parentId`. |
+
+Beide werden **auch bei `children: false`** aktualisiert — jeder Einzelexport wächst so in denselben
+Index hinein und wird prüfbar. Nicht von Hand editieren, beide sind generiert.
+
+**Schritt 1c — Stand prüfen**
+
+`mcp__hermes__check-confluence-docs` vergleicht das Manifest mit Confluence und meldet *geändert*,
+*neu*, *verschoben*, *verschwunden*, *Stand unbekannt*, *lokal gelöscht*. Ohne `project` prüft es
+alle konfigurierten Projekte. Kostet ~2 Requests pro Wurzel, läuft in Sekunden, **ändert nichts** —
+zum Nachziehen danach `generate-confluence-page` für die betroffene Seite aufrufen.
+
+Nutz es, bevor du dich beim Beantworten einer Frage auf eine exportierte Seite stützt, wenn der
+Export älter sein könnte. „Geändert" heisst nur, dass eine neue Revision existiert — nicht zwingend,
+dass sich inhaltlich etwas Relevantes geändert hat.
+
+Zwei bekannte Lücken, die der Check **nicht** sieht: ausgetauschte Anhänge (die bumpen die
+Seitenversion nicht), und Seiten, deren `lastModified` als „Stand unbekannt" geführt wird, weil sie
+vor dem Manifest exportiert wurden — die lassen sich nur durch einen Neuexport klären.
 
 **Schritt 2 — Ablageort prüfen**
 

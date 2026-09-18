@@ -1,466 +1,802 @@
 ---
 name: start-task
-description: Analysiere und plane einen JIRA-Task aus einem Markdown-File
-argument-hint: <TICKET-NUMMER oder task-file.md> [--no-worktree]
+description: Analysiere einen vorbereiteten JIRA-Task, erstelle einen verifizierbaren Lösungsplan und orchestriere Impact- und Quality-Sub-Skills
+argument-hint: <TICKET-NUMMER oder task-file.md> [--no-worktree] [--quality=auto|full|lite|skip]
 disable-model-invocation: true
 ---
 
-# START TASK - Analyse & Planungs-Arbeitsanweisung
+# START TASK — Analyse & Lösungsplanung
 
-> ⚙️ **Projektwerte** (`prefix`, `tasksPath`, `repoDir`, `worktreePrefix`, `stackDomain`, `gitlabProjectPath`):
-> stehen in `.claude/project.json` im Repo-Root. Lies die Datei, bevor du einen Projektwert brauchst — nie raten.
+> ⚙️ **Projektwerte** (`prefix`, `tasksPath`, `repoDir`, `worktreePrefix`, `stackDomain`, `gitlabProjectPath`)
+> stehen in `.claude/project.json` im Repo-Root. Lies diese Datei zuerst; Projektwerte niemals raten.
 
-Du bist ein erfahrener Software-Entwickler, der JIRA-Tasks systematisch analysiert und einen Lösungsplan erstellt.
+`start-task` ist der **Analyse- und Planungs-Workflow** zwischen `get-task` und `solve-task`.
 
-**WICHTIG:** Dieses Command führt NUR Analyse und Planung durch. Die Umsetzung erfolgt separat mit `solve-task`.
+Er führt **keine Umsetzung** durch.
 
-Platzhalter in spitzen Klammern (`<PREFIX>`, `<tasksPath>`, `<worktreePrefix>`, `<stackDomain>`) stehen im
-Folgenden für die entsprechenden Werte aus `.claude/project.json`.
+## Persistenter Workflow-State
 
-## Argument-Auflösung
+Lies `.claude/rules/workflow-state.md` vollständig.
 
-**Input:** $ARGUMENTS
+Bei unabhängiger Session `workflow_state.task` + `workflow_state.workspace` aus dem Task-File verwenden; ein
+direkter `get_task_handoff` ist nur innerhalb derselben laufenden Invocation zusätzlicher Kontext.
 
-**Schritt 0: Task-File ermitteln**
+`start-task` besitzt `workflow_state.start_task` und darf zusätzlich den **shared factual state**
+`task/workspace` aktualisieren, wenn es Worktree-Recovery selbst real verifiziert oder den Workflow-Status ändert.
+`impact-analysis` und `quality-analysis` schreiben ihre State-Slots selbst; `start-task` liest sie nur.
 
-Falls das Argument eine Ticket-Nummer ist (z.B. `<PREFIX>-1234`), suche automatisch das passende Task-File:
+---
 
-```bash
-# Suche nach Task-File mit dieser Ticket-Nummer (tasksPath aus .claude/project.json)
-ls <tasksPath>/<TICKET-NUMMER>*.md
+## Verantwortung und Handoff
+
+### Erwarteter Upstream
+
+Normalfall:
+
+```text
+get-task
+  ↓
+normalisiertes Task-File + optionaler Worktree
+  ↓
+start-task
 ```
 
-**Auswertung:**
+`get-task` ist die Source of Truth für:
 
-| Situation | Aktion |
-|-----------|--------|
-| Genau 1 File gefunden | Verwende dieses File |
-| Mehrere Files gefunden | Zeige Liste und frage Benutzer welches verwendet werden soll |
-| Kein File gefunden | **Zuerst automatisch `get-task` ausführen** (siehe Fallback unten), dann mit dem neuen File fortfahren |
-| Argument ist bereits ein Pfad | Verwende den Pfad direkt |
+- JIRA-Ingestion,
+- verlustfreie Task-File-Normalisierung,
+- Dateinamen-Normalisierung,
+- Worktree-Erstellung,
+- initialen Status/Worktree-Block.
 
-**Fallback: Kein Task-File vorhanden → automatisch `get-task` ausführen**
+`start-task` **verifiziert** diesen Zustand nur und repariert fehlende Vorbereitung ausschließlich als
+Kompatibilitäts-/Recovery-Pfad für direkt übergebene oder ältere Task-Files.
 
-NICHT abbrechen und NICHT den Benutzer auf `get-task` verweisen, sondern den kompletten
-`get-task`-Workflow selbst ausführen (Anweisungen in [get-task](get-task.md)):
+### Downstream und Sub-Skills
 
-1. JIRA-Ticket via MCP-Tool laden, Task-File im Task-Ordner (`tasksPath`) erstellen und
-   Ticket-Zusammenfassung zeigen
-2. Task-File-Namen normalisieren und Worktree anlegen (get-task-Default). Ein `--no-worktree`-Flag
-   aus dem `start-task`-Input gilt dabei auch für den get-task-Schritt.
-3. Danach normal mit diesem Workflow fortfahren — das neu erstellte Task-File ist der Input;
-   der von get-task angelegte Worktree wird in Phase 0 über den Worktree-Block erkannt und geroutet.
+`start-task` erzeugt:
 
-Schlägt das Laden fehl (z.B. MCP-Tool nicht erreichbar), die Fehlermeldung aus get-task ausgeben
-und ABBRECHEN — ohne Task-File kein `start-task`.
+1. eine fachlich/technische Analyse,
+2. einen konkreten Lösungsplan,
+3. Traceability zu Akzeptanzkriterien bzw. erwartetem Verhalten,
+4. einen **Embedded-Aufruf von `impact-analysis/SKILL.md`**,
+5. Plan-Reconciliation anhand des `impact_handoff`,
+6. einen **Embedded-Aufruf von `quality-analysis/SKILL.md`**,
+7. die finale Synchronisierung von Plan, Impact und Quality.
 
-**Ermitteltes Task-File:** `<TASK_FILE>` (wird im weiteren Workflow verwendet)
+`start-task` kennt dabei **nicht** die internen Analyseschritte der beiden Sub-Skills.
+Es kennt nur deren Invocation Contracts und Handoffs.
 
----
-
-## Dein Task-File
-
-Lies und analysiere: `<TASK_FILE>`
-
-**WICHTIG:** Dieses Command erfordert gründliches Nachdenken. Füge `ULTRATHINK` am Ende deiner Überlegungen hinzu, um
-maximale Analyse-Tiefe zu gewährleisten.
-
-## Worktree-Verhalten (Default: AN)
-
-- **Standard:** Falls das Task-File noch keinen Worktree-Block hat, wird in Phase 0 automatisch einer angelegt
-  und der Block ins Task-File eingefügt (nur Worktree, **kein** Docker-Stack).
-- **Opt-out:** Wenn `$ARGUMENTS` das Flag `--no-worktree` enthält, KEIN Worktree anlegen — Analyse läuft im
-  Haupt-Repo (altes Default-Verhalten). Das Flag wird beim Task-File-Lookup ignoriert.
-
-> Vollständige Befehls-/Flag-Referenz zu `iwf worktree`: `~/Library/Application Support/Kanban/claude/rules/worktree.md`.
+Danach übernimmt `solve-task`.
 
 ---
 
-## Workflow - Führe diese Schritte der Reihe nach aus:
+## Input
 
-### Phase 0: Worktree-Routing, Develop-Stand & Already-Solved-Check (IMMER ZUERST!)
+**Input:** `$ARGUMENTS`
 
-**Schritt 0a-Pre: Worktree-Block im Task-File suchen**
+Erlaubt:
 
-Lies die ersten ~15 Zeilen des Task-Files und suche nach einem Block der Form:
+```text
+<TICKET-NUMMER oder task-file.md> [--no-worktree] [--quality=auto|full|lite|skip]
+```
+
+- `--no-worktree` gilt nur, wenn noch kein gültiger Worktree existiert.
+Im Embedded-Mode `review-bootstrap` gilt unabhängig davon: `create_worktree=false` und `switch_branch=false`.
+- `--quality=auto` ist Default.
+- `--quality=full` erzwingt einen FULL-Review.
+- `--quality=lite` und `--quality=skip` sind Wünsche an `quality-analysis`; dessen Methodology darf bei
+  belegten Triggern auf eine höhere Stufe eskalieren.
+- Diese Flags niemals an JIRA-/MCP-Aufrufe weiterreichen.
+
+---
+
+# Phase 0 — Task-File, Repository-Snapshot und Routing bestimmen
+
+## 0a) Task-File auflösen
+
+### Argument ist eine Ticket-Nummer
+
+Nur kanonische Task-Files suchen; Derived Artifacts ausschließen:
+
+```bash
+find <tasksPath> -maxdepth 1 -type f \
+  \( -name "<TICKET-NUMMER>.md" -o -name "<TICKET-NUMMER>_*.md" \) \
+  ! -name "<TICKET-NUMMER>_review.md" \
+  ! -name "<TICKET-NUMMER>_security_review.md" \
+  ! -name "<TICKET-NUMMER>_audit*.md"
+```
+
+| Befund | Aktion |
+|---|---|
+| Genau ein File | Als `<TASK_FILE>` verwenden |
+| Mehrere Files | Dateien anzeigen und ABBRECHEN — nicht raten |
+| Kein File | Den **authoritativen `get-task`-Sub-Skill** aus `../get-task/SKILL.md` ausführen; danach dessen finales `<TASK_FILE>` übernehmen |
+
+Beim Fallback zu `get-task` dessen Regeln **nicht hier nachimplementieren oder verkürzt duplizieren**. Ein `--no-worktree` aus dem `start-task`-Input wird an diesen Fallback weitergereicht.
+
+### Argument ist ein Pfad
+
+- Existenz und Lesbarkeit prüfen.
+- Als `<TASK_FILE>` verwenden.
+
+Ohne gültiges Task-File kann `start-task` nicht fortfahren.
+
+---
+
+## 0a.1) Workflow-State laden
+
+Nach Auflösung des kanonischen Task-Files den markierten State parsen.
+
+- kein State: Legacy-/neuen v1-Block initialisieren, aber keine alten Fingerprints aus Prosa erraten,
+- ein State: `version == 1` prüfen,
+- mehrere/malformed States: STOP.
+
+Falls `workflow_state.task`/`.workspace` existieren, Task-File/Pfad/Branch/Worktree gegen die Realität verifizieren.
+
+---
+
+## 0b) Task-File-Kopf und Worktree-Block lesen
+
+Lies den Kopf des Task-Files und suche nach:
 
 ```markdown
-> 🌳 **WORKTREE**: `<worktreePrefix>/<PREFIX>-XXXX`\
-> 🌿 **BRANCH**: `feature/<PREFIX>-XXXX_<title>`\
+> 🌳 **WORKTREE**: `<path>`\
+> 🌿 **BRANCH**: `<branch>`\
 ```
 
-**Grundprinzip:** Claude bleibt im Haupt-Repo (Working-Directory wird NICHT gewechselt). Wenn ein
-Worktree-Block existiert, werden Code-Reads und Git-Befehle für die Analyse in den Worktree-Pfad geroutet.
-Task-File, CLAUDE.md, `.claude/`, Docs werden weiterhin aus dem Haupt-Repo gelesen.
+### Routing-Regeln
 
-**Fallunterscheidung:**
+| Zustand | Aktion |
+|---|---|
+| State vorhanden, Pfad existiert, Branch passt | `WORKTREE_ROUTING=active` |
+| State/Legacy-Projektion vorhanden, aber Legacy-Branch ohne Titel-Suffix | Recovery 0c-legacy: Branch sicher normalisieren, dann Routing aktivieren |
+| Workspace-State vorhanden, Pfad ungültig | Veralteten Block entfernen; danach Recovery-Pfad 0c |
+| Kein Workspace, `--no-worktree` | `WORKTREE_ROUTING=off`; Recovery-Pfad 0d |
+| Kein Workspace, Default | Recovery-Pfad 0c |
 
-| Befund                                                              | Aktion                                                                                                                                                                            |
-|---------------------------------------------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| Worktree-Block vorhanden UND Pfad existiert UND Worktree gültig      | **WORKTREE-ROUTING aktivieren**: Code-Inspektion (`Read`, `Grep`, Symbol-Lookups) auf Worktree-Pfad. Git-Befehle mit `git -C <WORKTREE_PATH>`. Schritt 0a (Develop-Pull) entfällt. |
-| Worktree-Block vorhanden, Pfad nicht (mehr) gültig                   | Benutzer informieren — Worktree wurde entfernt. Worktree-Block aus Task-File löschen. Weiter mit **Schritt 0a-Worktree** (Default: neu anlegen, ausser `--no-worktree`).            |
-| Kein Worktree-Block vorhanden, KEIN `--no-worktree` im Input         | **Default-Pfad:** Direkt mit **Schritt 0a-Worktree** Worktree anlegen, dann Routing aktivieren.                                                                                    |
-| Kein Worktree-Block vorhanden, `--no-worktree` im Input              | Worktree-Erstellung überspringen. Normal weiter mit Schritt 0a (Haupt-Repo, `develop` auschecken).                                                                                 |
+Bei aktivem Worktree-Routing:
 
-**Schritt 0a-Worktree: Worktree per Default anlegen** (nur wenn kein Worktree-Block existiert und `--no-worktree` NICHT gesetzt)
-
-0. **Falls die Datei nur `<PREFIX>-NNNN.md` heisst (kein englischer Titel): zuerst normalisieren** —
-   englischen `snake_case`-Kurztitel generieren und nach `<tasksPath>/<PREFIX>-NNNN_<english_title>.md` umbenennen
-   (= Phase 1, Schritt 2 vorgezogen). Der Worktree-Branch wird aus diesem Namen abgeleitet, **niemals ohne Suffix**.
-1. Branch-Suffix = der `<english_title>`-Teil des (normalisierten) Dateinamens (immer gesetzt).
-2. `iwf worktree create NNNN <english_title>` ausführen (NNNN = nackte Ticket-Nummer, nicht `<PREFIX>-NNNN`).
-   (Befehls-/Flag-Referenz: `~/Library/Application Support/Kanban/claude/rules/worktree.md`.)
-3. Nach erfolgreichem Lauf den Worktree-Block direkt unter die H1 des Task-Files einfügen
-   (Format identisch zu `create-worktree`).
-4. WORKTREE-ROUTING für den Rest der Session aktivieren.
-5. Schritt 0a (Develop-Pull im Haupt-Repo) entfällt — der Worktree wurde frisch von `origin/develop` erstellt.
-
-**Bei aktivem Worktree-Routing** beachte für alle Phasen:
-
-- `Read`/`Grep`/Symbol-Suche auf Source-Files (`src/`, `assets/`, `tests/`, `templates/`, `config/`,
-  `migrations/` etc.) IMMER mit absolutem Worktree-Pfad (`<worktreePrefix>/<PREFIX>-XXXX/...`).
-- `Read` von Task-File, CLAUDE.md, Docs, `.claude/*`: Haupt-Repo-Pfad — die Worktree-Stände sind
-  oft veraltet/nicht vorhanden.
-- Git-Inspektion (Commits, Branches): `git -C <WORKTREE_PATH> log/diff/status`.
-- Recherche im Codebase: Wenn der Worktree-Branch sich kaum von develop unterscheidet, ist Read im
-  Haupt-Repo OK — sonst kann sich der Code unterscheiden und Analyse läuft auf veraltetem Stand.
+- Source-Code (`src/`, `assets/`, `tests/`, `templates/`, `config/`, `migrations/` …) aus dem Worktree lesen.
+- Git-Inspektion mit `git -C <WORKTREE_PATH> ...`.
+- Task-File, `CLAUDE.md`, `.claude/*`, zentrale Docs aus dem Haupt-Repo lesen.
+- Nicht versehentlich Source-Code aus Haupt-Repo und Worktree mischen.
 
 ---
 
-**Schritt 0a: In develop wechseln** (nur ohne aktiven Worktree UND mit `--no-worktree`)
+## 0c) Recovery: fehlenden Worktree vorbereiten
 
-**PFLICHT (nur wenn explizit ohne Worktree gearbeitet wird):** Wechsle IMMER zuerst in den `develop`-Branch,
-um sicherzustellen, dass du den aktuellen Stand des Projekts analysierst:
+Dieser Pfad ist **nur** nötig, wenn `get-task` nicht vorher gelaufen ist oder ein älteres Task-File vorliegt.
+
+1. Stelle sicher, dass der Dateiname dem Schema entspricht:
+
+```text
+<TICKET-NUMMER>_<english_title>.md
+```
+
+2. Falls nicht: denselben Normalisierungsstandard wie `get-task` verwenden.
+3. Aus dem finalen Namen `<english_title>` bestimmen.
+4. Worktree anlegen:
 
 ```bash
-git checkout develop && git pull
+iwf worktree create NNNN <english_title>
 ```
 
-**Schritt 0b: Prüfe ob der Task bereits gelöst wurde**
+5. Nach Erfolg Worktree-Block im Format von `get-task` einfügen und Status auf `🟡 In Arbeit` setzen.
+6. `WORKTREE_ROUTING=active`.
 
-1. Extrahiere die Ticket-Nummer aus dem Dateinamen (z.B. `<PREFIX>-3963` aus `<PREFIX>-3963_some_title.md`)
-2. Durchsuche die Git-Historie nach Commits mit dieser Ticket-Nummer:
-   ```bash
-   git log --oneline --all --grep="<TICKET-NUMMER>"
-   ```
-3. Prüfe auch ob ein Feature-Branch existiert und bereits gemerged wurde:
-   ```bash
-   git branch -a | grep -i "<TICKET-NUMMER>"
-   git log --oneline develop --grep="<TICKET-NUMMER>"
-   ```
+Die detaillierten Worktree-Regeln stehen in `.claude/rules/worktree.md` und werden hier nicht dupliziert.
 
-**Auswertung:**
+### 0c-legacy) Gültiger Worktree mit suffixlosem Legacy-Branch
 
-| Situation                                 | Aktion                              |
-|-------------------------------------------|-------------------------------------|
-| Commits mit Ticket-Nr in develop gefunden | Task ist abgeschlossen und gemerged |
-| Feature-Branch existiert mit Commits      | Task ist in Arbeit                  |
-| Keine Commits/Branches gefunden           | Task ist neu → weiter mit Phase 1   |
+Wenn ein älteres Task-File bereits einen gültigen Worktree besitzt, der Branch aber nur
+`feature/<PREFIX>-NNNN` heißt:
 
-**Bei bereits gelöstem/bearbeitetem Task:**
+1. finalen normalisierten `<english_title>` bestimmen,
+2. lokalen Branch im Worktree auf `feature/<PREFIX>-NNNN_<english_title>` umbenennen,
+3. falls der alte Branch bereits remote existiert: neuen Branch pushen und erst danach den alten Remote-Branch löschen,
+4. `🌿 **BRANCH**:` im Task-File aktualisieren.
 
-- Zeige dem Benutzer die gefundenen Commits an (mit `git log --oneline --all --grep="<TICKET>"`)
-- Zeige den Branch-Status an
-- **Führe trotzdem Phase 2 (Analyse) durch** und dokumentiere im Task-File
-- Aktualisiere den Status im Task-File entsprechend:
-    - `🟢 Abgeschlossen` - wenn in develop gemerged
-    - `🟡 In Arbeit` - wenn Feature-Branch existiert aber nicht gemerged
-
-**Melde den Status:**
-
-```
-🟢 TASK BEREITS ABGESCHLOSSEN
-
-Ticket: <TICKET-NUMMER>
-Status: Gemerged in develop
-
-Gefundene Commits:
-<Liste der Commits>
-```
-
-ODER
-
-```
-🟡 TASK IN ARBEIT
-
-Ticket: <TICKET-NUMMER>
-Branch: feature/<branch-name>
-Status: Nicht gemerged
-
-Gefundene Commits:
-<Liste der Commits>
-
-Möchtest du die Arbeit an diesem Task fortsetzen?
-```
-
-- **Immer:** Phase 2 (Analyse) durchführen und Status im Task-File dokumentieren
-- Falls Task in Arbeit: Frage ob fortgesetzt werden soll
-- Falls neu: Weiter mit allen Phasen
+Keine Force-Pushes verwenden.
 
 ---
 
-### Phase 1: Vorbereitung
+## 0d) Recovery ohne Worktree (`--no-worktree`)
 
-**Schritt 1: Dokumentation lesen**
+Vor einem automatischen Branch-Wechsel zuerst prüfen:
 
-- Lies die `CLAUDE.md` im Projekt-Root (falls vorhanden) und alle darin referenzierten Dokumente
-- Lies das Task-File vollständig und verstehe den Kontext
+```bash
+git status --short
+```
 
-**Schritt 2: Task-File normalisieren**
+Wenn uncommittete Änderungen vorhanden sind:
 
-- Extrahiere aus Zeile 1: `<TicketNummer>` und `<Deutsche Beschreibung>`
-- Erstelle daraus einen kurzen englischen Titel: `<TicketTitelKurz>` (snake_case, lowercase)
-- Benenne das File um nach Schema: `<TicketNummer>_<TicketTitelKurz>.md`
-- Beispiel: `PROJ-123_implement_user_authentication.md`
-- **Branch-Namen nachziehen (PFLICHT, schliesst die „namenloser Branch“-Lücke):** Wenn bereits ein Worktree
-  existiert (Worktree-Block vorhanden) und dessen Branch noch **suffixlos** heisst (`feature/<PREFIX>-NNNN`,
-  weil `get-task` ihn vor der Normalisierung erstellt hat), den Branch jetzt auf
-  `feature/<PREFIX>-NNNN_<TicketTitelKurz>` umbenennen — **lokal und remote**:
-  ```bash
-  # lokal (im Worktree)
-  git -C <WORKTREE_PATH> branch -m feature/<PREFIX>-NNNN_<TicketTitelKurz>
-  # nur falls der alte Branch schon gepusht war (sonst entfällt der Remote-Teil):
-  git -C <WORKTREE_PATH> push -u origin feature/<PREFIX>-NNNN_<TicketTitelKurz>
-  git -C <WORKTREE_PATH> push origin --delete feature/<PREFIX>-NNNN
-  ```
-  Danach die `🌿 **BRANCH**:`-Zeile im Worktree-Block des Task-Files entsprechend aktualisieren. (Worktree-Pfad
-  und Stack-Name bleiben unverändert — sie hängen an der Ticket-Nummer, nicht am Branch-Suffix.)
-- Füge direkt unter der Überschrift einen Status-Abschnitt hinzu (falls nicht vorhanden):
-  ```markdown
-  ### Status
-  🔴 Offen
-  ```
+- **kein** automatisches `reset`, `stash` oder Überschreiben,
+- Zustand klar melden und ABBRECHEN.
 
-**Schritt 3: Feature-Branch / Worktree sicherstellen**
+Wenn sauber:
 
-- **Falls Worktree-Routing in Phase 0 aktiviert wurde** (Default-Pfad oder bestehender Worktree): Der
-  Feature-Branch ist im Worktree bereits angelegt und aktiv. Im Haupt-Repo bleibt `develop` ausgecheckt —
-  das ist gewollt. KEIN `git checkout` im Haupt-Repo.
-- **Nur falls `--no-worktree` gesetzt ist** (Arbeit komplett im Haupt-Repo):
-  - Prüfe ob bereits ein passender Branch existiert
-  - Falls nein, erstelle Branch nach Schema: `feature/<TicketNummer>_<TicketTitelKurz>`
-  - Beispiel: `feature/<PREFIX>-123_implement_user_authentication`
-  - Wechsle auf den Feature-Branch
+```bash
+git checkout develop
+git pull --ff-only
+```
+
+`--ff-only` verhindert unerwartete Merge-Commits.
 
 ---
 
-### Phase 2: Analyse & Planung
+## 0e) Already-Solved-/In-Progress-Check
 
-**Schritt 4: Fachliche Analyse dokumentieren**
+Ticket-Nummer aus `<TASK_FILE>` bestimmen und den tatsächlichen Git-Zustand prüfen:
 
-- Analysiere den Task und dokumentiere im Task-File unter `## Analyse`:
-  ```markdown
-  ## Analyse
+```bash
+git log --oneline --all --grep='<TICKET-NUMMER>'
+git branch -a --list '*<TICKET-NUMMER>*'
+git log --oneline develop --grep='<TICKET-NUMMER>'
+```
 
-  **Art der Änderung:** [z.B. Feature, Bugfix, Refactoring, UI-Anpassung]
+Bei Worktree-Routing entsprechend `git -C <WORKTREE_PATH>` verwenden, soweit sinnvoll.
 
-  **Betroffene Bereiche:**
-  - [z.B. Frontend: Seite/Komponente XY]
-  - [z.B. Backend: API-Endpunkt XY]
-  - [z.B. Datenbank: Neue Tabelle/Spalte]
+### Status ableiten
 
-  **Fachliche Einordnung:**
-  [Kurze Beschreibung was fachlich/funktional erreicht werden soll und warum]
+| Befund | Task-Status |
+|---|---|
+| Ticket-Commits in `develop` | `🟢 Abgeschlossen` |
+| Feature-Branch mit Ticket-Commits, nicht gemerged | `🟡 In Arbeit` |
+| Keine Branch-/Commit-Spuren | `🔴 Offen` bzw. ab Analysebeginn `🟡 In Arbeit` |
 
-  **Technische Einordnung:**
-  [Welche Technologien/Patterns sind betroffen, geschätzte Komplexität]
-  ```
+Den Status im Task-File mit dem nachgewiesenen Zustand synchronisieren.
 
-- **Berechtigungs-Tests prüfen:** Falls der Task Berechtigungen ändert (Rollen bzw. die
-  Permission-Konfiguration des Projekts — wo die liegt, sagt die `CLAUDE.md`/Projekt-Doku),
-  suche nach bestehenden Tests, die diese Zugriffe testen (`userAccessProvider`, `HTTP_FORBIDDEN`,
-  `HTTP_OK`, `HTTP_UNAUTHORIZED`).
-  Durchsuche dazu `tests/Controller/` nach dem betroffenen Controller-Test und prüfe den `userAccessProvider()`.
-  Die geänderten Rollen müssen im Lösungsplan als Test-Anpassung aufgeführt werden.
-  ```bash
-  # Beispiel: Suche nach Tests für einen bestimmten Controller
-  grep -r "<ControllerName>" tests/Controller/ --include="*.php" -l
-  ```
+**Auch bei bereits implementierten Tasks:** Analyse durchführen. Der Input für spätere Impact-Analyse ändert sich dann von Plan zu tatsächlichem Codezustand, falls der Caller-Kontext das verlangt.
 
-- **Datenmigration prüfen:** Falls der Task bestehende Daten ändern, korrigieren oder transformieren muss,
-  prüfe die projektüblichen Migrationswege (siehe `CLAUDE.md`/Projekt-Doku) und entscheide:
-    - **Doctrine Migration** (`migrations/`) — bei Schema-Änderungen oder einfachen SQL-Updates.
-    - **Projektspezifischer Migrations-Mechanismus** — bei komplexen Datenmigrationen, die DI-Zugriff
-      (Repositories, Logger, Services) oder Command-Ausführung benötigen. Welcher Mechanismus das im
-      Projekt ist, steht in der Projekt-Doku — nicht raten.
-      Dokumentiere die Entscheidung und Begründung im Analyse-Abschnitt.
+---
 
-**Schritt 5: Verständnis sicherstellen**
+## Workflow-Status nach erfolgreichem Start
 
-- Falls du etwas am Task nicht verstehst: **Frage SOFORT nach** bevor du fortfährst
-- Kläre Unklarheiten, bevor du mit der Planung beginnst
+Nach finalem Readiness-Gate:
 
-**Schritt 6: Plan erstellen und dokumentieren**
+```text
+READY → workflow_state.task.status = READY_FOR_IMPLEMENTATION
+BLOCKED → workflow_state.task.status = IN_PROGRESS
+```
 
-- Erstelle einen strukturierten Lösungsplan mit konkreten Schritten
-- Dokumentiere den Plan im Task-File unter einem neuen Abschnitt `## Lösungsplan`
-- Der Plan sollte so detailliert sein, dass die Umsetzung klar ist
+Danach sichtbare Status-/Workspace-Projektion aus dem State synchronisieren.
 
-**Beispiel für einen Lösungsplan:**
+---
+
+# Phase 1 — Kontext verstehen
+
+## Schritt 1: Projekt- und Task-Dokumentation lesen
+
+1. `CLAUDE.md` im Projekt-Root lesen, falls vorhanden.
+2. Von dort referenzierte Architektur-/Konventionsdokumente lesen, soweit für den Task relevant.
+3. `<TASK_FILE>` vollständig lesen.
+4. Explizit extrahieren:
+   - Beschreibung / Problem,
+   - erwartetes Ergebnis / Verhalten,
+   - Akzeptanzkriterien,
+   - verwandte Tasks,
+   - bekannte Constraints / Hinweise.
+5. Referenzierte lokale Task-Files nur dann vertieft lesen, wenn ihre Beziehung für die aktuelle Änderung relevant ist.
+
+**Keine fachlichen Anforderungen erfinden.** Fehlende Informationen bleiben zunächst `unknown`.
+
+---
+
+## Schritt 2: Aktuelles Verhalten im Code verifizieren
+
+Bevor eine Lösung geplant wird:
+
+- Einstiegspunkt(e) des betroffenen Flows finden,
+- relevantes aktuelles Verhalten im Code nachvollziehen,
+- bestehende Tests suchen,
+- bestehende ähnliche Implementierungen suchen,
+- Konfiguration prüfen, wenn sie Verhalten deklariert.
+
+Ziel: Ticket-Aussage und aktuellen Codezustand gegeneinander prüfen.
+
+### Evidence Discipline
+
+Während der Analyse zwischen drei Kategorien unterscheiden:
+
+- **FACT** — direkt durch Task, Code, Config, Test oder Git belegt,
+- **INFERENCE** — plausible Schlussfolgerung aus Facts,
+- **UNKNOWN** — nicht ausreichend belegbar.
+
+Eine Inference niemals als Fact in den Lösungsplan schreiben.
+
+---
+
+# Phase 2 — Fachliche und technische Analyse
+
+## Schritt 3: Analyse dokumentieren
+
+Unter `## Analyse` mindestens:
+
+```markdown
+## Analyse
+
+**Art der Änderung:** <Feature | Bugfix | Refactoring | UI | Daten | Security | ...>
+
+### Fachlicher Kontext
+- **Aktuelles Verhalten:** ...
+- **Erwartetes Verhalten:** ...
+- **Warum:** ...
+
+### Betroffene Bereiche
+- Backend: ...
+- Frontend: ...
+- Datenbank/Persistenz: ...
+- Config/Security/Async/Integration: ...
+
+### Technische Einordnung
+...
+
+### Evidenz / Annahmen
+- FACT: ...
+- INFERENCE: ...
+- UNKNOWN: ...
+```
+
+Nur tatsächlich relevante Kategorien aufführen; keine künstlichen Abschnitte füllen.
+
+---
+
+## Schritt 4: Spezifische Vorabprüfungen
+
+### Berechtigungen
+
+Falls Rollen/Permissions betroffen sind:
+
+- Backend-Gating und FE-Gating identifizieren,
+- bestehende Controller-/Permission-Tests suchen,
+- erlaubte und verbotene Rollen im Plan berücksichtigen.
+
+Beispiel:
+
+```bash
+grep -r '<ControllerName>' tests/Controller/ --include='*.php' -l
+```
+
+### Datenmigration
+
+Falls bestehende Daten verändert, transformiert oder neu berechnet werden müssen:
+
+- Schema-Migration vs. Datenmigration unterscheiden,
+- projektüblichen Mechanismus aus Dokumentation/Code bestimmen,
+- Backfill/Recalc/Bestandsdaten explizit planen,
+- keine Migrationsart aus Gewohnheit raten.
+
+### Externe / asynchrone Nebenwirkungen
+
+Falls der Flow externe APIs, Mail, Queue, Scheduler oder andere Side Effects berührt, im Analyseabschnitt kenntlich machen. Die vollständige Risikoanalyse erfolgt später zentral in `impact-analysis`.
+
+---
+
+## Schritt 5: Unklarheiten auflösen
+
+Vor einer Rückfrage zuerst alles lokal Beantwortbare aus:
+
+- Task,
+- Projekt-Doku,
+- Code,
+- Tests,
+- Config,
+- Git-Historie
+
+prüfen.
+
+Nur dann nachfragen, wenn ein `UNKNOWN` die Lösung **materiell** verändert (z.B. anderes fachliches Verhalten, Datenverlust-Risiko, Security, inkompatible API).
+
+Nicht-blockierende Unsicherheiten dokumentieren und mit einer defensiven Planannahme kennzeichnen, statt unnötig zu stoppen.
+
+---
+
+# Phase 3 — Lösungsplan
+
+## Schritt 6: Konkreten Plan erstellen
+
+Unter `## Lösungsplan` einen implementierbaren Plan erstellen.
+
+Jeder Plan-Schritt sollte möglichst enthalten:
+
+- betroffene Datei/Klasse/Symbol,
+- beabsichtigte Verhaltensänderung,
+- warum diese Änderung nötig ist,
+- zugehörigen Test bzw. Verifikation.
+
+Beispiel:
 
 ```markdown
 ## Lösungsplan
 
 ### Backend
-
-1. Neuen Controller erstellen: `src/Controller/.../FooController.php`
-2. Query/Command erstellen für ...
-3. Handler implementieren mit ...
+1. `src/.../FooHandler.php::handle()`
+   - Guard für ... anpassen, damit ...
+   - bestehende Invariante ... beibehalten
+   - Test: `tests/.../FooHandlerTest.php`
 
 ### Frontend
+2. `assets/.../FooPage.tsx`
+   - neues Response-Feld ... darstellen
+   - Empty-State für `null`
+   - Test: Component/E2E ...
 
-4. Komponente/Template erstellen bzw. anpassen (z.B. `assets/pages/.../FooComponent.tsx`
-   oder `templates/.../foo.html.twig`)
-5. API-Integration / JS+SCSS ergänzen
+### Persistenz
+3. ...
 
 ### Tests
-
-6. Controller-Test erstellen: `tests/Controller/.../FooTest.php`
-7. Unit-Tests für geänderte Business-Logik (z.B. Entity-Methoden, Enums)
-8. Bestehende Tests erweitern, falls geänderter Code dort verwendet wird
-
-### Config
-
-9. Berechtigungen/Rollen gemäss Projekt-Konvention prüfen/anpassen
-10. Weitere Projekt-Konfiguration (Views, Formular-/Step-Config, …) gemäss Projekt-Doku anpassen
+4. ...
 ```
 
-**WICHTIG bei der Planung:**
+### Planregeln
 
-- **Tests sind PFLICHT** - nicht nur für neue Controller, sondern für ALLE Business-Logik-Änderungen
-- Plane Tests für: geänderte Entities, Services, Handlers, Export/Import-Logik, Berechnungen
-- Wenn du eine Methode änderst, die in Tests verwendet wird, plane die Test-Erweiterung ein
+- Tests für jede geänderte Business-Logik einplanen.
+- Bestehende Tests bevorzugt erweitern, wenn sie bereits die relevante Verantwortung besitzen.
+- Keine rein dateibasierte To-do-Liste; jeder Schritt beschreibt die Verhaltensabsicht.
+- Keine spekulativen Änderungen „vorsichtshalber“ aufnehmen.
 
-**Schritt 6b: Impact-Analyse (Nebeneffekte & Verzweigungen erkennen)**
+---
 
-Wenn nicht explizit erwähnt ist, dass keine Impact-Analyse benötigt wird, gilt Folgendes:
-⚠️ **PFLICHT:** Lies und befolge die Anleitung in
-[impact-analysis methodology](../impact-analysis/methodology.md)
+## Schritt 7: Acceptance-Criteria-/Behavior-Traceability
 
-**Modus:** `start-task` → Datenquelle ist der **Lösungsplan** (geplante Datei-Änderungen).
-Ermittle aus dem Plan, welche Dateien/Klassen/Methoden geändert werden sollen, und nutze diese
-als Ausgangspunkt.
+Wenn explizite Akzeptanzkriterien existieren, unterhalb des Plans eine Zuordnung anlegen:
 
-**Führe alle 6 Schritte aus der Anleitung durch:**
+```markdown
+### Traceability
 
-0. **Historische Ticket-Verfolgung (PFLICHT, vor allem anderen):** Für jede geplant zu ändernde
-   Datei `git log --all --oneline --follow <FILE> | grep -iE "<PREFIX>-[0-9]+"` ausführen und die
-   Treffer chronologisch rückwärts inspizieren. Pro Ticket-Commit kurz `git show <sha> -- <FILE>`
-   öffnen, die fachliche Designintention erfassen und in der Impact-Analyse tabellarisch festhalten.
-   **Wenn ein altes Ticket eine Heuristik/Anforderung etabliert hat, die mit deinem Plan kollidiert,
-   den Plan ANPASSEN, bevor du implementierst** (nicht blind überschreiben). Siehe Detail-Anleitung
-   in [impact-analysis methodology](../impact-analysis/methodology.md) → „Schritt 0“.
-1. Geplante Dateien kategorisieren (nach Architektur-Schicht)
-2. Aufwärts-Verfolgung (Bottom-Up Tracing) — welche Controller/Frontend-Bereiche nutzen die
-   geplant geänderten Klassen?
-3. Business-Logik-Verzweigungen erkennen — welche Enum- und Property-Verzweigungen existieren
-   bereits im betroffenen Code? Muss der Plan diese berücksichtigen?
-4. Betroffene Test-Bereiche zusammenstellen — was muss nach der Umsetzung getestet werden?
-5. Nachfragen formulieren — Offene Fragen an den Auftraggeber/Entwickler
+| AC | Plan-Schritt(e) | Verifikation |
+|---|---|---|
+| AC-1 | 1, 4 | Controller-/Integrationstest |
+| AC-2 | 2, 5 | Component/E2E |
+```
 
-**Bei aktivem Worktree-Routing:** Git-Befehle mit `git -C <WORKTREE_PATH> …` ausführen,
-Code-Reads mit absolutem Worktree-Pfad (siehe Phase 0).
+Wenn es keine formalen ACs gibt, stattdessen die explizit formulierten erwarteten Verhaltenspunkte verwenden.
 
-**Ergebnis:** Dokumentiere die Analyse im Task-File unter `## Impact-Analyse`.
-Enthält die Analyse kritische Erkenntnisse (z.B. fehlende Enum-Abdeckung im Plan,
-unerwartete Seiteneffekte), dann **passe den Lösungsplan entsprechend an** und informiere
-den Benutzer über die Anpassungen.
+**Nicht künstlich neue Acceptance Criteria erfinden.**
 
-**Schritt 7: Abschluss-Checkliste hinzufügen**
+---
 
-Füge folgende Checkliste im Task-File hinzu (falls nicht vorhanden):
+# Phase 4 — Impact-Sub-Skill
+
+## Schritt 8: `impact-analysis/SKILL.md` aufrufen
+
+Rufe **nicht** `impact-analysis/methodology.md` direkt auf.
+
+Verwende ausschließlich:
+
+```text
+../impact-analysis/SKILL.md
+```
+
+Der Impact-Skill ist verantwortlich für:
+
+- normalisierten Analyse-Snapshot,
+- Source-Fingerprint,
+- Ausführung seiner eigenen `methodology.md`,
+- Persistenz von `## Impact-Analyse`,
+- Rückgabe des `impact_handoff`.
+
+`start-task` kennt oder dupliziert die internen Impact-Schritte nicht.
+
+### Embedded Invocation Context
+
+Übergebe:
+
+```yaml
+caller: start-task
+primary_source: plan
+task_file: <TASK_FILE>
+ticket: <TICKET-NUMMER>
+repository_path: <WORKTREE_PATH oder Haupt-Repo>
+base: null
+head: null
+output_target: <TASK_FILE>
+```
+
+Die aktuelle `## Analyse`, Task-Beschreibung, Akzeptanzkriterien und der aktuelle
+`## Lösungsplan` stehen über das Task-File als fachlicher Kontext zur Verfügung.
+
+### Impact-Handoff verarbeiten
+
+Erwarte mindestens:
+
+```yaml
+impact_handoff:
+  source_fingerprint: ...
+  semantic_changes: [C-*]
+  impact_paths: [P-*]
+  invariants: [INV-*]
+  risks:
+    critical: [R-*]
+    high: [R-*]
+    medium: [R-*]
+  open_unknowns: [...]
+  test_matrix_present: true|false
+  caller_reconciliation_required: true|false
+```
+
+### Plan-Reconciliation gehört zu `start-task`
+
+Wenn `caller_reconciliation_required=true` oder bestätigte Findings zeigen, dass der Plan:
+
+- einen notwendigen Counterpart übersieht,
+- eine Invariante/Designintention verletzt,
+- einen Write-/Read-/Async-/Lifecycle-Pfad nicht berücksichtigt,
+- eine relevante Business-Variante auslässt,
+- eine Migration/Security-/Concurrency-Lücke enthält,
+- oder einen erforderlichen Test nicht plant,
+
+dann:
+
+1. `## Lösungsplan` anpassen,
+2. Traceability aktualisieren,
+3. **den Impact-Sub-Skill erneut gegen den neuen Plan aufrufen**.
+
+Nicht versuchen, den alten Impact-Report manuell „zurechtzupatchen“.
+Der geänderte Plan besitzt einen neuen Source-Fingerprint.
+
+### Stabilitätsregel
+
+Maximal zwei Plan→Impact-Reconciliation-Zyklen innerhalb von `start-task`.
+
+Falls danach noch `CRITICAL/HIGH`-Risiken ohne belastbare Behandlung oder wesentliche `UNKNOWN`s bestehen:
+
+- nicht künstlich freigeben,
+- als blockierende offene Punkte dokumentieren,
+- späteren Quality-/Solve-Schritt entsprechend kennzeichnen.
+
+---
+
+# Phase 5 — Quality-Sub-Skill
+
+## Schritt 9: `quality-analysis/SKILL.md` aufrufen
+
+Nach einem stabilen Impact-Stand rufe **nicht** `quality-analysis/methodology.md` direkt auf.
+
+Verwende:
+
+```text
+../quality-analysis/SKILL.md
+```
+
+Der Quality-Skill ist verantwortlich für:
+
+- Prüfung der Impact-Freshness,
+- ggf. erneuten Aufruf von `impact-analysis/SKILL.md`,
+- Entscheidung des effektiven Scopes `FULL` / `LITE` / `SKIP`,
+- Ausführung seiner eigenen `methodology.md`,
+- Quality-Plan-Delta,
+- ggf. Impact-Recheck nach semantischem Quality-Delta,
+- Persistenz des Quality-Reviews,
+- Rückgabe des `quality_handoff`.
+
+`start-task` dupliziert weder Triage-Regeln noch Quality-Gates, Principles oder Pattern-Regeln.
+
+### Gewünschten Quality-Scope bestimmen
+
+Aus `$ARGUMENTS`:
+
+```text
+kein Flag           → requested_scope: auto
+--quality=auto      → requested_scope: auto
+--quality=full      → requested_scope: full
+--quality=lite      → requested_scope: lite
+--quality=skip      → requested_scope: skip
+```
+
+`lite` und `skip` sind keine Garantie; die Quality-Methodology darf eskalieren.
+
+### Embedded Invocation Context
+
+```yaml
+caller: start-task
+review_mode: plan
+task_file: <TASK_FILE>
+ticket: <TICKET-NUMMER>
+repository_path: <WORKTREE_PATH oder Haupt-Repo>
+base: null
+head: null
+requested_scope: <auto|full|lite|skip>
+output_target: <TASK_FILE>
+```
+
+Der Quality-Skill findet und validiert die aktuelle `## Impact-Analyse` selbst.
+`start-task` übergibt keine nachgebauten Quality-Kriterien.
+
+### Quality-Handoff verarbeiten
+
+Erwarte mindestens:
+
+```yaml
+quality_handoff:
+  review_source_fingerprint: ...
+  impact_source_fingerprint: ...
+  requested_scope: ...
+  effective_scope: FULL|LITE|SKIP
+  decision: FREIGEGEBEN | FREIGEGEBEN MIT ÄNDERUNGEN | PLAN/DESIGN ÜBERARBEITEN
+  decisions: [D-*]
+  findings: [Q-*]
+  quality_plan_delta: [ΔQ-*]
+  impact_recheck:
+    required: true|false
+    completed: true|false
+  security_followup:
+    level: NONE | FEATURE_SECURITY_REVIEW | FULL_APP_AUDIT_RECOMMENDED
+    reasons: [...]
+    suggested_timing: after-implementation | pre-release | periodic | now
+  open_unknowns: [...]
+```
+
+### Verantwortung nach Rückkehr
+
+Der Quality-Skill führt seine eigene Quality↔Impact-Reconciliation durch.
+
+`start-task` führt einen empfohlenen `audit-security` **nicht automatisch** aus. Es dokumentiert den `security_followup` für die spätere Review-/Release-Phase. Ein Full-App-Audit vor Implementierung würde einen noch nicht existierenden Systemstand prüfen.
+
+`start-task` prüft danach nur noch:
+
+1. Ist der im Task-File stehende Lösungsplan die vom Quality-Review freigegebene/reconciliierte Fassung?
+2. Stimmen `review_source_fingerprint` und aktueller Planstand überein?
+3. Falls ein Impact-Recheck erforderlich war: `completed=true`?
+4. Gibt es offene blockierende `Q-*`, `R-*` oder `UNKNOWN`s?
+
+Wenn der Quality-Skill `PLAN/DESIGN ÜBERARBEITEN` zurückgibt oder ein erforderlicher Impact-Recheck
+nicht abgeschlossen ist, darf `start-task` nicht „Bereit zur Umsetzung“ melden.
+
+
+# Phase 6 — Abschluss
+
+## Schritt 10: Completion Gate
+
+Vor Abschluss muss gelten:
 
 ```markdown
 ## Abschluss-Checkliste
 
-- [x] Already-Solved-Check durchgeführt
-- [x] Task-File korrekt benannt (Schema eingehalten)
+- [x] Task-File und Repository-Snapshot eindeutig bestimmt
+- [x] Already-Solved-/In-Progress-Check durchgeführt
+- [x] Projekt-/Task-Dokumentation gelesen
+- [x] aktuelles Verhalten im Code verifiziert
 - [x] Analyse dokumentiert
 - [x] Lösungsplan erstellt
-- [x] Impact-Analyse durchgeführt (Verzweigungen, Nebeneffekte, Nachfragen)
-- [ ] Feature-Branch erstellt und aktiv
-- [ ] Lösung vollständig implementiert
-- [ ] Tests erstellt (Controller-Tests + Business-Logik-Tests)
+- [x] Acceptance Criteria / erwartetes Verhalten auf Plan + Tests gemappt
+- [x] `impact-analysis/SKILL.md` mit Embedded Context ausgeführt
+- [x] `impact_handoff` verarbeitet und notwendige Plan-Anpassungen eingearbeitet
+- [x] finaler Impact-Fingerprint passt zum aktuellen Lösungsplan
+- [x] keine ungeklärten high/critical Impact-Risiken ohne Plan/Test/gezielte Rückfrage
+- [x] `quality-analysis/SKILL.md` mit Embedded Context ausgeführt
+- [x] effektiver Quality-Scope (`FULL` / `LITE` / `SKIP`) dokumentiert
+- [x] Quality-Plan-Delta und ggf. Impact-Recheck durch Quality vollständig reconciled
+- [x] finaler Quality-Fingerprint passt zum aktuellen Lösungsplan
+- [ ] Lösung implementiert
 - [ ] Tests/PHPStan ausgeführt und bestanden
-- [ ] JIRA Lösungsfeld ausgefüllt (beide Abschnitte; „Für Kunde" inkl. Entscheidungen, Abweichungen von den AK und Annahmen)
-- [ ] Änderungen committed (mit korrekter Commit-Message, OHNE Co-Authored-By)
-- [ ] Abschluss-Zusammenfassung dem Benutzer ausgegeben
+- [ ] JIRA Lösungsfeld ausgefüllt
+- [ ] Änderungen committed
 ```
+
+Nur die Planungs-/Analyse-Punkte werden hier bereits abgehakt.
+
+### Readiness Gate
+
+`🟡 Bereit zur Umsetzung` nur wenn:
+
+- Quality `decision` = `FREIGEGEBEN` oder `FREIGEGEBEN MIT ÄNDERUNGEN`,
+- alle bestätigten notwendigen Quality-Änderungen im Plan enthalten sind,
+- erforderliche Impact-Rechecks abgeschlossen sind,
+- keine unbehandelten `CRITICAL/HIGH` Impact-Risiken verbleiben,
+- keine blockierenden Quality-Findings/Unknowns verbleiben,
+- finaler Plan-, Impact- und Quality-Fingerprint konsistent sind.
+
+Andernfalls:
+
+```text
+🔴 PLAN/DESIGN MUSS ÜBERARBEITET WERDEN
+```
+
+und **nicht** zu `solve-task` weiterleiten.
+
+## Schritt 11: Persistenten Start-State schreiben
+
+Jetzt — **nach** dem Readiness Gate — `workflow_state.start_task` schreiben:
+
+```yaml
+start_task:
+  plan_fingerprint: <FINAL_PLAN_FINGERPRINT>
+  planning_base: <resolved-base-or-parent>
+  readiness: READY | BLOCKED
+  blocking_reasons: [...]
+```
+
+Für `READY` muss gelten:
+
+```text
+workflow_state.start_task.plan_fingerprint
+== workflow_state.impact.plan.source_fingerprint
+== workflow_state.quality.plan.review_source_fingerprint
+```
+
+Nur `workflow_state.start_task` ändern; fremde Namespaces erhalten. Anschließend den State erneut parsen und die
+Postcondition verifizieren.
 
 ---
 
-## STOPP - Analyse & Planung abgeschlossen!
+## Abschlussausgabe
 
-Nach Abschluss von Phase 2 **IMMER** folgende Zusammenfassung ausgeben:
-
-```
+```text
 📋 ANALYSE & PLANUNG ABGESCHLOSSEN
 
 Ticket: <TICKET-NUMMER>
-Branch: <feature/<branch-name>, oder "wird bei /solve-task erstellt" falls --no-worktree>
-Worktree: <Pfad falls angelegt, sonst "nicht angelegt (--no-worktree)">
-Status: 🟡 Bereit zur Umsetzung
+Branch: <BRANCH oder --no-worktree>
+Worktree: <Pfad oder nicht angelegt>
+Status: <🟡 Bereit zur Umsetzung | 🔴 Plan/Design muss überarbeitet werden>
 
 ## Zusammenfassung
-[1-2 Sätze was der Task macht]
+<1–2 Sätze>
 
 ## Lösungsplan
-[Kurze Auflistung der geplanten Schritte]
+<Kompakte Liste der finalen Plan-Schritte>
 
-## Betroffene Bereiche
-- Backend: [ja/nein - welche]
-- Frontend: [ja/nein - welche]
-- Tests: [ja/nein - welche]
-- Config: [ja/nein - welche]
+## Traceability
+<AC/Behavior vollständig abgedeckt: ja/nein; offene Punkte>
 
 ## Impact-Analyse
-- Betroffene Controller/Endpunkte: [Anzahl]
-- Betroffene Frontend-Bereiche: [Anzahl]
-- Erkannte Verzweigungen (Enums/Properties): [Anzahl, davon X mit Risiko]
-- Offene Nachfragen: [Anzahl]
-- Plan-Anpassungen aufgrund der Analyse: [ja/nein - welche]
+- Source-Fingerprint: <...>
+- Semantic Changes: <Anzahl>
+- Impact-Pfade: <Anzahl>
+- High/Critical Risks: <Anzahl>
+- Plan-Anpassungen aus Impact-Handoff: <ja/nein + kurz>
 
----
+## Quality-Analyse
 
-👉 Zur Umsetzung: `/solve-task <TICKET-NUMMER oder task-file.md>`
+- Requested Scope: <auto/full/lite/skip>
+- Effective Scope: <FULL / LITE / SKIP>
+- Entscheidung: <FREIGEGEBEN / FREIGEGEBEN MIT ÄNDERUNGEN / PLAN/DESIGN ÜBERARBEITEN>
+- Review-Fingerprint: <...>
+- Findings: <Anzahl / wichtigste>
+- Plan-Anpassungen aus Quality: <ja/nein + kurz>
+- Impact-Recheck: <nicht nötig / durchgeführt>
+- Security-Follow-up: <NONE / FEATURE_SECURITY_REVIEW / FULL_APP_AUDIT_RECOMMENDED> — <Timing/Grund>
+- Offene blockierende Unknowns: <Anzahl>
+
+<nur wenn Readiness Gate erfüllt:>
+👉 Zur Umsetzung: `/solve-task <TASK_FILE>`
 ```
 
-**WICHTIG:** Nach dieser Meldung STOPPEN und auf Benutzer-Feedback warten!
+Nach dieser Meldung STOPPEN. Keine Implementierung beginnen.
+
+Zusätzlich unmittelbarer Return:
+
+```yaml
+start_task_handoff:
+  plan_fingerprint: <...>
+  readiness: READY|BLOCKED
+  blocking_reasons: [...]
+```
+
+Zwischen Sessions ist `workflow_state.start_task` maßgeblich.
 
 ---
 
 ## Wichtige Regeln
 
-1. **Already-Solved-Check**: IMMER zuerst prüfen ob Task schon bearbeitet wurde
-2. **Worktree-Default**: Worktree wird automatisch angelegt, sofern noch keiner existiert und `--no-worktree` nicht im Input ist
-3. **Dokumentation**: Analyse und Lösungsplan im Task-File festhalten
-4. **Nachfragen**: Bei Unklarheiten IMMER fragen, niemals raten oder annehmen
-5. **Sprache**: Branch-Namen auf Englisch
-6. **KEINE Umsetzung**: Dieses Command macht NUR Analyse und Planung!
-7. **ULTRATHINK**: Dieses Command erfordert gründliche Analyse - nutze erweiterte Denkzeit
+1. **Keine Umsetzung:** `start-task` analysiert und plant nur.
+2. **Upstream respektieren:** `get-task`-Bootstrap nicht unnötig wiederholen.
+3. **Keine destruktive Git-Reparatur:** kein automatisches `reset`, `stash`, Force-Push.
+4. **Evidence vor Annahme:** Code/Config/Test prüfen, bevor geraten wird.
+5. **Sub-Skill-Grenzen:** `start-task` ruft `impact-analysis/SKILL.md` und `quality-analysis/SKILL.md` auf — niemals deren `methodology.md` direkt.
+6. **Single Source of Truth:** Impact- und Quality-Regeln bleiben in den jeweiligen Sub-Skills; `start-task` kennt nur Contracts/Handoffs.
+7. **Plan ist verhaltensorientiert:** nicht nur geänderte Dateien aufzählen.
+8. **Impact ist ein Feedback-Loop:** Impact-Handoffs dürfen den Plan verändern; danach Impact neu fingerprinten.
+9. **Quality ist downstream von Impact:** Freshness und Quality↔Impact-Reconciliation liegen im Quality-Sub-Skill.
+10. **Keine ungeklärten kritischen Risiken verschweigen.**
+11. Branch-/Dateinamen auf Englisch nach Projektkonvention.
+12. Projektkonventionen aus `CLAUDE.md` und — falls vorhanden — `docs/claude/code_review_learnings.md` berücksichtigen.
+13. Namespaces gemäß Projektkonvention importieren (`use` statt unnötig vollqualifizierter Namen im Code).
+14. Übersetzungsregeln aus der projektspezifischen Translation-Rule befolgen; keine hardcodierten UI-Strings einplanen.
+15. Dieser Workflow erfordert gründliche Analyse (`ULTRATHINK` im Claude-Workflow, falls dort unterstützt).
+16. **Workflow-State:** nur `workflow_state.start_task` schreiben; Plan-Impact/-Quality aus deren State-Slots lesen.
 
 ---
 
-## Status-Meldungen
-
-| Status             | Meldung                                                        |
-|--------------------|----------------------------------------------------------------|
-| Task abgeschlossen | `🟢 TASK BEREITS ABGESCHLOSSEN` - Commits in develop gefunden  |
-| Task in Arbeit     | `🟡 TASK IN ARBEIT` - Feature-Branch existiert, nicht gemerged |
-| Task neu           | `🔵 NEUER TASK` - Keine Commits gefunden, starte Analyse       |
-| Planung fertig     | `📋 ANALYSE & PLANUNG ABGESCHLOSSEN` - Bereit für /solve-task  |
-
----
-
-## Weitere Infos
-
-- Importiere Namespaces prinzipiell mit "use", schreibe Namespaces niemals direkt in den Code
-- Beachte bei der Planung die Konventionen in `CLAUDE.md` (Architektur, Tests, Rollen, Config) und —
-  falls im Projekt vorhanden — die [Code Review Learnings](../../docs/claude/code_review_learnings.md)
-- Übersetzungen: siehe `~/Library/Application Support/Kanban/claude/rules/translations.md` —
-  Änderungen an den Translation-Dateien werden nur in den deutschen Dateien vorgenommen,
-  keine hardcodierten Strings im Code/Template
-
----
-
-Beginne jetzt mit der Argument-Auflösung, danach Phase 0: Worktree-Routing und Already-Solved-Check.
+Beginne mit Phase 0.

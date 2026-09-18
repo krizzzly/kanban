@@ -1,711 +1,1224 @@
 # Test-Impact-Analyse — Symfony / React / Ant Design (portabel)
 
-Business-Logik-Verzweigungen, Aufwärts-Verfolgung, API-Contract, Read/Write-Impact und QA-Risiken.
-
-Diese Anleitung ist **projekt-neutral** für Symfony-Backend + React/Ant-Design-Frontend mit CQRS-artiger
-Command/Query-Trennung (Symfony Messenger). Sie wird von mehreren Commands verwendet:
-
-- `start-task` (Schritt 5b) — **vor** der Umsetzung, basierend auf dem Lösungsplan
-- `review-task` (Phase 1d) — **nach** der Umsetzung, basierend auf dem git diff
-- `review-merge` (Phase 3b) — beim **Review eines Kollegen-MRs**, basierend auf dem MR-Branch-Diff
-- `impact-analysis` — **standalone**, für Tasks in jedem Status (offen, in Bearbeitung, abgeschlossen)
-
-Ziel ist nicht, geänderte Dateien aufzulisten, sondern die fachlichen und technischen Auswirkungen entlang
-der betroffenen Flows zu verstehen:
-
-- Was verändert Zustand? (**Write Flow / Command-Seite**)
-- Was liest Zustand? (**Read Flow / Query-Seite**)
-- Wie wird ein Write auf der Read-Seite sichtbar? (Events, Messenger, Refetch/Invalidierung)
-- Welche API-Verträge zwischen Symfony und React ändern sich?
-- Welche Business-Logik-Verzweigungen (Enums, Properties, Flags, Schwellenwerte, Rollen) erzeugen Risiko?
-- Welche Testbereiche muss QA gezielt prüfen?
+Business-Impact, CQRS-Flows, API-Contracts, versteckte Seiteneffekte, Business-Verzweigungen, Risiken und testbare Evidenz.
 
 ---
 
-## Wie diese Anleitung portabel bleibt
+## Zweck dieser Methodik
 
-Die **Methodik** (Schritt 0–5, Report-Template) ist über alle Symfony/React/AntD-Projekte identisch.
-Nur ein kleiner Satz **konkreter Konventionen** unterscheidet die Projekte (z.B. TypeScript vs. JSX,
-Read-Model als Projection vs. Doctrine-Repository + ModelMapping, Voter-Verzeichnis vs. coala). Diese
-Konventionen werden **nicht** in den Fließtext gebrannt, sondern einmal pro Projekt im **Projekt-Profil**
-unten festgehalten — vom Agenten zu Beginn der Analyse **selbst detektiert**.
+Diese Methodik beantwortet **nicht erneut, was ein Ticket fachlich will**. Das ist Aufgabe des aufrufenden Workflows
+(z.B. `start-task`).
 
-**Regel:** Wenn im Fließtext ein `‹Profil.X›`-Platzhalter steht, den konkreten Wert aus dem Projekt-Profil
-einsetzen. Fließtext-Beispiele mit echten Klassennamen sind mit *„Beispiel"* markiert und dürfen NICHT als
-projektweite Wahrheit gelesen werden.
+Sie beantwortet:
 
----
+> Wenn diese geplanten oder tatsächlichen Änderungen gelten: **Welche fachlichen und technischen Flows verändern
+> sich, welche bestehenden Regeln können kollidieren, welche Gegenstellen fehlen möglicherweise und was muss
+> gezielt verifiziert werden?**
 
-## Projekt-Profil zuerst bestimmen (Auto-Detektion)
+Sie wird von mehreren Workflows verwendet:
 
-> ⚠️ **Der Projekt-Doku (`architecture.md`/README) NICHT blind trauen** — sie driftet. Reale Erfahrung:
-> eine `architecture.md` behauptete „TypeScript" + „RTK Query", der Code war aber JSX mit imperativem
-> Table-`reload()`. **Immer aus dem Code detektieren.**
-
-Führe die Detektions-Greps **einmal** zu Beginn der Analyse aus und notiere den detektierten Wert je Achse
-(im Report-Kopf unter „Projekt-Profil"). Ein Projekt kann optional eine gepflegte Companion-Datei mitliefern
-(`docs/claude/impact-analysis.profile.md` oder einen Block in `CLAUDE.md`); existiert die, gilt sie als
-Override und die Detektion nur als Gegenprobe.
-
-| # | Achse | Detektion (aus Repo-Root) → notiere den Wert |
-|---|-------|-----------------------------------------------|
-| P1 | **Ticket-Pattern** | `git log --oneline -20` → Ticket-Prefix (`<PREFIX>-####`) erkennen |
-| P2 | **FE-Sprache / Endung** | `find assets \( -name '*.tsx' -o -name '*.jsx' \) \| sed 's/.*\.//' \| sort \| uniq -c` → JSX oder TSX (Mehrheit gewinnt) |
-| P3 | **FE-Refetch nach Mutation** | `grep -rl "invalidateQueries\|invalidatesTags\|\.reload(" assets/ \| head` → React-Query/RTK-Tag-Invalidation **oder** imperativer `reload()` |
-| P4 | **FE-Permission-Gating** | `ls config/packages/fe_actions.yaml config/packages/fe_views.yaml 2>/dev/null`; `grep -rl "ViewConstraint\|withActionConstraint" assets/` → Config-YAMLs + FE-Constraint-Komponenten (`actions`-Prop) |
-| P5 | **Read-Modell** | `ls -d src/Projection src/ReadModel src/Model/Read 2>/dev/null`; sonst `grep -rl "ModelMapper\|IndexRequest" src/ \| head` → Projection/Read-Model **oder** Query-Handler + Doctrine-Repo + ModelMapping + `Model/…List`-ViewModels |
-| P6 | **Message-Ablage** | `ls src/Message` → getrennte `Command/`+`Query/`-Ordner **oder** feature-weise `Message/<Feature>/*Command\|*Query` |
-| P7 | **Autorisierung** | **Generisch** `grep -rln "VoterInterface\|extends Voter" src/` (findet ALLE Voter-Klassen, name-unabhängig); Regeln: `ls config/packages/coala_permissions.yaml`; Attribut-Namen: `grep -rhoE "IsGranted\(.'[A-Z_]+'" src/Controller \| sort -u`. → Meist **1 generischer** Dispatcher; die Regel liegt in `coala_permissions.yaml` + `#[IsGranted('…')]`, **nicht** im Voter-Body. *Mehr* Voter-Treffer = hand-codierte Regeln außerhalb coala (Extra-Fläche) |
-| P8 | **Async-Mechanismus / Queues** | **Primär** `config/packages/messenger.yaml` (+ `when@…`-Overrides): `routing:` = welche Message-Klassen async & auf welche Queue, `transports:` = Lanes, `retry_strategy` = Retry-Politik, `buses:…middleware:` = Pipeline. Fallback `grep -rn "BackgroundJobMessage\|AsyncMessage\|AsMessageHandler" src/` (findet auch synchrone Handler) |
-| P9 | **Hochrisiko-Enums** | `find src -path '*Enum*' -name '*.php'` → Type-/Status-/Zweck-Enums der Domäne (jeder Case = Verzweigungs-Risiko, Schritt 3) |
-| P10 | **Auto-Recalc / Lifecycle-Listener** | `grep -rln "AsDoctrineListener\|AsEntityListener" src/`; `grep -rln "getDependencyList" src/EventSubscriber/`; `grep -rn "HasLifecycleCallbacks" src/Entity/` → deklarativer `getDependencyList()`-Reverse-Index? sonst `onFlush`-Bodies lesen (Schritt 2e) |
-
-**Deklarative Config vor Code-Grep:** Wo eine Config-Datei die Konvention *deklariert*, ist sie autoritativer
-als ein Code-Grep — sie ist vollständig und trennt sauber. Nutze daher als Primärquelle:
-`config/packages/messenger.yaml` (Async: `routing:`/`transports:`/`retry_strategy`/Bus-`middleware:` — genauer
-als `grep AsMessageHandler`, das auch synchrone Handler findet), `coala_permissions.yaml` (Autorisierungs-Regeln als *Daten* — der Voter ist nur ein generischer Dispatcher;
-die zu prüfende Berechtigung steht im `#[IsGranted('…')]`-Attribut am Controller + dem passenden yaml-Eintrag,
-P7), `fe_actions.yaml`/`fe_views.yaml` (FE-Gating, P4). Der Code-Grep dient dann nur als Gegenprobe.
-
-**Ausnahme, die der Grep aufdeckt:** Findet `grep -rln "VoterInterface" src/` (P7) *mehr* als den einen
-coala-Dispatcher, trägt jeder Extra-Treffer eigene Regeln **außerhalb** coala → zusätzliche
-Autorisierungs-Fläche, die separat analysiert werden muss (der interface-basierte Grep ist daher robuster
-als ein Verzeichnis-/Namens-Grep wie `src/Voter/`).
-
-Beim Async-Impact zusätzlich aus `messenger.yaml` ablesen (fließt in Schritt 3d „Write→Read" & 4H ein):
-welche Queue (Reihenfolge/Latenz für QA-Sichtbarkeit), `retry_strategy.max_retries` (deterministischer
-Validierungs-Fehler beim Consume → Retry-Loop kann Worker aushungern) und die Bus-`middleware:`
-(z.B. Validierung-on-delivery, realtime-for-async).
-
-**Merke:** Die Achsen, auf denen Projekte differieren, sind wenige und stabil. Alles andere (Write/Read-
-Trennung, Verzweigungs-Analyse, QA-Priorisierung) ist projekt-unabhängig.
+- `start-task` — vor der Umsetzung, primär auf Basis des Lösungsplans,
+- `review-task` — nach der Umsetzung, primär auf Basis des Branch-Diffs,
+- `review-merge` — Review eines Kollegen-MRs, primär auf Basis des MR-Diffs,
+- `impact-analysis` — standalone für offene, laufende oder abgeschlossene Tasks.
 
 ---
 
-## Modus: Datenquelle bestimmen
+# 1. Normalisierter Input-Contract
 
-| Kontext | Datenquelle | Ziel |
-|---------|-------------|------|
-| `start-task` | **Lösungsplan** — geplante Datei-Änderungen | Nebeneffekte VOR der Umsetzung erkennen |
-| `review-task` | **git diff** — tatsächliche Code-Änderungen | Test-Bereiche für QA identifizieren |
-| `review-merge` | **git diff** — MR-Branch des Kollegen | Lücken finden, Findings generieren, QA informieren |
-| `impact-analysis` | **Lösungsplan, Branch-Diff oder gemergte Commits** | Impact unabhängig vom Task-Status |
+> **Routing-Regel:** Argumentauflösung, Standalone-Status-Erkennung, Worktree-Routing und Source-Fingerprint
+> erfolgen in `SKILL.md`. Diese Methodik beginnt mit einem bereits normalisierten Analyse-Kontext.
 
-**`start-task`:** Aus dem Lösungsplan ermitteln, welche Dateien/Klassen/Methoden geändert werden sollen.
 
-**`review-task`:** Tatsächlich geänderte Dateien aus dem git diff:
-
-```bash
-MERGE_BASE=$(git merge-base HEAD develop)
-git diff --name-only $MERGE_BASE..HEAD
-git status --short
-```
-
-**`review-merge`:** Änderungen des MR-Branches:
-
-```bash
-git log --oneline origin/develop..origin/<branch-name>
-git show origin/<branch-name> --name-only --oneline
-```
-
-**`impact-analysis`:** Zuerst Task, Branch und Status bestimmen. Je nach Status:
-
-- **Offen:** Lösungsplan aus Task-File
-- **In Bearbeitung:** Branch-Diff gegen `develop`
-- **Abgeschlossen:** gemergte Commits in `develop`
-
-```bash
-TICKET="<TICKET-NUMMER>"                 # Prefix aus Profil.P1
-git branch -a --list "*${TICKET}*"
-git log --oneline develop --grep="$TICKET"
-git log --name-only --pretty=format: develop --grep="$TICKET" | sort -u | grep -v "^$"
-```
-
-**Wichtig:** Datenquelle immer im Ergebnis dokumentieren (Plan / Diff / gemergter Code).
-
----
-
-## Schritt 0: Historische Ticket-Verfolgung (PFLICHT, vor allem anderen)
-
-**Warum:** Eine Datei trägt oft Spuren von ≥3 vergangenen Tickets — jedes hat eine Anforderung oder einen
-Trade-off zementiert. Ohne diese Historie überschreibt man leicht bewusste Entscheidungen (z.B. eine
-Heuristik, die für einen konkreten User-Pain eingeführt wurde). Realer Vorfall: ein Fix wollte initial
-`allOnOnePage = false` setzen und hätte damit eine frühere Heuristik („Signatur-Sektion für ≤ 2
-Betriebsstätten auf Seite 1 lassen") zerstört.
-
-Dieser Schritt ist **projekt-unabhängig** — er hängt nur an git. Nur das Ticket-Pattern kommt aus `Profil.P1`.
-
-**Befehle (pro zu ändernder Datei):**
-
-```bash
-# 1. Direkter Commit-Log der Datei (folgt Renames)
-git log --all --oneline --follow <PATH/TO/FILE> | head -15
-
-# 2. Nur Ticket-Commits, die die Datei berühren (Pattern aus Profil.P1)
-git log --all --oneline --follow <PATH/TO/FILE> | grep -iE "<TICKET-PREFIX>-[0-9]+" | head -15
-
-# 3. Bei Layout-/Template-/CSS-Dateien zusätzlich nach Begriffsfeld grep'en (manche Tickets berühren
-#    das Layout indirekt über andere Files):
-git log --all --oneline --grep="<feature-keyword>" | head -10
-```
-
-**Dokumentation** — im Ergebnis eine Tabelle der relevanten Treffer:
-
-```markdown
-| Datum       | Commit | Ticket      | Wesentliche Aussage / Designintention                     |
-|-------------|--------|-------------|-----------------------------------------------------------|
-| YYYY-MM-DD  | abc123 | <PREFIX>-XX | Commit-Subject + 1–2 Sätze, WARUM die Regel eingeführt wurde |
-```
-
-Pro Treffer NICHT nur das Commit-Subject zitieren, sondern den Diff kurz ansehen (`git show <sha> -- <file>`)
-und die **Designintention** in eigenen Worten festhalten. Tickets mit `Revert`/`Refactor` im Subject sind
-meist ignorierbar; relevant sind Tickets, die **fachliche Regeln, Heuristiken oder explizite Trade-offs**
-zementiert haben.
-
-**Erkenntnis im Plan berücksichtigen:** Kollidiert ein altes Ticket mit dem geplanten Fix → **Plan anpassen**,
-bevor implementiert wird: entweder die alte Heuristik respektieren (Fix nur im komplementären Pfad) oder
-explizit dokumentieren, warum die alte Entscheidung überholt ist (mit User-Bestätigung).
-
----
-
-## Schritt 1: Geänderte Dateien kategorisieren
-
-Ordne jede geplante/geänderte Datei einer Architektur-Schicht zu und markiere die **CQRS-Seite**
-(Write / Read / Both / Infrastructure). Die Pfad-Muster variieren je Projekt (`Profil.P5/P6/P7`).
-
-| Schicht | CQRS-Seite | Typisches Pfad-Muster | Profil-Hinweis |
-|---------|------------|-----------------------|----------------|
-| **Entity** | Write / Domain | `src/Entity/` | — |
-| **Enum** | Write / Read / Both | `src/Model/Enum/` bzw. `find src -path '*Enum*'` | `Profil.P9` |
-| **Domain Service** | Write / Domain | `src/Service/` | — |
-| **Command** | Write | `src/Message/…*Command` | `Profil.P6` |
-| **CommandHandler** | Write | `src/MessageHandler/…` | — |
-| **Query** | Read | `src/Message/…*Query` | `Profil.P6` |
-| **QueryHandler** | Read | `src/MessageHandler/…` | — |
-| **Controller** | API Boundary | `src/Controller/` | Autorisierung via `Profil.P7` |
-| **Repository** | Write / Read | `src/Repository/` | — |
-| **Read-Modell / Projection** | Read | `Profil.P5` — Projection ODER `Model/…List` + ModelMapping | `Profil.P5` |
-| **Domain Event / Message** | Write → Read / Async | `src/Event/` bzw. `src/Message/Event/` | — |
-| **Doctrine-Listener / Lifecycle** | Write → Read / Side Effect (auto bei `flush()`) | `src/EventSubscriber/`; `#[ORM\HasLifecycleCallbacks]` in Entity | `Profil.P10` — s. Schritt 2e |
-| **Async-Handler** | Async / Infrastructure | `src/MessageHandler/…` | `Profil.P8` |
-| **Autorisierung / Voter** | Write / Read | `Profil.P7` — `src/Voter/` ODER `Service/Security/…` + coala | `Profil.P7` |
-| **Frontend API-Layer** | API Contract | `assets/api/` — TS-Client ODER JS-Api-Modul | `Profil.P2` |
-| **Frontend State / Hooks** | Frontend | `assets/store/`, `assets/hooks/` | `Profil.P3` |
-| **Frontend UI** | Frontend | `assets/components/`, `assets/pages/` | `Profil.P2/P4` |
-| **Config** | Infrastructure | `config/`, `translations/`, `.env*` | `fe_views.yaml`/`fe_actions.yaml` bei `Profil.P4` |
-| **Migration** | Persistence | `migrations/` | — |
-| **Export / Report** | Read / Integration | `src/Model/ExportRawData/`, `src/Service/Export/` | — |
-| **Tests** | Test | `tests/`, `assets/**/*.test.*` | — |
-
-Pro Datei dokumentieren:
-
-```markdown
-| Schicht | CQRS-Seite | Datei | Einschätzung |
-|---------|------------|-------|--------------|
-| CommandHandler | Write | `src/MessageHandler/.../SubmitTargetAgreementHandler.php` | Statuswechsel + Event betroffen |
-| QueryHandler | Read | `src/MessageHandler/.../ShowTargetAgreementHandler.php` | API-Antwort für Detailansicht betroffen |
-| Frontend | Frontend | `assets/pages/.../TargetAgreementDetail.jsx` | Anzeige/Refetch nach Mutation betroffen |
-```
-
-**Pflichtfragen in Schritt 1:** Betrifft die Änderung Write? Read? Gibt es eine Verbindung über
-Events/Messenger/Refetch? Ist ein API-Contract betroffen? Security/Berechtigung? Async? Bestehende Daten
-oder Migrationen?
-
----
-
-## Schritt 2: Aufwärts-Verfolgung (Bottom-Up Tracing)
-
-Für jede geänderte Datei, die **KEIN** Controller und **KEIN** Frontend ist, den Aufrufpfad aufwärts bis zum
-Controller und ggf. bis zur Frontend-Komponente verfolgen. Write Flow und Read Flow getrennt betrachten.
-
-### 2a) Allgemeines Tracing
+Der aufrufende Workflow liefert konzeptionell:
 
 ```text
-Entity/Service/Enum/Repository (geändert)
-  ↑ verwendet von: Handler(s)
-    ↑ verarbeitet: Command/Query
-      ↑ dispatched von: Controller(s) → API-Route
-        ↑ aufgerufen von: Frontend-Komponente(n) → UI-Bereich
+mode: start-task | review-task | review-merge | impact-analysis
+primary_change_source: Lösungsplan | Branch-Diff | MR-Diff | gemergte Commits
+repository_snapshot: Worktree/Branch + Vergleichsbasis
+functional_context: Task-Beschreibung / Analyse / ACs / bekannte Constraints (optional, aber hilfreich)
+output_target: Task-File oder Review-Report
 ```
 
-**WICHTIG:** ALLE Pfade verfolgen — eine Entity, ein Enum oder ein Service wird oft von vielen Handlern
-verwendet. `rg` bevorzugen, `grep` als Fallback.
+## Regeln
+
+1. **Die primäre Änderungsquelle bestimmt, WAS analysiert wird.**
+2. Der fachliche Kontext hilft bei der Einordnung, ersetzt aber nie Code/Diff/Config als Nachweis des aktuellen Verhaltens.
+3. Diese Methodik erfindet keine Acceptance Criteria und führt keine zweite vollständige Task-Analyse durch.
+4. Wenn `impact-analysis` standalone läuft, bestimmt sie Quelle und Status selbst.
+5. Datenquelle, Base/Head und Analysemodus werden im Report dokumentiert.
+
+---
+
+# 2. Datenquelle je Modus
+
+| Kontext | Primäre Quelle | Zweck |
+|---|---|---|
+| `start-task` | **Lösungsplan** | Plan auf Vollständigkeit, Nebeneffekte und Risiken prüfen |
+| `review-task` | **git diff** gegen Zielbranch | tatsächliche Implementierung + Testimpact prüfen |
+| `review-merge` | **MR-Diff** | Review-Findings, fehlende Gegenstellen und QA-Risiken finden |
+| `impact-analysis` offen | Lösungsplan | geplanten Impact bestimmen |
+| `impact-analysis` in Arbeit | Branch-Diff | tatsächlichen Zwischenstand analysieren |
+| `impact-analysis` abgeschlossen | gemergte Commits | finalen Impact nachvollziehen |
+
+
+## Repository-Snapshot
+
+Die Methodik verwendet ausschließlich `repository_path`, `base`, `head` und `source_fingerprint` aus dem
+normalisierten Skill-Kontext. Sie verändert oder errät diese Werte nicht.
+
+
+# 3. Portabilität und Projekt-Profil
+
+Die Methodik ist projektübergreifend gleich. Projektspezifisch sind nur wenige Architekturachsen.
+
+**Grundregel:** Reale Registrierung/Config/Code sind maßgeblich; Dokumentation dient als Kontext und kann driften.
+
+Falls ein gepflegtes Profil existiert (`docs/claude/impact-analysis.profile.md` oder definierter Block in `CLAUDE.md`),
+als deklarativen Projekt-Hinweis verwenden und gegen den Code plausibilisieren.
+
+## Projekt-Profil bestimmen
+
+| # | Achse | Primäre Ermittlung |
+|---|---|---|
+| P1 | Ticket-Pattern | zuerst `.claude/project.json.prefix`, sonst `git log --oneline -20` |
+| P2 | FE-Sprache | `find assets \( -name '*.tsx' -o -name '*.jsx' \) ...` |
+| P3 | FE-Refetch nach Mutation | React Query/RTK/imperatives `.reload()` suchen |
+| P4 | FE-Permission-Gating | `fe_actions.yaml` / `fe_views.yaml` + Constraint-Komponenten |
+| P5 | Read-Modell | Projection/ReadModel oder QueryHandler + Repo + ModelMapping/ViewModel |
+| P6 | Message-Ablage | getrennte Command/Query-Struktur oder feature-basiert |
+| P7 | Autorisierung | Permission-Config + `#[IsGranted]` + zusätzliche handgeschriebene Voter |
+| P8 | Async/Messenger | `config/packages/messenger.yaml` inkl. routing/transports/retry/middleware |
+| P9 | Hochrisiko-Enums | Domain-Type/Status/Strategy/Purpose-Enums |
+| P10 | Lifecycle/Recalc | Doctrine Listener/Subscribers/Entity Lifecycle Callbacks |
+
+### Beispiel-Detektion
 
 ```bash
-rg "TargetAgreement"
-rg "getBazgAmount"
-rg "SubmitTargetAgreementCommand"
+# FE-Sprache
+find assets \( -name '*.tsx' -o -name '*.jsx' \) | sed 's/.*\.//' | sort | uniq -c
+
+# Refetch
+rg 'invalidateQueries|invalidatesTags|\.reload\(' assets/
+
+# Read-Modell
+ls -d src/Projection src/ReadModel src/Model/Read 2>/dev/null
+rg 'ModelMapper|IndexRequest' src/
+
+# Autorisierung
+rg -l 'VoterInterface|extends Voter' src/
+rg 'IsGranted' src/Controller
+
+# Lifecycle
+rg -l 'AsDoctrineListener|AsEntityListener|HasLifecycleCallbacks|getSubscribedEvents|getDependencyList' src/
 ```
 
-### 2b) Write Flow verfolgen
+## Config und Runtime-Introspection vor blindem Grep
 
-Wenn die Änderung Zustand verändert, einen Command auslöst oder Domain-Logik betrifft:
+Wenn Symfony selbst die registrierte Topologie zeigen kann, nutzen:
+
+```bash
+bin/console debug:router
+bin/console debug:messenger
+bin/console debug:container --tag=messenger.message_handler
+```
+
+Prinzip:
 
 ```text
-React-Aktion / Formular
-→ API-Request → Symfony-Controller → Command → CommandHandler
-→ Domain / Entity / Service → Repository / Transaction
-→ Domain Event / Async-Message (Profil.P8) → Side Effect (Mail/Export/…)
+resolved runtime / deklarative Config
+        ↓
+registrierter Code
+        ↓
+Repository-Grep als Discovery / Gegenprobe
 ```
 
-**Prüfen:** Welche User-Aktion? Welcher Controller dispatched? Welche Request-Daten, Validierung,
-Berechtigungen (`Profil.P7`)? Welche Domain-Regeln, Statusübergänge? Welche Events/Messages? Welche Side
-Effects (Mail, Export, externe API, Audit-Log)? Synchron oder async (`Profil.P8`)? Eventual Consistency,
-die QA beachten muss?
+Ein Grep findet Vorkommen; er beweist nicht automatisch, dass etwas registriert oder erreichbar ist.
 
-```bash
-rg "CommandName|CommandName::class|new CommandName" src/
-rg "dispatch\(|MessageBusInterface|HandleTrait|__invoke" src/
-rg "AsMessageHandler" src/                 # Async-Handler (Profil.P8)
-```
+---
 
-### 2c) Read Flow verfolgen
+# Schritt 0 — Analyse-Snapshot festhalten
 
-Wenn die Änderung Daten liest, API-Ausgaben oder Frontend-Anzeige betrifft:
-
-```text
-React-View / Hook
-→ API-Request → Symfony-Controller → Query → QueryHandler
-→ Read-Modell (Profil.P5: Projection ODER Repository + ModelMapping)
-→ DTO / Serializer / ViewModel → React-Rendering
-```
-
-**Prüfen:** Welche UI liest die Daten? Welche Query/QueryHandler? Welche Repository-Methode / welches
-Read-Modell (`Profil.P5`)? Ändert sich das Response-DTO/ViewModel? Serializer-Groups / ModelMapping-Felder?
-Neue/entfernte/optionale Felder? Filter, Sortierung, Pagination (bei List-Endpoints via IndexRequest)? Sind
-Listen-, Detail- und Dashboard-Ansichten betroffen? FE-Typen/Api-Client betroffen (`Profil.P2`)?
-
-```bash
-rg "QueryName|QueryName::class|new QueryName" src/
-rg "serialize|Serializer|Normalizer|Groups|ModelMapper|fromArray" src/
-rg "IndexRequest|RecordsResponse|RecordResponse" src/     # List/Show bei ModelMapping-Projekten
-rg "/api/|callApi|createAsyncThunk" assets/                # FE-Aufruf (Profil.P2/P3)
-```
-
-### 2d) Ergebnis dokumentieren (*Beispiel*)
+Bevor inhaltliche Findings entstehen:
 
 ```markdown
-### Impact-Pfad: Bericht erstellen (Namen exemplarisch)
-
-#### Write Flow
-`ReportListCard.jsx`
-→ `POST /parent-entity/{id}/report/{year}`
-→ `CreateReportController`  (#[IsGranted('REPORT_CREATE')])
-→ `CreateReportCommand`
-→ `CreateReportHandler`
-→ `ReportDataManager` + `ReportStatusLogWriter`
-
-Risiko: hoch — Statuswechsel, Kopie abhängiger Datensätze, Listen-/Detailansicht muss aktualisiert werden.
-
-#### Read Flow
-`ReportList.jsx`
-→ `GET /report`  (#[IsGranted('REPORT_MYLIST')])
-→ `ListReportsQuery` → `ListReportsHandler` (IndexRequest, RecordsResponse)
-→ Repo + ModelMapping → `ReportList::fromArray()`
-
-Risiko: mittel — Restrict-Services filtern nach Mandant/Rolle; neue Felder müssen im ViewModel gemappt sein.
+**Modus:** ...
+**Primäre Quelle:** ...
+**Base:** <SHA/Branch oder n/a bei Plan>
+**Head:** <SHA/Branch oder n/a bei Plan>
+**Repository-Kontext:** <Worktree/Pfad>
+**Source-Fingerprint:** <stabiler Fingerprint des Plans/Diffs/Commit-Sets>
+**Projekt-Profil:** <P2/P5/P7/P8/P10 Kurzform>
 ```
 
-### 2e) Automatische Seiteneffekte: Doctrine-Lifecycle-Listener
-
-**Warum ein eigener Schritt:** Doctrine-Listener feuern **out-of-band bei `flush()`** — sie stehen in
-KEINER expliziten Aufrufkette (kein `->recalculate()` im Controller/Handler). Die Aufwärts-Verfolgung
-(2a–2d) findet sie **strukturell nicht**. Sie sind aber der häufigste Weg, wie ein Write eine abgeleitete
-Read-Größe verändert (Recalc von Emissionsfaktoren, Zielpfad-Werten, Massnahmen-Effekten …) — und damit oft
-die Ursache von „Feld zeigt 0 / falscher Wert"-Bugs (Schritt 3c).
-
-**Mechanismen (`Profil.P10`):**
-
-- `#[AsDoctrineListener(Events::onFlush|postFlush|prePersist|…)]` — feuert auf Entity-Lifecycle-Events
-- `#[AsEntityListener(...)]` — an eine bestimmte Entity gebunden
-- Doctrine-`EventSubscriber` (`implements EventSubscriber` + `getSubscribedEvents()`)
-- `#[ORM\HasLifecycleCallbacks]` + `#[ORM\PrePersist|PostUpdate|…]` direkt in der Entity
-
-**Reverse-Trace — pro geänderter Entity/Property fragen: „welcher Listener feuert, wenn ich das schreibe?"**
-
-```bash
-# Projekte mit deklarativem Dependency-Index (Profil.P10 = getDependencyList): der Entity-/Property-Name
-# im Listener-Verzeichnis IST der Reverse-Index:
-grep -rln "MonitoringStock\|resultingEmissionFactor" src/EventSubscriber/
-
-# Sonst: alle Lifecycle-Listener + Events auflisten und die onFlush-Bodies lesen, welche Entity-Typen sie
-# aus dem UnitOfWork-Changeset ziehen:
-grep -rn "AsDoctrineListener\|getSubscribedEvents\|HasLifecycleCallbacks" src/
-```
-
-**Prüfen:** Feuert ein Recalc-/Side-Effect-Listener für die geänderte Entity? Deckt seine Dependency-Liste
-(bzw. `onFlush`-Logik) das **neue** Feld ab — sonst wird nicht neu gerechnet → stale/0? Timing `onFlush`
-(noch in der Transaktion, darf Entities ändern) vs. `postFlush` (nach Commit)? **Rekursion/Performance:**
-schreibt der Listener selbst Entities, die wieder Listener triggern? Läuft er bei jedem `flush()`
-(Massen-Import → N×)? Diese Seiteneffekte gehören in den Write→Read-Übergang (Schritt 3d) und in die
-Test-Bereiche (Schritt 4H).
+Damit bleibt die Analyse reproduzierbar und ein später veränderter Branch verfälscht nicht stillschweigend den Kontext.
 
 ---
 
-## Schritt 3: Business-Logik-Verzweigungen erkennen
+# Schritt 1 — Semantic Change Set erstellen
 
-**Der kritischste Teil.** Verzweigungen — durch Enums, Boolean-Flags, Jahres-Vergleiche, Status, Rollen oder
-andere Properties — führen bei unvollständiger Umsetzung zu Fehlern. Es geht **NICHT nur um Enums**.
+Die zentrale Analyse-Einheit ist **nicht die Datei**, sondern die beabsichtigte/tatsächliche Verhaltensänderung.
 
-### 3a) Verzweigungs-Stellen im betroffenen Code finden
+## 1a) Änderungen extrahieren
 
-**Enum-basiert:** `match(`, `switch(`, `->isUzv()`/`->isMnm()`-artige Typ-Prüfungen, `->getType()`/
-`->getStatus()`, direkte Enum-Vergleiche (`=== …`), `instanceof`.
+### Plan-Modus
 
-**Property-basiert (genauso kritisch):** Jahres-Vergleiche (`getStartYear()`, `getEffectYear()`,
-`getEndYear()`), `isVirtual()`, `isCorrectionProcess()`, `isManagedByCanton()`, `skipCompanyRelease()`,
-`bazgRelevant`, Null-Checks (`getKinkYear()`), Erstversion-Flags (`isFirstInitialized…()`,
-`isFirstYearOfNew…()`), Berechnungs-Flags (`forceRemovalOverAllYears`).
+Aus dem Lösungsplan konkrete Ziel-Symbole und Verhaltensänderungen ableiten:
 
-**Schwellenwert-basiert:** Jahres-Schwellen (`getStartYear() >= 2025`), Deadline-Datumsvergleiche, numerische
-Grenzwerte exakt auf der Schwelle.
+- Klasse/Methode/Property,
+- API-Route/DTO,
+- Config-Regel,
+- DB-Schema/Daten,
+- Frontend-Komponente/State,
+- Event/Message/Listener.
 
-**Status-/Workflow:** Statuswechsel erlaubt/verboten, eingereicht vs. in Bearbeitung, Erst- vs. Folgeversion,
-Korrektur- vs. Normalprozess, editierbar vs. in Kraft, parallele/wiederholte Aktionen.
+Wenn ein Plan nur „Datei X anpassen“ sagt, anhand des aktuellen Codes bestimmen, welches Symbol/Verhalten gemeint ist.
 
-**Security/Rollen (`Profil.P7`):** BFE-, Kantons-, Unternehmens-Benutzer, Admin/Superuser, Mandanten-/
-Datenbesitz, Read- vs. Write-Zugriff.
+### Diff-Modus
 
-**Frontend:** Conditional Rendering nach Status/Rolle/Typ, Button sichtbar/versteckt (`Profil.P4`),
-enabled/disabled, Badge/Label/Übersetzung, Pflicht/optional, Fehleranzeige nach Backend-Response.
-
-### 3b) Enums & Properties im betroffenen Code identifizieren
+Zusätzlich:
 
 ```bash
-# Enums (Namen aus Profil.P9 einsetzen):
-rg "TargetAgreementType|TargetAgreementStatus|MonitoringStatus|Purpose|<weitere aus Profil.P9>" <BETROFFENE_DATEIEN>
-
-# Property-Bedingungen:
-rg "isVirtual|isCorrectionProcess|isManagedByCanton|skipCompanyRelease|bazgRelevant|getEffectYear|getStartYear|getEndYear|getKinkYear|isFirstInitialized|isFirstYearOfNew|forceRemoval" <BETROFFENE_DATEIEN>
+git diff --name-status <BASE>..<HEAD>
+git diff --stat <BASE>..<HEAD>
+git diff <BASE>..<HEAD>
 ```
 
-### 3c) Datenfluss-Verfolgung bei „Feld nicht befüllt / zeigt 0"-Bugs
+Auch **gelöschte, umbenannte und verschobene** Symbole erfassen.
 
-**Warum:** Bei Bugs der Form „Wert X wird nicht gesetzt / zeigt 0 (nur bei Typ Y)" sitzt die
-typdiskriminierende Logik — *welcher* Enum-/Typ den Wert überhaupt nutzt — oft **nicht** im Write-Pfad, den
-man ändert, sondern downstream in der **Lese-/Berechnungsschicht** oder einer **privaten Seiteneffekt-
-Methode**. Reine Aufwärts-Verfolgung (Schritt 2) + write-seitige Analyse übersieht das. Realer Vorfall:
-ein Import ließ bei einem Vereinbarungs-Typ den per-Energieträger-Ist-Wert leer. Die erste Analyse anchorte
-auf dem Import-Guard und behauptete fälschlich, ein anderer Typ verliere die Werte auch, weil (a) nur nach
-dem **Setter-Methodennamen** ge-grep't wurde → die direkte Property-Zuweisung in einer
-`updateCalculatedValues()`-artigen Methode wurde übersehen; (b) der konsumierende Calculator als Black Box
-behandelt wurde — dort lag das kanonische Prädikat (`shouldCalculate…WithEffectiveMonths()`); (c) ein
-**widersprechender Test** als „toter Code" wegrationalisiert statt aufgelöst wurde.
+## 1b) Semantic-Change-Typen
 
-**Vorgehen (für das betroffene Feld/Property):**
+Typische Änderungen:
 
-```bash
-# Nach dem PROPERTY-Namen grep'en, nicht nur nach Setter-Methoden → findet auch direkte Zuweisungen
-# ($this->feld = …) in Konstruktoren, Calculatoren, Subscribern:
-grep -rn "<propertyName>" src/ --include="*.php"
+- Condition/Guard geändert,
+- Default/Nullability geändert,
+- Enum Case ergänzt/entfernt,
+- Validation geändert,
+- Mapping/Serializer geändert,
+- API Request/Response geändert,
+- Query Predicate/Filter/Sortierung geändert,
+- Statusübergang geändert,
+- Permission geändert,
+- Event/Message hinzugefügt/entfernt,
+- Transaktions-/Async-Grenze geändert,
+- persistiertes Feld/Constraint/Index geändert,
+- Recalc-/Derived-Value-Logik geändert,
+- UI-Gating/State/Refetch geändert.
+
+## 1c) Architektur-Schicht und CQRS-Seite markieren
+
+| Schicht | CQRS-Seite |
+|---|---|
+| Entity / Domain Service | Write/Domain |
+| Enum / Domain Predicate | Both |
+| Command / Handler | Write |
+| Query / Handler | Read |
+| Controller | API Boundary |
+| Repository | Write/Read |
+| Projection / ViewModel / ModelMapping | Read |
+| Event / Message / Listener | Write→Read / Side Effect |
+| Async Handler | Async |
+| Permission/Voter | Security |
+| FE API/State | API Contract / Frontend |
+| FE UI | Frontend |
+| Config | Infrastructure |
+| Migration | Persistence |
+| Export/Import | Integration |
+| Test | Verification |
+
+## 1d) Ergebnis
+
+```markdown
+### Semantic Change Set
+
+| ID | Symbol/Contract | Semantic Change | Schicht | CQRS | Quelle |
+|---|---|---|---|---|---|
+| C1 | `FooHandler::__invoke()` | Guard für Typ X erweitert | Handler | Write | Plan/Diff |
+| C2 | `GET /foo` Response | Feld `bar` neu optional | API/DTO | Read | Plan/Diff |
+| C3 | `Foo::$bar` | neuer Writer/Recalc | Entity | Both | Plan/Diff |
 ```
 
-- **Alle Writer** klassifizieren (Import? Copy? Versionierung? UI/Command? Calculator/Subscriber/
-  Konstruktor?) **UND alle Reader** — nicht beim ersten gefundenen Setter aufhören.
-- Die konsumierende **Calc-/Show-Schicht zu Ende lesen** (nicht als Black Box annehmen, Read-Fenster nicht
-  zu früh schließen). Dort steht meist das domänen-kanonische Prädikat, das entscheidet, welcher Typ das Feld
-  nutzt.
-- **Vor** dem Zusammenbauen eines Guards aus Primitiven (`!isMnm()`, `=== EFM`) prüfen, ob der Code das
-  Konzept **schon benennt** (`grep -niE "function [a-z]*<konzept>"`) — und dieses Prädikat verwenden
-  (Symmetrie zwischen Schreib- und Leseseite).
-- Jeden **Widerspruch auflösen** (z.B. ein Test, der das Gegenteil deiner Annahme behauptet) — nie als
-  „defensiv/tot" abtun. Der Widerspruch ist meist der Faden zur Wahrheit.
-- Ein **Doctrine-Lifecycle-Listener** (Schritt 2e) ist oft der *wahre* Writer — oder der Grund, warum NICHT
-  geschrieben wird (das neue Feld fehlt in seiner `getDependencyList()`/`onFlush`). Diesen gegen das
-  betroffene Feld prüfen, bevor ein Guard im Command/Handler gebaut wird.
-
-**Optional bei Kritisch-Bugs:** Findings adversarial verifizieren (mehrere unabhängige Beweis-Agents, jeder
-soll die These widerlegen, + ein Reconcile-Schritt für Widersprüche) — **als Teil** der Analyse, nicht erst
-reaktiv nach User-Skepsis.
-
-### 3d) CQRS-spezifische Verzweigungen
-
-**Write-Seite:** Wird ein Command je nach Status/Rolle/Typ anders behandelt? Domain-Regeln nur für bestimmte
-Typen? Event nur in bestimmten Fällen? Ist der Handler idempotent (falls nötig)? Parallel-Konflikte?
-
-**Read-Seite:** Filtert die Query nach Rolle/Mandant/Status (Restrict-Services)? Sind alle Status/Typen im
-DTO/ViewModel abgebildet? Wird ein neues Feld gelesen/gemappt? Können alte Datensätze das Feld noch nicht
-haben? Unterschiedliche Darstellung in Liste/Detail/Dashboard/Export?
-
-**Write → Read Übergang:** Wird nach Write die Read-Seite aktualisiert? Synchron oder async (`Profil.P8`)?
-Muss QA refreshen/warten? Stale Data im Frontend? Wird korrekt neu geladen/invalidiert (`Profil.P3`)?
-
-### 3e) Vollständigkeits-Check
-
-**Bei Enums:** Werden **alle** Cases abgedeckt (`Profil.P9`, z.B. UZV **und** KZV/EVA/EBO)? Gibt es einen
-korrekten `default` — oder nur einen Platzhalter? `match` ohne `default`, das bei neuem Case bricht? Gibt es
-eine Referenz-Implementierung derselben Verzweigung woanders?
-
-```bash
-rg "match.*TargetAgreementType|switch.*TargetAgreementType" src/
-rg "TargetAgreementType::UZV|TargetAgreementType::KZV" src/ assets/
-```
-
-**Bei Property-Verzweigungen:** Was passiert im *anderen* Zweig (`isVirtual()` true UND false)? Welche
-Jahreswerte erzeugen anderes Verhalten — mit verschiedenen Jahren getestet? Null-Fall behandelt? Beide
-Boolean-Pfade implementiert und getestet? Grenzfälle exakt auf der Schwelle?
-
-**Bei Security (`Profil.P7`):** Backend geschützt oder nur der FE-Button versteckt? Kennt der Voter alle
-neuen Status/Typen? Read-Zugriff ebenso geprüft wie Write? BFE/Kanton/Unternehmen getrennt getestet?
-Mandanten-/Datenbesitz auf Query-Seite korrekt?
-
-**Bei React:** Label/Übersetzung für jeden Enum-Wert? Buttons korrekt aktiviert/deaktiviert (`Profil.P4`)?
-Fehlerzustände sichtbar? Optionale Felder defensiv gerendert? Listen-/Detailansicht nach Mutation aktualisiert
-(`Profil.P3`)?
-
-### 3f) Bekannte Risiko-Verzweigungen
-
-Die **Enum-Namen/Cases** stammen aus `Profil.P9`; die Risiko-Einstufung nach Enum-**Rolle** ist
-projekt-unabhängig:
-
-| Enum-Rolle | Risiko | Test-Relevanz |
-|------------|--------|---------------|
-| Typ-Enum (`TargetAgreementType`) | Sehr hoch | Jeden Typ separat testen — verschiedene Berechnungs-/Workflow-Pfade |
-| Status-Enum (`TargetAgreementStatus`, `MonitoringStatus`) | Hoch | Workflow-Übergänge + status-abhängige Berechtigungen |
-| Modell-/Strategie-Enum | Hoch | Unterschiedliche Berechnungslogik |
-| Zweck-Enum (`Purpose`: CO2/EHS/…) | Mittel | Zweck-spezifische Logik (z.B. BAZG, CO2) |
-| Kategorisierungs-Enum (`MeasureType`, `BonusType`) | Mittel | Kategorie-abhängige Verzweigung |
-| Regional-Enum (`Canton`) | Niedrig | Kanton-spezifische Sonderfälle |
-
-| Property/Methode | Risiko | Test-Relevanz |
-|------------------|--------|---------------|
-| `effectYear` / `startYear` | Sehr hoch | Verschiedene Jahre, Grenzwerte |
-| `isVirtual()` | Hoch | Virtuelle BS haben keine Locations — andere Code-Pfade |
-| `isCorrectionProcess()` | Hoch | Andere Mails, anderer Workflow |
-| `isManagedByCanton()` | Hoch | Kanton- vs. BFE-Workflow |
-| `bazgRelevant` | Mittel | Steuert BAZG-Datenvalidierung |
-| `getKinkYear()` (null/set) | Mittel | Knickjahr-Berechnung komplett anders |
-| `isFirstInitialized…()` | Mittel | Erstversion hat andere Regeln |
-| `skipCompanyRelease()` | Mittel | Überspringt Prozess-Schritt |
-| Jahres-Schwelle (`>= 2025`) | Mittel | Grenzfall genau auf der Schwelle |
-
-| CQRS-Bereich | Risiko | Test-Relevanz |
-|--------------|--------|---------------|
-| Command erzeugt Event | Hoch | Read-Seite / Side Effect muss folgen |
-| Async-Message (`Profil.P8`) | Hoch | QA sieht Änderung evtl. nicht sofort |
-| Query-DTO/ViewModel geändert | Hoch | React-Contract kann brechen |
-| Refetch/Invalidierung fehlt (`Profil.P3`) | Mittel/Hoch | UI zeigt stale data |
-| Voter nur auf Write-Seite (`Profil.P7`) | Hoch | Read-Seite kann Daten leaken |
-| FE-Enum-Mapping fehlt | Mittel | UI zeigt falsches/undefiniertes Label |
+**Completion Rule:** Jeder relevante Plan-/Diff-Bestandteil muss mindestens einem `C#` zugeordnet sein.
 
 ---
 
-## Schritt 4: Betroffene Test-Bereiche zusammenstellen
+# Schritt 2 — Historische und fachliche Designintention gezielt prüfen
 
-Testbereiche aus den Impact-Pfaden und Verzweigungen ableiten.
+Historie wird **nach** dem Semantic Change Set betrachtet, damit nicht pauschal jede Datei gleich tief untersucht wird.
 
-**A) Betroffene API-Endpunkte** — pro Controller: HTTP-Methode, Route, Zweck, Request-DTO, Response-DTO,
-Status-Codes, Security (`Profil.P7`), Command/Query, betroffene React-Consumer.
+## 2a) Wann Historie Pflicht ist
 
-**B) Betroffene Frontend-Bereiche** — welche Seite/Komponente nutzt den Endpunkt? Welche UI-Interaktion löst
-die Logik aus? Welche Hooks/Api-Module (`Profil.P2`), Refetch/Invalidierung (`Profil.P3`)? Welche Forms,
-Buttons (`Profil.P4`), Tabellen, Filter, Badges? Loading-/Error-/Empty-State?
+Mindestens für Änderungen an:
 
-**C) API-Contract-Check** — pro Endpoint:
+- Business-Regeln/Conditions,
+- Berechnungslogik,
+- Status-/Workflow-Regeln,
+- Permissions/Tenant-Filtering,
+- Layout-/Report-Heuristiken,
+- API-Verträgen mit bestehender Nutzung,
+- bewusst ungewöhnlichem/kompliziertem Code,
+- Stellen mit widersprüchlichen Tests oder Kommentaren.
+
+Bei rein mechanischen Test-/Rename-/Formatänderungen ist tiefe Historie nicht automatisch sinnvoll.
+
+## 2b) Von Datei-Historie zu Symbol-Historie
+
+```bash
+# Datei-Kontext / Renames
+git log --all --oneline --follow -- <FILE>
+
+# Wer/warum für konkrete Zeilen
+git blame -L <START>,<END> <FILE>
+
+# Funktionshistorie, wenn vom Git-xfuncname unterstützt
+git log -L :<methodName>:<FILE>
+
+# Wann wurde ein konkretes Literal/Prädikat eingeführt/entfernt?
+git log --all -S '<literal-or-symbol>' -- <FILE>
+
+# Regex-basierte semantische Suche über Diffs
+git log --all -G '<regex>' -- <FILE>
+```
+
+Danach relevante Commits öffnen:
+
+```bash
+git show <SHA> -- <FILE>
+```
+
+## 2c) Historie korrekt interpretieren
+
+- Commit-Subject allein genügt nicht.
+- `Revert`/`Refactor` nicht automatisch ignorieren; prüfen, ob sie Verhalten verändern.
+- Historie ist **Evidenz für frühere Designintention**, nicht automatisch aktuelle Wahrheit.
+- Kollidiert alte Intention mit aktueller fachlicher Anforderung, Konflikt explizit dokumentieren.
+
+## 2d) Ergebnis
+
+```markdown
+| Change | Datum | Commit/Ticket | Historische Designintention | Relevanz heute |
+|---|---|---|---|---|
+| C1 | ... | ... | ... | respektieren / überholt / unknown |
+```
+
+---
+
+# Schritt 3 — Bidirektionale Impact-Verfolgung
+
+Für jedes `C#` werden **Fan-in** und **Fan-out** verfolgt.
+
+```text
+                FAN-IN / CALLERS
+                       ↑
+UI → Controller → Handler → Service → Entity/Rule
+                       ↓
+                FAN-OUT / CALLEES
+                       ↓
+ DB / Event / Queue / Listener / Export / Cache / external API
+```
+
+Nur Bottom-Up-Tracing reicht nicht: eine Änderung kann mehrere Entry-Points **und** mehrere Side Effects besitzen.
+
+---
+
+## 3a) Fan-in — Wer nutzt das geänderte Verhalten?
+
+Für geänderte Entity/Service/Enum/DTO/Mapper/Utility etc. alle relevanten Caller bestimmen:
+
+```bash
+rg '<ClassName>|<methodName>|<propertyName>' src/ assets/ tests/
+```
+
+Ziel:
+
+```text
+geändertes Symbol
+↑ Handler/Service
+↑ Command/Query
+↑ Controller/API
+↑ Frontend / Integration / CLI / Scheduler
+```
+
+Nicht beim ersten Caller stoppen.
+
+---
+
+## 3b) Fan-out — Was beeinflusst das geänderte Verhalten downstream?
+
+Vom geänderten Symbol nach unten verfolgen:
+
+- Repository/Persistenz,
+- Domain Events,
+- Messenger/Queues,
+- Mail/Notifications,
+- Exporte/Imports,
+- externe APIs,
+- Audit/Status-Logs,
+- Cache/Invalidation,
+- Recalc/Derived Values.
+
+Ein Side Effect zählt auch dann, wenn er nicht direkt im Controller sichtbar ist.
+
+---
+
+## 3c) Write Flow schließen
+
+Wenn Zustand verändert wird:
+
+```text
+React/Form/API Client
+→ HTTP Route
+→ Controller + Validation + Permission
+→ Command
+→ Handler
+→ Domain/Entity/Service
+→ Repository/Transaction
+→ Event/Message/Lifecycle
+→ Side Effect
+```
+
+Prüfen:
+
+- User-Aktion und Entry-Point,
+- Request-Daten und Validation,
+- Permission/Tenant-Kontext,
+- Domain-Regeln und Statusübergänge,
+- Transaction Boundary,
+- Events/Messages,
+- Side Effects,
+- Idempotenz, falls Wiederholung möglich.
+
+---
+
+## 3d) Read Flow schließen
+
+Wenn Daten gelesen oder dargestellt werden:
+
+```text
+React View/Hook
+→ API Client
+→ HTTP Route
+→ Controller
+→ Query
+→ Handler
+→ Repository/Read Model
+→ Mapping/DTO/Serializer
+→ React Rendering
+```
+
+Prüfen:
+
+- Listen-/Detail-/Dashboard-/Export-Consumer,
+- Filter/Sorting/Pagination,
+- Mandanten-/Rollenfilter,
+- DTO-/ViewModel-Felder,
+- Nullability/Defaults,
+- Enum-/Label-Mapping,
+- Frontend-Typen,
+- Loading/Error/Empty-State.
+
+---
+
+## 3e) Write→Read-Übergang schließen
+
+Explizit beantworten:
+
+- Wie wird ein Write sichtbar?
+- synchron oder eventual consistent?
+- Projection/Recalc/Event/Queue?
+- Refetch/Invalidierung im FE?
+- welche UI kann stale bleiben?
+- welche Warte-/Retry-Semantik muss QA kennen?
+
+---
+
+## 3f) Implizite / versteckte Kanten
+
+### Doctrine Lifecycle / Recalc
+
+Diese stehen oft nicht in einer normalen Call Chain.
+
+Suchen:
+
+```bash
+rg 'AsDoctrineListener|AsEntityListener|getSubscribedEvents|HasLifecycleCallbacks|getDependencyList' src/
+rg '<EntityName>|<propertyName>' src/EventSubscriber src/ 2>/dev/null
+```
+
+Prüfen:
+
+- feuert Listener für die geänderte Entity/Property?
+- ist das neue Feld in Dependency-Listen enthalten?
+- `onFlush` vs `postFlush` Timing,
+- Rekursion,
+- Massen-Import/N×-Recalc,
+- schreibt der Listener Felder, die wiederum Listener triggern?
+
+### Messenger / Async
+
+Primär `messenger.yaml` lesen:
+
+- Routing,
+- Transport/Queue,
+- Retry Strategy,
+- Middleware,
+- Failure Transport.
+
+Ein `AsMessageHandler`-Grep allein beweist nicht, dass eine Message async läuft.
+
+### Weitere implizite Kanten
+
+Je nach Projekt:
+
+- Cache tags/invalidation,
+- Scheduler/Cron,
+- Feature Flags,
+- Event Subscriber,
+- ORM callbacks,
+- Serializer groups,
+- Config-driven permissions/views.
+
+---
+
+## 3g) Impact-Pfade dokumentieren
+
+```markdown
+### Impact-Pfad P1 — <Name>
+
+**Changes:** C1, C3
+**Entry Points:** ...
+**Write:** `UI → Route → Controller → Command → Handler → Domain → DB`
+**Hidden/Async:** `Listener → Message → Handler`
+**Read:** `UI → Route → Query → ReadModel → DTO → Component`
+**External/Side Effects:** ...
+**Write→Read Visibility:** ...
+```
+
+Ein Pfad ist erst „geschlossen“, wenn keine relevante Kante nur mit „irgendwo danach“ beschrieben wird.
+
+---
+
+# Schritt 4 — Business-Verhalten modellieren
+
+## 4a) Verzweigungen finden
+
+Nicht nur Enums betrachten.
+
+### Enum-/Typ-basiert
+
+- `match`, `switch`, Enum-Vergleiche,
+- `isUzv()`-/`isMnm()`-artige Predicates,
+- Strategy/Type/Purpose/Status.
+
+### Property-/Flag-basiert
+
+- Boolean Flags,
+- `null` vs gesetzt,
+- `isVirtual()`, `isCorrectionProcess()` etc.,
+- Start-/End-/Effect-Year,
+- Erst-/Folgeversion,
+- Datenbesitz/Tenant.
+
+### Schwellenwerte
+
+- Jahres-/Datumsgrenzen,
+- numerische Grenzwerte,
+- exakt `==`, `<`, `>=` an der Schwelle.
+
+### Workflow / Security
+
+- Statusübergänge,
+- Rollen,
+- Backend Permission,
+- FE-Gating,
+- direkte API-Nutzung trotz verstecktem Button.
+
+---
+
+## 4b) Fachliche Invarianten identifizieren
+
+Eine Invariante ist stärker als ein einzelner Branch, z.B.:
+
+```text
+submitted entities sind immutable
+Tenant A darf Daten von Tenant B nie lesen
+sum(details) == total
+ein Status darf nur über erlaubte Übergänge wechseln
+erfolgreicher Write muss gemäß Konsistenzmodell lesbar werden
+```
+
+**Wichtig:** Invarianten nur aus Task/Code/Tests/Domain-Doku ableiten, nicht erfinden.
+
+Dokumentieren:
+
+```markdown
+| ID | Invariante | Quelle | Durch C# gefährdet? | Verifikation |
+|---|---|---|---|---|
+| INV-1 | ... | Test/Code/Task | ja/nein | ... |
+```
+
+---
+
+## 4c) Decision Tables bei kombinierten Bedingungen
+
+Wenn Verhalten von ≥2 unabhängigen Dimensionen abhängt, nicht nur jede Dimension einzeln auflisten.
+
+Beispiel:
+
+```markdown
+| Type | Virtual | Correction | Status | Erwartung |
+|---|---|---|---|---|
+| UZV | false | false | editing | ... |
+| UZV | true | false | editing | ... |
+| KZV | false | true | editing | ... |
+```
+
+Regeln:
+
+1. unmögliche Kombinationen eliminieren,
+2. kritische Kombinationen vollständig testen,
+3. für verbleibende große Matrizen mindestens sinnvolle pairwise-/repräsentative Abdeckung,
+4. Boundary-Werte separat behandeln.
+
+Keine kartesische Testexplosion ohne Risikobegründung.
+
+---
+
+## 4d) Data Lineage für relevante Felder
+
+Pflicht bei Bugs/Änderungen der Form:
+
+- „Feld wird nicht gesetzt“,
+- „zeigt 0/null/falschen Wert“,
+- „nur Typ X betroffen“,
+- neuer persistierter/abgeleiteter Wert,
+- Mapping-/Serializer-/Export-Änderung.
+
+Verfolge:
+
+```text
+Input
+→ Request/DTO
+→ Command/Writer
+→ Entity/DB
+→ Recalc/Listener/Calculator
+→ Query/Mapper/ViewModel
+→ API Response
+→ React
+→ Export/Integration
+```
+
+Nach dem **Property-Namen** suchen, nicht nur nach Setter:
+
+```bash
+rg '<propertyName>' src/ assets/
+```
+
+Alle Writer und Reader klassifizieren.
+
+### Kanonische Domain-Predicates wiederverwenden
+
+Bevor ein neuer Guard aus primitiven Checks gebaut wird, prüfen, ob das Konzept bereits benannt ist:
+
+```bash
+rg -n 'function .*<concept>|<existingPredicate>' src/
+```
+
+Schreib- und Leseseite sollten dasselbe fachliche Prädikat verwenden, wenn sie dasselbe Konzept ausdrücken.
+
+### Widersprüche sind Signal, nicht Rauschen
+
+Wenn ein Test/anderer Flow die aktuelle Annahme widerlegt:
+
+- nicht als „defensiv“, „tot“ oder „veraltet“ wegargumentieren,
+- Ursache auflösen,
+- ggf. als `UNKNOWN`/Risk dokumentieren.
+
+---
+
+## 4e) Vollständigkeitscheck der Business-Matrix
+
+Prüfen:
+
+- alle Enum Cases,
+- true/false,
+- null/set,
+- Status vorher/nachher,
+- Rollen erlaubt/verboten,
+- Schwellenwert darunter/genau/darüber,
+- Erst-/Folgeversion,
+- normal/correction,
+- bestehende Alt-Datensätze.
+
+---
+
+# Schritt 5 — Cross-Cutting Impact Sweep
+
+Für jeden Bereich mindestens Status setzen:
+
+```text
+not affected | affected | unknown
+```
+
+Nur betroffene/unklare Bereiche vertiefen.
+
+---
+
+## 5a) Persistenz, Migration und Deployment-Kompatibilität
+
+Prüfen:
+
+- Schemaänderung?
+- nullable ↔ non-null?
+- Default geändert?
+- Backfill/Recalc für Bestandsdaten?
+- Unique/FK/Index?
+- Datenformat/JSON/Enum geändert?
+- Query-/Index-Performance?
+- Rollout-Zwischenzustände kompatibel?
+
+Besonders:
+
+```text
+alte App + neues Schema
+neue App + neues Schema
+```
+
+Falls Rolling Deployment möglich ist, zusätzlich Kompatibilität während gemischter Versionen betrachten.
+
+---
+
+## 5b) Security / Tenant / Datenbesitz
+
+Prüfen:
+
+- Backend schützt Write **und** Read,
+- FE versteckt nicht nur optisch,
+- Permission-Config und Controller-Attribut konsistent,
+- Query-Restrict-/Tenant-Filter,
+- Admin/Superuser-Sonderpfade,
+- direkte API-Nutzung,
+- neue Status/Typen in Permission-Regeln.
+
+---
+
+## 5c) Async / Eventual Consistency / Reliability
+
+Prüfen:
+
+- Message wirklich async?
+- Queue/Lane/Reihenfolge,
+- at-least-once → Handler idempotent?
+- Duplicate Message,
+- Out-of-order,
+- Retry deterministisch sicher?
+- Poison Message / Failure Transport,
+- alte bereits persistierte Messages schema-kompatibel?
+- Write→Message-Atomizität.
+
+Kritischer Fehlerfall:
+
+```text
+DB COMMIT erfolgreich
+↓
+Message Dispatch/Persistierung fehlgeschlagen
+```
+
+Wenn Architektur diesen Zustand zulässt, als Konsistenzrisiko dokumentieren.
+
+---
+
+## 5d) Concurrency / Transaction Boundaries
+
+Prüfen:
+
+- Doppel-Click / Doppel-Submit,
+- zwei Browser-Tabs,
+- zwei Benutzer ändern dieselbe Entity,
+- Lost Update,
+- Optimistic/Pessimistic Locking,
+- Unique-Constraint-Race,
+- Handler mehrfach ausgeführt,
+- read-after-write,
+- Transaktion über mehrere Aggregate/Repositories.
+
+Nur dort vertiefen, wo die Änderung tatsächliche Konkurrenz-/Idempotenzfläche berührt.
+
+---
+
+## 5e) Cache / Performance / Volumen
+
+Prüfen:
+
+- Cache invalidiert?
+- N+1 / zusätzlicher Query pro Row?
+- Listener bei jedem Flush?
+- Import/Export große Mengen?
+- neue Sortierung/Filter ohne Index?
+- Frontend mehrfaches Refetch?
+
+Keine Performance-Spekulation ohne konkreten Pfad.
+
+---
+
+## 5f) Integrationen / Audit / Observability / Localization
+
+Je nach Änderung:
+
+- externe API Contract,
+- Mail/Notification,
+- Export/Import,
+- Audit-/Statuslog,
+- Logs/Metrics bei neuem Failure Mode,
+- Übersetzungen/Enum Labels,
+- Feature Flags,
+- Accessibility bei UI-Verhaltensänderungen.
+
+---
+
+# Schritt 6 — Missing-Counterpart / Symmetry Check
+
+Viele Review-Bugs entstehen nicht durch falschen Code, sondern durch eine **fehlende parallele Änderung**.
+
+Für jedes `C#` nach erwartbaren Gegenstellen suchen.
+
+## Typische Symmetrien
+
+| Änderung | Mögliche Gegenstellen |
+|---|---|
+| Enum erweitert | Validator, Serializer, FE Label, Translation, Filter, Export, Fixtures, Tests |
+| API Response geändert | DTO/ViewModel, FE Type/Mapper, List + Detail, Export |
+| Create geändert | Update/Copy/Import/Versionierung |
+| Write geändert | Read/Recalc/Projection/Refetch |
+| Permission geändert | Read + Write + FE-Gating + Tests |
+| Property geändert | alle Writer + alle Reader + Lifecycle Dependency |
+| Status geändert | Buttons, Transition Guard, Mail, Permissions, List Filter |
+| Import geändert | UI-Write/Copy/Export/Calculator |
+| List geändert | Show/Dashboard/Export |
+| Sync Flow geändert | Async Handler / Retry / eventual read |
+
+Vorgehen:
+
+```bash
+rg '<concept|enum|property|route|dto>' src/ assets/ tests/ config/
+```
+
+Nicht jede gefundene Symmetrie muss geändert werden. Entscheidend ist, sie bewusst als:
+
+```text
+covered | intentionally unaffected | missing | unknown
+```
+
+zu klassifizieren.
+
+---
+
+# Schritt 7 — Findings als Evidenz-basierten Risk Register führen
+
+Ab hier keine losen, mehrfach wiederholten Warnlisten mehr. Findings zentral erfassen.
+
+## 7a) Evidence Discipline
+
+Jede wesentliche Aussage ist eine von:
+
+- **FACT** — direkt belegt,
+- **INFERENCE** — aus Facts abgeleitet,
+- **UNKNOWN** — nicht ausreichend entscheidbar.
+
+Ein Risk braucht konkrete Evidenz oder muss als Hypothese/Unknown gekennzeichnet werden.
+
+Beispiel:
+
+```markdown
+### R-04 — Recalc könnte bei Änderung von `bar` fehlen
+
+**Evidence (FACT):** `FooListener::getDependencyList()` enthält `foo`, aber nicht `bar`.
+**Evidence (FACT):** `FooCalculator` liest `bar`.
+**Inference:** Änderung von `bar` könnte keinen Recalc triggern.
+**Confidence:** high
+**Verification:** Integrationstest `bar ändern → flush → result neu berechnet`.
+```
+
+## 7b) Risiko-Kriterien
+
+### Impact
+
+- **critical** — Security/Data Leak/Data Loss/falsche regulatorische oder geschäftskritische Ergebnisse,
+- **high** — zentraler Business-Flow, falscher Status/Berechnung, mehrere Consumer,
+- **medium** — lokaler Flow/Regression mit Workaround,
+- **low** — kosmetisch/eng begrenzt.
+
+### Likelihood
+
+- high — Hauptpfad / realistische Kombination,
+- medium — legitimer Nebenpfad,
+- low — seltene/enge Voraussetzung.
+
+### Detectability
+
+- low detectability = besonders riskant: silent corruption, async/stale, später sichtbarer Fehler,
+- high detectability = sofortiger UI/API-Fehler.
+
+Keine pseudo-genaue Mathematik nötig. Die Dimensionen sollen die Priorisierung nachvollziehbar machen.
+
+## 7c) Zentraler Risk Register
+
+```markdown
+| ID | Change/Path | Finding | Evidence | Impact | Likelihood | Detectability | Confidence | Status |
+|---|---|---|---|---|---|---|---|---|
+| R1 | C1/P1 | ... | file:symbol | high | high | low | high | open |
+```
+
+`Status`:
+
+```text
+open | covered by plan | confirmed defect | intentionally accepted | unknown
+```
+
+**Regel:** High/Critical darf am Ende nicht kommentarlos offen bleiben.
+
+### 7d) Kritische Findings adversarial verifizieren
+
+Bei `critical` Findings oder überraschenden High-Risk-Thesen aktiv versuchen, die eigene These zu widerlegen:
+
+- alternativen Caller/Writer/Reader suchen,
+- bestehende Tests lesen/ausführen,
+- Runtime-/Config-Gegenbeleg prüfen,
+- historische Gegenentscheidung suchen.
+
+Erst danach `confirmed defect` setzen. Nicht mehrere Agents voraussetzen; entscheidend ist **unabhängige Gegen-Evidenz**.
+
+---
+
+# Schritt 8 — Test-Impact aus Risiken und Flows ableiten
+
+Tests sind Ergebnis der Impact-Analyse, nicht eine generische Checkliste.
+
+## 8a) Risk→Test Traceability
+
+Jedes relevante Risiko bekommt:
+
+- bestehenden Test, der angepasst/erweitert wird,
+- neuen Test,
+- oder explizite Begründung, warum andere Verifikation genügt.
+
+```markdown
+| Risk | Test/Verifikation | Ebene | Muss neu/geändert? |
+|---|---|---|---|
+| R1 | `FooHandlerTest::...` | Domain/Integration | ändern |
+| R2 | `GET /foo` verbotene Rolle | Controller/API | neu |
+```
+
+## 8b) Testebenen gezielt wählen
+
+### Symfony / Backend
+
+- Domain/Entity/Service für Business-Regeln,
+- Handler für Command/Query-Verhalten,
+- Controller/API für Contract + Validation + Security,
+- Integration für Doctrine Listener/Recalc/Transaction,
+- Messenger Handler + Retry/Idempotenz bei Async,
+- Repository für Filter/Sorting/Pagination/Tenant.
+
+### React / Frontend
+
+- Component/Conditional Rendering,
+- API Mapper/Hook/State,
+- Form Validation/Error Mapping,
+- Refetch/Invalidation,
+- List + Detail nach Write,
+- E2E nur für kritische User Journey / cross-layer Verhalten.
+
+## 8c) API-Contract-Check
+
+Pro betroffenem Endpoint:
 
 | Frage | Risiko |
-|-------|--------|
-| Request-Struktur geändert? | FE sendet alte/unvollständige Daten |
-| Response-Struktur geändert? | React rendert falsch / bricht |
-| Feld neu / entfernt / optional? | UI muss anzeigen / läuft auf `undefined` / erwartet immer Wert |
-| Enum erweitert? | Mapping/Label/Übersetzung fehlt |
-| HTTP-Status / Fehlerformat geändert? | Error-Handling greift nicht |
-| Serializer-Groups / ModelMapping-Felder geändert? | Feld fehlt unerwartet |
-| Pagination/Sorting/Filter geändert? | Listen verhalten sich anders |
-| Berechtigungslogik geändert (`Profil.P7`)? | Read/Write-Zugriff inkonsistent |
+|---|---|
+| Request geändert? | FE/Consumer sendet falsche Form |
+| Response geändert? | Consumer rendert/mapped falsch |
+| Feld neu/weg/optional? | `undefined`/Nullability/Backward Compatibility |
+| Enum erweitert? | Mapping/Label/Translation |
+| HTTP Status/Error Shape geändert? | Error Handling |
+| Filter/Sorting/Pagination geändert? | Listenregression |
+| Permission geändert? | Datenzugriff |
 
-**D) Verzweigungs-Varianten** — pro Verzweigung durchspielen: Enum (jeden Typ aus `Profil.P9`), Property
-(virtuell UND nicht), Jahr (Schwellenwert-nah), Boolean (Korrektur- UND Normalprozess), Null (gesetzt UND
-nicht), Status (editing/submitted/in_effect), Write→Read (Read-Modell aktualisiert?).
+## 8d) Varianten ableiten
 
-**E) Rollen-basierte Tests (`Profil.P7`)** — BFE-, Kantons-, Unternehmens-, Admin-, unberechtigter Benutzer.
-Pro Rolle: Aktion im FE sichtbar? API direkt aufrufbar? Daten lesbar? Query-Filter und Voter konsistent?
+Aus Decision Table/Invarianten/Risk Register statt pauschal alles testen:
 
-**F) Status-basierte Tests** — in welchem Workflow-Status (editing/submitted/in_effect/Korrekturprozess/
-abgeschlossen/Erst- vs. Folgeversion)?
+- kritische Enum Cases,
+- Status vorher/nachher,
+- true/false,
+- null/set,
+- Grenze darunter/genau/darüber,
+- erlaubte/verbotene Rolle,
+- alt/neu Bestandsdaten,
+- Write→Read Sichtbarkeit,
+- Retry/Duplicate nur wenn async relevant.
 
-**G) Grenzfall-Tests** — Jahres-/Schwellenwert genau auf der Grenze; fehlender optionaler Wert; Erst- vs.
-zweite Version; Rundung/negativ/leere Menge/sehr groß; leere Liste / 1 / viele / Pagination; parallele
-Doppel-Submit/Save.
+## 8e) QA-Priorisierung
 
-**H) Symfony-spezifische Tests** — Controller (Request-Validation, Response-DTO/Serializer, HTTP-Status,
-Security), Command-Seite (Handler-Test, Domain-Regel, Statusübergang, Event, Transaktion, Idempotenz),
-Query-Seite (Handler, Repository/Read-Modell, Filter/Sortierung/Pagination, Mandantenfilter, DTO-Shape),
-Async (`Profil.P8`: Message dispatched, Handler korrekt, Retry/Fehlerfall, Side Effect), Doctrine-Lifecycle
-(`Profil.P10`: Recalc-Listener feuert für die geänderte Entity, deckt das neue Feld ab, kein Endlos-/
-Massen-Recalc bei `flush()`).
+### P1 — Muss
 
-**I) React-spezifische Tests** — Component/Conditional-Rendering, Hook/Api-Aufruf, Form-Validation, Server-
-Error-Mapping, Refetch/Invalidierung nach Mutation (`Profil.P3`), Listen- und Detailansicht nach Write,
-Loading/Error/Empty-State, E2E für kritische User-Journey.
+- kritischer Happy Path,
+- High/Critical Risk,
+- Negativ-/Permission-Fall bei Security,
+- Write→Read-Sichtbarkeit bei geänderten Writes,
+- Datenmigration/Bestandsdaten, wenn betroffen.
 
-**J) QA-Priorisierung:**
+### P2 — Sollte
 
-| Priorität | Bereich | Warum |
-|-----------|---------|-------|
-| P1 | Kritischer Happy Path | Hauptfunktion der Änderung |
-| P1 | Negativfall / Berechtigung | Sicherheits-/Workflow-Risiko |
-| P1 | Write → Read Sichtbarkeit | Änderung muss in UI sichtbar werden |
-| P2 | Regression angrenzender Status/Typen | Bestehendes darf nicht brechen |
-| P2 | Listen-/Dashboard-Ansichten | Read-Modell / ViewModel prüfen |
-| P2 | API-Contract | React darf nicht durch Backend-Änderung brechen |
-| P3 | Edge Cases | Null, Grenzjahr, seltene Rolle, leere Daten |
+- angrenzende Varianten/Regression,
+- List/Detail/Dashboard/Export-Counterparts,
+- API-Contract-Nebenpfade,
+- relevante Boundary Cases.
 
----
+### P3 — Optional / risikobasiert
 
-## Schritt 5: Nachfragen formulieren
-
-Gezielte Fragen, die auf **potentielle Lücken** hinweisen (nicht belehren). Fragetypen:
-
-1. **Enum-Vollständigkeit:** „`XHandler` verwendet `TargetAgreementType::UZV`. Wurde `KZV`/`EVA`/`EBO` bewusst
-   ausgelassen, oder fehlt die Implementierung?"
-2. **Property-Verzweigung:** „Der Code behandelt `isVirtual() === false`. Was passiert bei virtuellen
-   Betriebsstätten? Ist der Pfad abgedeckt?"
-3. **Jahres-/Schwellenwert:** „Logik nutzt `getEffectYear()` im Vergleich. Mit verschiedenen Jahren getestet?
-   Was passiert exakt bei Start 2025?"
-4. **Null-Behandlung:** „Code prüft `getKinkYear() !== null`. Ist der null-Fall ebenfalls korrekt behandelt?"
-5. **Seiteneffekte:** „`XService` wird von 5 Handlern verwendet. Wurden `YHandler`/`ZHandler` berücksichtigt?"
-6. **Multi-Tenant:** „Änderung betrifft Daten, die BFE und Kantone sehen. Beide Mandanten korrekt geprüft?"
-7. **Status-Abhängigkeit:** „Logik greift im Status `editing`. Verhalten bei `in_effect`?"
-8. **Boolean-Interaktion:** „Code prüft `isCorrectionProcess()`. Korrektur- UND Normal-Workflow getestet?"
-9. **Fehlende Abdeckung:** „Plan-Schritt X behandelt Variante A, aber nicht B. Beabsichtigt?"
-10. **Write/Read-Sichtbarkeit:** „Command ändert Status. Read-Seite synchron oder async (`Profil.P8`)
-    aktualisiert — wie prüft QA die Sichtbarkeit?"
-11. **Bestandsdaten:** „Müssen bestehende Datensätze nachmigriert/neu berechnet werden, damit sie korrekt
-    erscheinen?"
-12. **Refetch (`Profil.P3`):** „Nach der Mutation wird nur die Detailansicht neu geladen. Muss auch die
-    Listen-/Dashboard-Ansicht aktualisiert werden?"
-13. **API-Contract:** „Response enthält ein neues optionales Feld. Sind FE-Typen/Mapping, Label und
-    Empty-State angepasst (`Profil.P2`)?"
-14. **Security (`Profil.P7`):** „Button ist für Rolle X versteckt. Verhindert der Voter denselben Zugriff auch
-    bei direktem API-Aufruf?"
-15. **Async (`Profil.P8`):** „Änderung dispatcht eine Message. Ist der Handler idempotent bei
-    Mehrfach-Verarbeitung?"
+- seltene Kombinationen,
+- große Datenmengen,
+- Failure Transport,
+- exotische Rollen,
+- nichtkritische UI-Edges.
 
 ---
 
-## Report-Template
+# Schritt 9 — Offene Fragen nur aus echten Unknowns ableiten
 
-Im Ergebnis (Task-File unter `## Impact-Analyse` bzw. Review-Report unter `## Test-Impact-Analyse`):
+Keine generischen Fragen erzeugen, die Code/Config bereits beantworten kann.
 
-```markdown
-## Test-Impact-Analyse (für Test-Ingenieur)
+Eine Frage ist sinnvoll, wenn:
 
-**Durchgeführt am:** <DATUM>
-**Basis:** <Lösungsplan / Branch-Diff / MR-Diff / gemergte Commits>
-**Status bei Analyse:** <Offen / In Bearbeitung / Review / Abgeschlossen>
-**Projekt-Profil:** <FE-Sprache · Read-Modell · Autorisierung · Async — Kurzform aus P2/P5/P7/P8>
+1. ein `UNKNOWN` nach Repository-/Historienanalyse bestehen bleibt **und**
+2. unterschiedliche Antworten zu anderem Verhalten/Plan/Test führen.
 
-### 0) Historische Ticket-Verfolgung
+Beispiele:
 
-| Datum | Commit | Ticket | Wesentliche Aussage / Designintention |
-|-------|--------|--------|----------------------------------------|
-| … | … | … | … |
+- „Die historische Regel hält Signatur X auf Seite 1, das aktuelle AC verlangt aber Y. Soll die alte Heuristik bewusst entfallen?“
+- „Für Bestandsdaten existiert kein Recalc-Pfad. Soll die Migration bestehende Datensätze backfillen oder gilt die Änderung nur für neue Daten?“
+- „API-Response wird optional erweitert; ist ein externer Consumer außerhalb des Repos bekannt?“
 
-### Betroffene Schichten
+Priorität:
 
-| Schicht | CQRS-Seite | Geänderte Dateien | Einschätzung |
-|---------|------------|-------------------|--------------|
-| … | … | … | … |
-
-### Aufwärts-Verfolgung (Impact-Pfade)
-
-#### Pfad 1: <Name>
-**Write Flow:** `React` → `Route` → `Controller` → `Command` → `Handler` → `Domain` → `Event/Message` → `Side Effect`
-**Read Flow:** `React` → `Route` → `Controller` → `Query` → `Handler` → `Read-Modell` → `DTO/ViewModel` → `Component`
-**Risiko:** niedrig / mittel / hoch / sehr hoch
-**Begründung:** …
-**Relevante Tests:** …
-
-### API-Contract-Check
-
-| Endpoint | Request geändert? | Response geändert? | Enum/Status betroffen? | React betroffen? | Risiko |
-|----------|-------------------|--------------------|-------------------------|------------------|--------|
-| `GET /api/…` | Nein | Ja | Ja | Ja | Hoch |
-
-### Business-Logik-Verzweigungen (Risiko-Analyse)
-
-**Enum-Verzweigungen:**
-| Enum | Cases | Abgedeckt? | Risiko |
-|------|-------|------------|--------|
-| `TargetAgreementType` | UZV, KZV, EVA, EBO | ✅ / ⚠️ | Sehr hoch |
-
-**Property-Verzweigungen:**
-| Property | Varianten | Abgedeckt? | Risiko |
-|----------|-----------|------------|--------|
-| `isVirtual()` | true / false | ✅ / ⚠️ | Hoch |
-
-**CQRS-Verzweigungen:**
-| Bereich | Varianten | Abgedeckt? | Risiko |
-|---------|-----------|------------|--------|
-| Write → Read | Command → Read-Modell/Side-Effect folgt | ✅ / ⚠️ | Hoch |
-| Refetch | Detail + Liste aktualisiert (Profil.P3) | ✅ / ⚠️ | Mittel |
-
-**Details:**
-- ⚠️ `XHandler:42` — nur UZV behandelt, KZV/EVA/EBO fehlen
-- ⚠️ `YService:55` — nur false-Pfad für `isVirtual()`
-- ✅ `ZHandler:88` — alle Varianten abgedeckt
-
-### Symfony-spezifische Risiken
-- [ ] Write-Zugriff backendseitig geschützt (Profil.P7)
-- [ ] Read-Zugriff backendseitig geschützt
-- [ ] Voter kennt neue Status/Typen
-- [ ] Async: Message dispatched / Handler idempotent / Side Effect folgt (Profil.P8)
-- [ ] Doctrine-Lifecycle: Recalc-Listener feuert & deckt neues Feld ab / kein Endlos-Recalc (Profil.P10, Schritt 2e)
-- [ ] Migration nötig/geprüft · Bestandsdaten betroffen · Index/Performance
-
-### React-spezifische Risiken
-- [ ] FE-Typen/Api-Client aktualisiert (Profil.P2)
-- [ ] Enum-Mapping / Label / Übersetzung vorhanden
-- [ ] Refetch/Invalidierung nach Mutation (Profil.P3)
-- [ ] Listen- und Detailansicht aktualisieren sich korrekt
-- [ ] FE-Gating korrekt (Profil.P4) · Loading/Error/Empty-State geprüft
-
-### Was muss getestet werden?
-
-#### P1 — Muss
-- [ ] `PUT /api/…` — Beschreibung
-- [ ] Kritischer Happy Path
-- [ ] Write → Read Sichtbarkeit (Aktion → Detail → Liste; ggf. async-Wartezeit)
-- [ ] Berechtigungen: erlaubte Rolle / verbotene Rolle / direkter API-Aufruf
-
-#### P2 — Sollte
-- [ ] Seite X → Tab Y → Aktion Z
-- [ ] Verzweigungs-Varianten (jeder Typ aus Profil.P9; Status editing/in_effect; virtuell/nicht; Korrektur/Normal)
-- [ ] Regression: bestehender Status / Liste / Export unverändert
-
-#### P3 — Optional
-- [ ] parallele Aktionen · Bestandsdaten-Migration · Retry/Dead-Letter · Import/Export · große Datenmengen · seltene Rolle
-
-### Nachfragen an Developer
-1. ❓ …
-2. ❓ …
+```text
+blocking / high-impact → zuerst
+non-blocking → dokumentieren
 ```
 
 ---
 
-## Qualitätskriterien
+# Schritt 10 — Caller-Handoff
 
-**Gute Impact-Analyse:** trennt Write/Read sauber · verfolgt Commands bis Domain/Events/Side-Effects ·
-verfolgt Queries bis DTO/ViewModel und React · prüft API-Verträge · berücksichtigt Eventual Consistency und
-Refetch · prüft Enums, Properties, Status, Rollen, Flags, Grenzwerte · prüft Security backend- UND
-frontendseitig · benennt konkrete QA-Szenarien · priorisiert nach Risiko · dokumentiert Unsicherheiten als
-gezielte Nachfragen · setzt `‹Profil.X›` konsequent auf die echten Projektwerte.
+Die Methodik liefert nur den fachlichen Handoff. **Persistenz, Planmutation und Folge-Skill-Aufrufe übernimmt `SKILL.md` bzw. der Caller.**
 
-**Schlechte Impact-Analyse:** listet nur geänderte Dateien · vermischt Command/Query · stoppt beim Handler ·
-ignoriert Read-Modell/Async · ignoriert React-Consumer und API-Contract · prüft keine Enums/Properties/
-Statusübergänge · vergisst Security/Voter · nennt nur generische Tests · übernimmt Fließtext-Beispiele
-(UZV/MNM etc.) ungeprüft als projektweite Wahrheit.
+## `start-task`
+
+- Plan-Lücken → Lösungsplan anpassen.
+- Traceability/Testplan aktualisieren.
+- Betroffene Impact-Pfade nach Planänderung erneut verifizieren.
+- Kein `high/critical` Risk ohne Plan/Test/gezielte Rückfrage stehen lassen.
+
+## `review-task`
+
+- tatsächliche Implementierung gegen Task/Plan und Impact prüfen,
+- Findings + Test-Impact dokumentieren,
+- geplante, aber nicht implementierte Changes als Missing Counterpart/Scope Gap markieren.
+
+## `review-merge`
+
+- Review-Findings evidenzbasiert formulieren,
+- Severity + betroffenen Flow + konkrete Verifikation nennen,
+- keine spekulativen „könnte vielleicht“-Findings ohne Evidenz als Defect ausgeben.
+
+## standalone
+
+- Report ohne Caller-spezifische Mutation abschließen.
 
 ---
 
-## Merksatz
+# Completion Gate
+
+Die Analyse ist erst abgeschlossen, wenn:
+
+```markdown
+- [ ] Analysemodus + Quelle + Repository-Snapshot dokumentiert
+- [ ] Projekt-Profil bestimmt bzw. relevanter Teil verifiziert
+- [ ] Semantic Change Set vollständig
+- [ ] relevante Designhistorie geprüft
+- [ ] Fan-in pro Business-Change untersucht
+- [ ] Fan-out / Side Effects untersucht
+- [ ] Write Flow geschlossen, falls betroffen
+- [ ] Read Flow geschlossen, falls betroffen
+- [ ] Write→Read-Sichtbarkeit geklärt
+- [ ] Lifecycle/Async/Config-getriebene versteckte Kanten geprüft
+- [ ] Business-Verzweigungen + Invarianten geprüft
+- [ ] Decision Table bei kombinierten Bedingungen erstellt, falls nötig
+- [ ] Data Lineage für relevante Felder geschlossen, falls nötig
+- [ ] Persistence/Security/Async/Concurrency/Cross-Cutting Sweep klassifiziert
+- [ ] Missing-Counterpart/Symmetry Check durchgeführt
+- [ ] Risk Register erstellt
+- [ ] jeder High/Critical Risk hat Plan/Test/Acceptance/Question
+- [ ] Tests auf Risiken/Flows zurückgeführt
+- [ ] offene Unknowns explizit dokumentiert
+```
+
+Wenn ein Punkt **nicht betroffen** ist, explizit als `n/a` markieren statt ihn stillschweigend auszulassen.
+
+---
+
+# Report-Template
+
+Im Task-File unter `## Impact-Analyse`, im Review unter `## Test-Impact-Analyse`.
+Nicht betroffene Detailsektionen dürfen im finalen Report weggelassen oder kompakt als `n/a` markiert werden — die Completion-Gate-Prüfung bleibt trotzdem Pflicht.
+
+```markdown
+## Test-Impact-Analyse
+
+**Durchgeführt am:** <DATUM>
+**Modus:** <start-task | review-task | review-merge | standalone>
+**Basis:** <Plan | Branch-Diff | MR-Diff | merged commits>
+**Base/Head:** <...>
+**Repository-Kontext:** <...>
+**Projekt-Profil:** <FE · Read Model · Security · Async · Lifecycle>
+
+### 1) Semantic Change Set
+
+| ID | Symbol/Contract | Semantic Change | Schicht | CQRS | Quelle |
+|---|---|---|---|---|---|
+| C1 | ... | ... | ... | ... | ... |
+
+### 2) Historische Designintention
+
+| Change | Commit/Ticket | Designintention | Relevanz heute |
+|---|---|---|---|
+| C1 | ... | ... | ... |
+
+### 3) Impact-Pfade
+
+#### P1 — <Name>
+**Changes:** C1, C2
+**Fan-in / Entry:** ...
+**Write:** ...
+**Hidden/Async:** ...
+**Read:** ...
+**Write→Read:** ...
+**External/Side Effects:** ...
+
+### 4) Business-Verhalten
+
+#### Invarianten
+| ID | Invariante | Quelle | Gefährdet? | Verifikation |
+|---|---|---|---|---|
+| INV-1 | ... | ... | ... | ... |
+
+#### Decision Table
+<nur wenn nötig>
+
+#### Data Lineage
+<nur wenn nötig>
+
+### 5) API-Contract-Check
+
+<nur wenn API-Verträge betroffen sind>
+
+| Endpoint | Request | Response | Status/Error | Security | Consumer | Risiko |
+|---|---|---|---|---|---|---|
+| ... | ... | ... | ... | ... | ... | ... |
+
+### 6) Cross-Cutting Sweep
+
+| Bereich | Status | Relevanz / Finding |
+|---|---|---|
+| Persistence/Migration | affected / n/a / unknown | ... |
+| Security/Tenant | ... | ... |
+| Async/Consistency | ... | ... |
+| Concurrency/Transaction | ... | ... |
+| Cache/Performance | ... | ... |
+| Integration/Audit/Localization | ... | ... |
+
+### 7) Missing Counterparts
+
+| Change | Counterpart | Status | Begründung |
+|---|---|---|---|
+| C1 | List/Show/... | covered / missing / unaffected / unknown | ... |
+
+### 8) Risk Register
+
+| ID | Change/Path | Finding | Evidence | Impact | Likelihood | Detectability | Confidence | Status |
+|---|---|---|---|---|---|---|---|---|
+| R1 | ... | ... | ... | ... | ... | ... | ... | ... |
+
+### 9) Risk→Test Matrix
+
+| Risk | Test/Verifikation | Ebene | Priorität |
+|---|---|---|---|
+| R1 | ... | ... | P1 |
+
+### 10) Was muss QA testen?
+
+#### P1 — Muss
+- [ ] ...
+
+#### P2 — Sollte
+- [ ] ...
+
+#### P3 — Optional
+- [ ] ...
+
+### 11) Offene Unknowns / Nachfragen
+
+1. ...
+
+### 12) Caller-Handoff
+
+**Plan-/Implementierungsanpassungen erforderlich:** <ja/nein>
+- ...
+
+**High/Critical offen:** <0 / Liste>
+```
+
+---
+
+# Qualitätskriterien
+
+## Gute Impact-Analyse
+
+- arbeitet von **Semantic Changes**, nicht bloß Dateilisten,
+- trennt tatsächliche Evidenz von Schlussfolgerungen,
+- untersucht Fan-in **und** Fan-out,
+- schließt Write-, Read- und Write→Read-Pfade,
+- findet implizite Listener/Async-/Config-Kanten,
+- prüft Invarianten und kombinierte Business-Entscheidungen,
+- verfolgt relevante Datenfelder von Writer bis Consumer,
+- sucht bewusst nach fehlenden Gegenstellen,
+- führt Findings in einem zentralen Risk Register,
+- koppelt High/Critical-Risiken an konkrete Tests oder Entscheidungen,
+- dokumentiert echte Unknowns statt sie mit Annahmen zu füllen.
+
+## Schlechte Impact-Analyse
+
+- listet nur geänderte Dateien,
+- stoppt beim Handler,
+- behandelt den ersten gefundenen Setter/Caller als vollständig,
+- vermischt Fact und Vermutung,
+- erzeugt pauschale QA-Checklisten ohne Bezug zu Risiken,
+- ignoriert Read-Seite, Refetch, Lifecycle oder Async,
+- übersieht parallele Implementierungen/List-vs-Show/Import-vs-UI,
+- erklärt widersprechende Tests vorschnell als „toten Code“,
+- übernimmt Dokumentation ungeprüft als Runtime-Wahrheit,
+- meldet spekulative Risiken ohne Evidenz als Defect.
+
+---
+
+# Merksatz
 
 Nicht fragen:
 
 > Welche Dateien wurden geändert?
 
-Sondern fragen:
+Sondern:
 
-> Welche fachlichen Flows ändern sich, welche Read-/Write-Pfade sind betroffen, wo verzweigt die
-> Business-Logik, und was muss QA testen, damit die Änderung sicher freigegeben werden kann?
+> **Welche semantischen Verhaltensänderungen entstehen, wer ruft sie auf, was beeinflussen sie downstream,
+> welche Invarianten und Gegenstellen hängen daran, und welche Evidenz/Testabdeckung brauchen wir, um das Risiko
+> kontrolliert freizugeben?**

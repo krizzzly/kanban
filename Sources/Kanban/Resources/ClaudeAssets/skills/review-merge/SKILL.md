@@ -55,6 +55,32 @@ git branch -a | grep -i "<TICKET-NUMMER>"
 - **Frage den Benutzer** nach dem exakten Branch-Namen
 - Warte auf Antwort bevor du fortfährst
 
+**Schritt 1a: Kein Task-File vorhanden? — erst eines anlegen**
+
+Ein MR ohne `<PREFIX>-<zahl>` in Branch **oder** Titel steht in Kanban als **MR-Karte** `!<MR-NUMMER>`
+auf dem Brett (freier Modus). Zu ihr gehört (noch) kein Task-File. Ohne Task-File lädt Kanban **keine
+Review-Tabs** — das Review wäre unsichtbar. Lege deshalb vor dem Review eines an, auf **einem** dieser
+zwei Wege:
+
+| Weg | Dateinamen | Wann |
+|---|---|---|
+| **MR-Karte behalten** | `!<MR-NUMMER>_<slug>.md` + `!<MR-NUMMER>_review.md` | Default. Kein Eingriff in GitLab nötig. |
+| **Richtiges Ticket** | `<PREFIX>-<NNNN>_<slug>.md` + `<PREFIX>-<NNNN>_review.md` | Wenn die Arbeit ein echtes Ticket verdient. |
+
+⚠️ **Beim zweiten Weg zwingend den Key in den MR-Titel nachtragen** (oder den Branch entsprechend
+benennen). Kanban verbindet MR und Ticket **ausschliesslich** über den Key in Branchname oder MR-Titel,
+**nie** über das Task-File — ohne diesen Schritt stehen Ticket-Karte und MR-Karte doppelt auf dem Brett.
+
+Beim ersten Weg gehört in die Präambel des Task-Files ein Branch-Block:
+
+```markdown
+> 🌿 **BRANCH**: `feature/cli-version-option`
+```
+
+Der ist **funktional**, nicht dekorativ: `LocalTickets.mrTaskFiles()` liest ihn, damit die Karte den
+Merge des MR überlebt und der dann gemergte MR weiter an ihr hängt. Ohne ihn bleibt die Karte bestehen,
+verliert aber den MR-Bezug.
+
 **Schritt 1b: In den Branch wechseln**
 
 **PFLICHT:** Wechsle IMMER in den zu reviewenden Branch:
@@ -321,15 +347,27 @@ Erstelle einen strukturierten Review-Report:
 🔴 **Changes Requested** - Blocker müssen behoben werden
 ```
 
-**Schritt 12: Analyse im Task-File speichern**
+**Schritt 12: Analyse als eigenes Review-File speichern**
 
-**PFLICHT:** Speichere die komplette Analyse im Task-File unter der `## Merge-Review` Sektion:
+**PFLICHT:** Das Review kommt in eine **eigene Datei** neben das Task-File, nicht in das Task-File selbst:
+
+```
+<tasksPath>/<KEY>_review.md
+```
+
+`<KEY>` ist der Key des Task-Files — `<PREFIX>-<NNNN>` oder `!<MR-NUMMER>` (siehe Schritt 1a). Kanban
+erkennt `<KEY>_review*.md` über `TaskFileLoader.isReviewFilename()` und zeigt jede solche Datei als
+eigenen **Review-Tab** am Ticket. Mehrere Reviews sind erlaubt (`_review.md`, `_review2.md`, …) und
+werden durchnummeriert; ein Review **im** Task-File bekäme dagegen keinen Tab.
+
+Die H1 des Review-Files **nicht** als Markdown-Link schreiben — `LocalTickets.title(inHead:)` zerschneidet
+sie sonst am ersten Trennzeichen mitten in der URL.
 
 1. Aktualisiere den **Status** im Task-File Header:
    - `🟢 Abgeschlossen` → `🔴 Changes Requested (MR !XXX)` bei Blockern
    - oder `🟡 In Review (MR !XXX)` bei Warnungen
 
-2. Füge unter `## Merge-Review (!XXX)` folgende Sektionen hinzu:
+2. Schreibe ins Review-File folgende Sektionen:
    - `### Review-Status:` mit Empfehlung und Datum
    - `### Zusammenfassung der MR-Kommentare` (falls vorhanden)
    - `### Findings` als Tabelle mit Status-Spalte

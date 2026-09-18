@@ -1,870 +1,1450 @@
 ---
 name: review-task
-description: Code-Review des Feature-Branches eines bereits umgesetzten Tasks mit nummeriertem Anpassungsplan
-argument-hint: <optional: TICKET-NUMMER oder task-file.md>
+description: Rebase und reviewe die eigene oder fremde Implementierung eines Feature-Branches gegen dessen tatsächlichen Parent/MR-Target, Task-File, Plan-Impact, Plan-Quality und Projektregeln
+argument-hint: <TICKET-NUMMER oder task-file.md> [--branch <feature-branch>] [--apply] [--comment] [--quality=auto|full|lite|skip]
 disable-model-invocation: true
 ---
 
-# REVIEW TASK - Code-Quality & Conventions Guide
+# REVIEW TASK — Branch-Review & Merge-Readiness-Orchestrator
 
-> ⚙️ **Projektwerte** (`prefix`, `tasksPath`, `repoDir`, `worktreePrefix`, `stackDomain`, `gitlabProjectPath`):
-> stehen in `.claude/project.json` im Repo-Root. Lies die Datei, bevor du einen Projektwert brauchst — nie raten.
+> `review-task` reviewt **einen konkreten Feature-Branch** gegen das zugehörige vorbereitete Task-File.
+> Dabei ist es unerheblich, ob der Branch in dieser Session durch `solve-task` entstanden ist oder von einem
+> anderen Entwickler / einer anderen Session stammt.
+>
+> **Voraussetzung ist der vorbereitete fachliche Baseline-Kontext im Task-File:**
+>
+> - `start-task` ist gelaufen,
+> - `## Analyse` und `## Lösungsplan` existieren,
+> - eine Plan-`## Impact-Analyse` existiert,
+> - eine Plan-Quality-Analyse existiert.
+>
+> Ein `implementation_handoff` aus `solve-task` ist **optional** und nur zusätzliche Evidenz.
 
-Du bist ein erfahrener Code-Reviewer, der Code auf Qualität, Conventions und Best Practices prüft.
-
-## Grundannahmen (dieses Command)
-
-Dieses Review geht davon aus, dass **der Task bereits umgesetzt wurde**:
-
-- Der Code liegt vor — dies ist **kein** Planungs-Command (Planung → `start-task`, Umsetzung → `solve-task`).
-- Es existiert ein **Feature-Branch** für den Task (Schema `feature/<PREFIX>-NNNN_<title>`), i.d.R. bereits in
-  `git branch -a` und **häufig im Task-File vermerkt** (Worktree-Block `🌿 **BRANCH**:` / `🌳 **WORKTREE**:`).
-- **„Aktueller Branch" = der Feature-Branch des Tasks.** Wo unten „aktueller Branch" steht, ist immer der
-  aus Task-File bzw. Ticket-Nummer aufgelöste Feature-Branch gemeint — **nicht** blind der gerade in der
-  Shell ausgecheckte Branch. Er kann im Haupt-Repo ausgecheckt sein oder in einem **Worktree** liegen.
-
-**Workflow:**
-1. **Branch auflösen** - Feature-Branch (+ ggf. Worktree) des Tasks ermitteln
-2. **Analyse** - Änderungen im Feature-Branch ermitteln
-3. **Test-Impact-Analyse** - Aufwärts-Verfolgung zum Controller/Frontend, Enum-Verzweigungen erkennen
-4. **Review-Plan** - Nummerierte Findings + Test-Impact in `<tasksPath>/<TICKET>_review.md` speichern
-5. **Benutzer-Auswahl** - User wählt welche Anpassungen umgesetzt werden
-6. **Umsetzung** - Ausgewählte Punkte korrigieren, Status im Report tracken
-
-## Scope des Reviews
-
-**Haupt-Branch `<BASE>`:** der Merge-Ziel-Branch des Projekts (`develop` oder `main`) — ermitteln über
-`git symbolic-ref refs/remotes/origin/HEAD --short` (→ `origin/<BASE>`); im Zweifel den Benutzer fragen.
-
-**Dieses Review bezieht sich IMMER auf den Feature-Branch des Tasks:**
-- Alle Änderungen im **Feature-Branch** seit dem Abzweigungspunkt von `<BASE>`
-- **Inklusive** noch nicht committeter Änderungen (staged und unstaged) im Branch/Worktree
-
-### Feature-Branch & Worktree auflösen (VOR der Diff-Ermittlung)
-
-Der zu reviewende Branch wird **aufgelöst**, nicht angenommen:
-
-1. **Ticket-Nummer + Task-File** aus `$ARGUMENTS` bzw. dem aktuell ausgecheckten Branch ermitteln.
-2. **Feature-Branch bestimmen** — in dieser Reihenfolge:
-   - aus dem **Worktree-Block des Task-Files** (`🌿 **BRANCH**:` / `🌳 **WORKTREE**:`), falls vorhanden;
-   - sonst `git branch -a --list "*<PREFIX>-NNNN*"`;
-   - bei Uneindeutigkeit oder keinem Treffer: **den Benutzer nach dem exakten Branch-Namen fragen** (nicht raten).
-3. **Arbeitsort bestimmen** (cwd bleibt Haupt-Repo — kein `cd`). Lege die Platzhalter `GIT` und `REF` fest:
-   - **Worktree** (Task-File nennt einen `🌳 **WORKTREE**`-Pfad, der existiert): `GIT="git -C <WORKTREE_PATH>"`, `REF="HEAD"`.
-     Für **Code-Reads** (`Read`/`Grep`/Symbol-Suche auf `src/`, `templates/`, `assets/`, `tests/`, `config/`,
-     `migrations/`) den **Worktree-Pfad** verwenden — der Haupt-Repo-Stand zeigt sonst `<BASE>`, nicht den Branch.
-   - **Branch im Haupt-Repo ausgecheckt** (`git branch --show-current` = Feature-Branch): `GIT="git"`, `REF="HEAD"`,
-     Code-Reads direkt.
-   - **Weder noch** (Branch existiert nur remote): Review gegen `origin/<branch>` → `GIT="git"`, `REF="origin/<branch>"`.
-     Uncommittete Änderungen sind so nicht sichtbar — den Benutzer darauf hinweisen.
-
-Task-File, `CLAUDE.md`, `README.md` und `.claude/*` werden **immer aus dem Haupt-Repo** gelesen.
-
-**WICHTIG:** Verwende `git merge-base` um den Abzweigungspunkt zu ermitteln. So werden nur die
-tatsächlichen Änderungen des Feature-Branches betrachtet — nicht Änderungen anderer Tickets, die
-inzwischen in `<BASE>` gemerged wurden.
-
-**Änderungen ermitteln** (`$GIT` = `git` bzw. `git -C <WORKTREE_PATH>`, `$REF` = `HEAD` bzw. `origin/<branch>`):
-```bash
-# Merge-Base ermitteln (Abzweigungspunkt)
-MERGE_BASE=$($GIT merge-base $REF <BASE>)
-
-# Geänderte Dateien (nur auf dem Feature-Branch)
-$GIT diff --name-status $MERGE_BASE..$REF
-
-# Uncommitted Änderungen zusätzlich (nur bei ausgechecktem Branch/Worktree)
-$GIT status --short
-
-# Alle Änderungen im Detail (nur Branch-Commits)
-$GIT diff $MERGE_BASE..$REF
+```text
+                         vorbereitetes Task-File
+                    Analyse + Plan + Impact + Quality
+                              │
+              ┌───────────────┴────────────────┐
+              │                                │
+     eigene Umsetzung                 fremder Feature-Branch
+   (solve-task-Handoff)              (kein Handoff erforderlich)
+              │                                │
+              └───────────────┬────────────────┘
+                              ▼
+                         review-task
+                              │
+                  tatsächlichen Branch prüfen
+                              │
+              ┌───────────────┼────────────────┐
+              ▼               ▼                ▼
+          Impact(code)   Quality(code)   Conformance
+                              │
+                              ▼
+                       Merge Readiness
 ```
 
+Die eigentliche Review-Methodik steht ausschließlich in [methodology.md](methodology.md).
+
 ---
 
-## Input / Argument-Auflösung
+# 1. Verantwortung dieses Skills
 
-`$ARGUMENTS` — optional: **Ticket-Nummer** (`<PREFIX>-NNNN`) oder **Task-File** (`<tasksPath>/<PREFIX>-NNNN_*.md`;
-`prefix` und `tasksPath` aus `.claude/project.json`).
+Dieser Skill ist zuständig für:
 
-- **Mit Argument:** daraus Ticket-Nr., Task-File und Feature-Branch auflösen (siehe „Feature-Branch & Worktree auflösen").
-- **Ohne Argument:** Ticket-Nr. aus dem aktuell ausgecheckten Feature-Branch ableiten
-  (`git branch --show-current` → `feature/<PREFIX>-NNNN_...`) und daraus Task-File **und** Branch auflösen.
+1. Task, Branch, Worktree und Base auflösen,
+2. den **vollständigen zu reviewenden Working-Tree-Snapshot** festnageln,
+3. den vorhandenen Plan-/Impact-/Quality-Baseline-Kontext aus dem Task-File validieren,
+4. einen optionalen `implementation_handoff` aus `solve-task` als zusätzliche Evidenz/Freshness-Hinweis konsumieren,
+5. `impact-analysis/SKILL.md` im Branch-/Working-Tree-Modus aufrufen,
+6. `quality-analysis/SKILL.md` im Branch-Modus aufrufen,
+7. `methodology.md` für Implementation-Conformance/Code-Review ausführen,
+8. Tests/Static Analysis auf dem richtigen Source-Stand verifizieren,
+9. optional ein vorhandenes Feature-`security-review` orchestrieren,
+10. Report + `review_handoff` erzeugen und optionale Remediation **erst nach dem unveränderten Review-Snapshot** durchführen.
 
-Falls das Argument eine Ticket-Nummer ist, suche automatisch das passende Task-File:
+Dieser Skill ist **nicht** zuständig für:
 
-```bash
-# Suche nach Task-File mit dieser Ticket-Nummer
-ls <tasksPath>/<TICKET-NUMMER>*.md
+- Plan-Impact selbst nachbauen,
+- Architecture-Quality selbst nachbauen,
+- Full-App Security Audit,
+- ungefragtes Committen/Pushen.
+
+---
+
+# 2. Projektkontext
+
+Lies `.claude/project.json`, danach:
+
+- `CLAUDE.md`,
+- referenzierte Architektur-/Konventionsdokumente,
+- `.claude/rules/testing.md`,
+- vorhandene Code-Review-Learnings,
+- Permissions-/Rollen-Doku bei relevanten Änderungen.
+
+Projektregeln sind autoritativ; generische Checklisten dürfen ihnen nicht widersprechen.
+
+## Persistenter Workflow-State
+
+Lies `.claude/rules/workflow-state.md` vollständig.
+
+Bei unabhängiger `/review-task`-Session sind relevant:
+
+```text
+workflow_state.task
+workflow_state.workspace
+workflow_state.start_task
+workflow_state.impact.plan
+workflow_state.quality.plan
+workflow_state.solve_task   # optional
 ```
 
-**Auswertung:**
-
-| Situation | Aktion |
-|-----------|--------|
-| Genau 1 File gefunden | Verwende dieses File als Kontext |
-| Mehrere Files gefunden | Zeige Liste und frage Benutzer welches verwendet werden soll |
-| Kein File gefunden | → ABBRUCH gemäss Phase 0: zuerst `/start-task <TICKET-NUMMER>` ausführen |
-| Argument ist bereits ein Pfad | Verwende den Pfad direkt |
-| Kein Argument angegeben | Ermittle Ticket-Nummer aus Branch-Name |
+`review-task` besitzt `workflow_state.review_task` und darf zusätzlich `workflow_state.task.status` sowie `workflow_state.workspace` ändern, wenn es deren realen Zustand selbst verändert/verifiziert.
+Branch-Impact/-Quality schreiben ihre eigenen `.impact.branch` / `.quality.branch`-Slots.
 
 ---
 
-## Code-Conventions
+# 3. Input
 
-### Namespaces & Imports
-
-**RICHTIG:**
-```php
-use App\Entity\Foo\Bar;
-use App\Service\SomeService;
-
-class MyClass
-{
-    public function __construct(
-        private SomeService $service,
-    ) {}
-}
+```text
+$ARGUMENTS
 ```
 
-**FALSCH:**
-```php
-class MyClass
-{
-    public function doSomething(): \App\Entity\Foo\Bar
-    {
-        return new \App\Service\SomeService(); // Inline Namespaces vermeiden!
-    }
-}
+Akzeptiert:
+
+```text
+<TICKET-NUMMER oder task-file.md>
+[--branch <feature-branch>]
+[--apply]
+[--comment]
+[--quality=auto|full|lite|skip]
 ```
 
-→ **Regel:** Namespaces IMMER mit `use` importieren, niemals inline schreiben.
+- `--branch` legt den **zu reviewenden Feature-Branch explizit** fest und ist besonders wichtig beim Review fremder Branches.
+- Default ist **review-only**.
+- `--apply`: bestätigte Review-Findings dürfen nach Erstellung des Reports remediated werden.
+- `--comment`: MR-Kommentare dürfen nach expliziter Nutzeraktion/Flag gepostet werden, falls ein MR existiert.
+- `--quality=*`: gewünschter Scope für den Branch-Quality-Review; `lite/skip` dürfen von Quality eskaliert werden.
+
+Keine impliziten extern sichtbaren Schreibaktionen.
 
 ---
 
-### Commit-Message Convention
+# 4. Direct-Entry Bootstrap
 
-Alle Commits MÜSSEN diesem Schema folgen:
+`review-task` kann direkt mit nur einer Ticket-Nummer gestartet werden:
 
-```
-<TICKET-NUMMER> | <Beschreibung auf Englisch>
-```
-
-**Beispiele** (`<PREFIX>` aus `.claude/project.json`):
-- `<PREFIX>-3963 | Add correction request table component`
-- `<PREFIX>-3963 | Implement accept/reject actions for requests`
-- `<PREFIX>-3963 | Add status filter to correction requests`
-
-**WICHTIG:**
-- Beschreibung auf Englisch
-- Ticket-Nummer am Anfang
-- Pipe (`|`) als Trenner
-- **KEIN** `Co-Authored-By` in Commit-Messages
-- **KEINE** Erwähnung von AI/Claude in Commits
-
----
-
-### Sprach-Konventionen
-
-| Element | Sprache |
-|---------|---------|
-| Branch-Namen | Englisch |
-| Commit-Messages | Englisch |
-| Code-Kommentare | Englisch |
-| Variablen/Funktionen | Englisch |
-| Translations | Nur DE bearbeiten (FR/IT werden separat übersetzt) |
-
----
-
-### Übersetzungen (Translations)
-
-- Änderungen NUR in den deutschen Translation-Dateien vornehmen (Dateischema projektabhängig —
-  Details siehe `~/Library/Application Support/Kanban/claude/rules/translations.md`)
-- FR/IT werden separat übersetzt
-- Keine hardcodierten Strings im Code oder in Templates
-
----
-
-## Code-Qualitäts-Checkliste
-
-### Backend (PHP/Symfony)
-
-- [ ] **Namespaces:** Mit `use` importiert, keine inline Namespaces
-- [ ] **Keine hardcodierten Werte:** IDs, Strings → Konstanten/Enums verwenden
-- [ ] **Doctrine Queries:** Parameter-Binding statt String-Konkatenation
-- [ ] **Exception-Handling:** Sinnvolle Exceptions, keine leeren catch-Blöcke
-- [ ] **Command-Validierung:** Alle Properties in Commands MÜSSEN Validation-Constraints haben (oder `#[Ignore]`)
-      — in Projekten mit CQRS/Messenger-Commands (siehe unten)
-- [ ] **PHPDoc:** Typen korrekt, `@throws` dokumentiert wo nötig
-- [ ] **Controller schlank:** Logik im Handler/Service, nicht im Controller
-- [ ] **RestrictList:** Für Listen-Endpunkte mit Berechtigungsfilterung (in Projekten mit RestrictList-Pattern)
-- [ ] **Projekt-Patterns:** Bestehende Architektur-Patterns des Projekts einhalten (siehe `CLAUDE.md`)
-- [ ] **Zeit/Datum:** „now" NIE via `new \DateTimeImmutable()`, sondern über den DateProvider (siehe unten)
-
-### Frontend (React/TypeScript — Projekte mit React-Stack)
-
-- [ ] **Keine console.log:** (außer in Development)
-- [ ] **Props typisiert:** PropTypes oder TypeScript
-- [ ] **useCallback/useMemo:** Wo Performance-relevant
-- [ ] **Übersetzungen:** `t('...')` verwenden, kein hardcodierter Text
-- [ ] **Actions prüfen:** `FeViewRenderer`, `actions`-Property nutzen
-- [ ] **Komponenten klein:** Extrahieren wenn > 200 Zeilen
-
-### Frontend (Twig / JS / SCSS — Projekte mit klassischem Symfony-Stack)
-
-- [ ] **Keine hardcodierten Strings:** Text über Übersetzungen (`{{ '...'|trans }}`), nicht inline
-- [ ] **Twig-Escaping:** Ausgaben korrekt escapen; `|raw` nur bewusst und geprüft einsetzen
-- [ ] **JS/SCSS in `assets/`:** Neuer JS-Code unter `assets/js/`, Styles unter `assets/scss/`
-- [ ] **Encore-Einbindung:** Assets über Webpack Encore eingebunden (`encore_entry_*_tags`)
-- [ ] **Build läuft:** `iwf yarn build` (bzw. `iwf yarn dev`) läuft ohne Fehler durch
-- [ ] **Templates klein halten:** Wiederkehrende Blöcke in Partials/Includes auslagern
-
-### Berechtigungen
-
-⚠️ **PFLICHT: Bei Controller-Änderungen oder Berechtigungs-Anpassungen MUSS die Permissions-/Rollen-Doku des
-Projekts gelesen werden** (siehe Verweise in der `CLAUDE.md` — z.B. Permission-System- und Rollen-Doku; in
-Projekten mit reiner Symfony-Rollen-Hierarchie: `config/packages/security.yaml`).
-
-**Checkliste:**
-
-- [ ] **Permissions definiert:** Im Permission-System des Projekts (z.B. `coala_permissions.yaml`) bzw.
-      Rollen-Hierarchie in `config/packages/security.yaml` korrekt erweitert
-- [ ] **Frontend-Views:** Konfiguriert, falls das Projekt view-basierte Berechtigungen kennt (z.B. `fe_views.yaml`)
-- [ ] **Controller geschützt:** `#[IsGranted(...)]` mit der passenden Permission/Rolle
-- [ ] **RestrictList verwendet:** Für datenbankbasierte Filterung (falls Pattern vorhanden)
-- [ ] **Permission-Naming:** Folgt dem projektüblichen Schema — bestehende Permissions als Vorbild, nicht raten
-- [ ] **Rollen korrekt:** Nur berechtigte Rollen haben Zugriff (kein zu weit gefasstes `ROLE_USER`)
-- [ ] **Multi-Tenant/Mandanten beachtet:** Jede Rolle/jeder Akteur sieht nur die für sie bestimmten Daten
-
-### Tests
-
-⚠️ **PFLICHT: VOR dem Test-Review MUSS `.claude/rules/testing.md` gelesen werden!**
-
-Die Testing-Rule enthält die verbindlichen Patterns für Tests in diesem Projekt.
-Tests MÜSSEN gegen diese Richtlinien geprüft werden.
-
-**WICHTIG:** Tests sind PFLICHT für:
-1. **Neue Controller** → Controller-Tests erstellen
-2. **Änderungen an Business-Logik** → Tests erstellen/erweitern
-   - Geänderte Entities (z.B. Berechnungs-Getter)
-   - Geänderte Services, Handlers, Commands
-   - Geänderte Export-/Import-Funktionalität
-   - Geänderte Berechnungs-/Bedingungs-Logik
-
-**Checkliste für Controller-Tests (aus der Testing-Rule):**
-
-- [ ] **Controller-Tests:** Für JEDEN neuen Controller
-- [ ] **Naming:** `src/Controller/.../FooController.php` → `tests/Controller/.../FooTest.php`
-- [ ] **Happy-Path:** Mindestens ein erfolgreicher Test
-- [ ] **Access-Tests:** 403 (Forbidden) und 401 (Unauthorized)
-- [ ] **Fixtures:** Bestehende Fixtures nutzen
-- [ ] **Test-User:** Rollenbasiert über die `TestUsers`-Konstanten des Projekts
-- [ ] **`checkResponseAndGetRecordsData()`:** Statt manuellem `json_decode()` verwenden (falls die
-      Assertion-Helper des Projekts das bereitstellen)
-- [ ] **`checkActionsFromRecordData()`:** Actions mit allowed/forbidden Arrays prüfen (falls vorhanden)
-- [ ] **Filter-Tests absichern:** `assertNotEmpty()` vor foreach-Schleifen
-- [ ] **Pagination-Test:** Bei List-Endpoints (wenn sinnvoll)
-- [ ] **Search-Test:** Bei List-Endpoints mit Search-Funktion (wenn sinnvoll)
-- [ ] **Uhr gepinnt:** Zeitabhängige Tests nutzen den DateProvider, keine echten Datumsangaben
-
-**Checkliste für Business-Logik-Tests:**
-
-- [ ] **Unit-Tests:** Für geänderte Methoden/Enums/Logik
-- [ ] **Integrations-Tests:** Für geänderte Workflows (z.B. Export-Tests)
-- [ ] **Bestehende Tests erweitert:** Wenn geänderter Code dort verwendet wird
-- [ ] **Test-Coverage:** Neues Verhalten wird durch Tests abgedeckt
-
-**Test ausführen** (Runner projektabhängig — siehe `.claude/rules/testing.md`):
-```bash
-iwf run "vendor/bin/phpunit tests/Controller/Pfad/ZumTest.php"
+```text
+/review-task <TICKET>
 ```
 
----
+Auch wenn lokal noch kein Task-File oder noch keine vollständige `start-task`-Baseline vorhanden ist.
 
-## Controller-Test Anforderungen
+Die Bootstrap-Reihenfolge ist verbindlich.
 
-### Naming-Convention
+## 4.1 ZUERST existierenden Feature-Branch finden
 
-| Controller | Test |
-|------------|------|
-| `src/Controller/.../FooController.php` | `tests/Controller/.../FooTest.php` |
-| `src/Controller/.../FooBarController.php` | `tests/Controller/.../FooBarTest.php` |
-
-### Pflicht-Tests
-
-1. **Happy Path:** Erfolgreicher Request mit korrekter Berechtigung
-2. **Forbidden (403):** Request ohne ausreichende Berechtigung
-3. **Unauthorized (401):** Request ohne Authentifizierung (falls relevant)
-
-### Beispiel-Struktur
-
-(Beispiel — konkrete Basisklasse, Test-User-Konstanten und Assertion-Helper des Projekts siehe
-`.claude/rules/testing.md`.)
-
-```php
-class ListAllChangeRequestsTest extends BaseTest
-{
-    use AssertionHelpersTrait;
-
-    private const array API_USER = TestUsers::BERECHTIGTE_ROLLE;
-
-    protected function setUp(): void
-    {
-        $this->loadFixtures(FixtureSet::CHANGE_MANAGEMENT_01_CHANGE_REQUESTS);
-    }
-
-    public function testListAllChangeRequests(): void
-    {
-        $api = $this->getApiForUserAtDate(ChangeRequestApi::class, self::API_USER);
-        $response = $api->listAllChangeRequests();
-
-        self::assertSame(Response::HTTP_OK, $response->getStatusCode());
-        // ... weitere Assertions
-    }
-
-    /**
-     * @dataProvider userAccessProvider
-     * @group access-test
-     */
-    public function testListAllChangeRequestsAccess(?array $apiUser, int $statusCode): void
-    {
-        $api = $this->getApiForUserAtDate(ChangeRequestApi::class, $apiUser);
-        $response = $api->listAllChangeRequests();
-        $this->assertStatuscodeFromResponse($statusCode, $response);
-    }
-
-    public static function userAccessProvider(): iterable
-    {
-        yield 'BERECHTIGTE_ROLLE' => [TestUsers::BERECHTIGTE_ROLLE, Response::HTTP_OK];
-        yield 'UNBERECHTIGTE_ROLLE' => [TestUsers::UNBERECHTIGTE_ROLLE, Response::HTTP_FORBIDDEN];
-        yield 'NO USER' => [null, Response::HTTP_UNAUTHORIZED];
-    }
-}
-```
-
----
-
-## Zeit & Datum (DateProvider)
-
-**Regel:** „now" NIE via `new \DateTimeImmutable()` ermitteln, sondern über den DateProvider:
-
-```php
-use Coala\DateProviderBundle\Service\DateProvider\DateProviderInterface;
-
-class MyService
-{
-    public function __construct(
-        private DateProviderInterface $dateProvider,
-    ) {}
-
-    public function doSomething(): void
-    {
-        $now = $this->dateProvider->getCurrentDateImmutable();
-        // ...
-    }
-}
-```
-
-**Grund:** Tests pinnen die Uhr über den `DateProvider` auf ein Stichdatum, damit zeitabhängige Logik
-(Fristen, Jahreswechsel, Staleness) deterministisch bleibt; auch produktiv kann eine Time-Warp/gepinnte Uhr
-aktiv sein. Direkte `new \DateTimeImmutable()` umgehen diese Fixierung, driften von der Provider-Uhr ab und
-machen Tests instabil.
-
----
-
-## Command-Validierung (CQRS)
-
-**Für Projekte mit durchgängigem CQRS-Pattern (Commands/Queries via Symfony Messenger):**
-
-**Regel:** Alle Properties in Command-Klassen MÜSSEN Validation-Constraints haben.
-
-**Ausnahme:** Properties mit `#[Ignore]` Attribut (werden nicht validiert).
-
-### Beispiel - RICHTIG:
-
-```php
-use Symfony\Component\Validator\Constraints as Assert;
-
-readonly class CreateUserCommand
-{
-    public function __construct(
-        #[Assert\NotBlank]
-        #[Assert\Email]
-        public string $email,
-
-        #[Assert\NotBlank]
-        #[Assert\Length(min: 8)]
-        public string $password,
-
-        #[Assert\NotNull]
-        #[Assert\Positive]
-        public int $companyId,
-
-        #[Ignore]  // Wird nicht validiert (z.B. intern gesetzt)
-        public ?int $createdBy = null,
-    ) {}
-}
-```
-
-### Beispiel - FALSCH:
-
-```php
-readonly class CreateUserCommand
-{
-    public function __construct(
-        public string $email,      // ❌ Keine Validierung!
-        public string $password,   // ❌ Keine Validierung!
-        public int $companyId,     // ❌ Keine Validierung!
-    ) {}
-}
-```
-
-### Typische Constraints:
-
-| Typ | Constraints |
-|-----|-------------|
-| String (Pflicht) | `#[Assert\NotBlank]` |
-| String (Optional) | `#[Assert\Length(max: 255)]` |
-| Email | `#[Assert\Email]` |
-| Integer (Pflicht) | `#[Assert\NotNull]`, `#[Assert\Positive]` |
-| Array | `#[Assert\NotNull]`, `#[Assert\All([...])]` |
-| Enum | `#[Assert\NotNull]` |
-
-**Projekte ohne durchgängiges CQRS** (Messenger nur punktuell, z.B. für asynchrone Submits):
-
-- [ ] **Command/Message schlank:** Nur Daten, keine Logik — Verarbeitung im Handler
-- [ ] **Validierung sinnvoll:** Wo Eingaben validiert werden müssen, Validation-Constraints setzen
-      (`#[Assert\NotBlank]`, `#[Assert\NotNull]` etc.)
-- [ ] **Fehlerbehandlung:** Retries/Failure-Verhalten bewusst gewählt (nicht still verschluckt)
-
-Für den Normalfall (synchrone Controller → Service → Entity) ist Messenger dort **nicht** erforderlich.
-
----
-
-## Pattern-Compliance
-
-### Vor Implementierung prüfen
-
-1. **Ähnliche Implementierung suchen:** Grep nach ähnlichen Features
-2. **Pattern übernehmen:** Bestehende Patterns wiederverwenden
-3. **Konsistenz:** Code-Style muss zum Rest passen
-
-### Typische Patterns im Projekt
-
-Die typischen Architektur-Patterns des Projekts (z.B. CQRS via Messenger, RestrictList, ModelMapping,
-FeViewRenderer, AsyncTable — oder ProcessStep-Konventionen, Form-Success-Listener, Soft-Deletes) stehen
-in der `CLAUDE.md` des Projekts. Dort nachschlagen und dagegen prüfen — nicht raten.
-
----
-
-## Bekannte Probleme & Learnings
-
-**WICHTIG:** Vor jedem Review die dokumentierten Learnings/Gotchas des Projekts lesen — die
-Code-Review-Learnings-Doku, falls vorhanden (siehe Verweise in der `CLAUDE.md`), sonst die
-Konventions-/Gotcha-Abschnitte der `CLAUDE.md` selbst.
-
----
-
-## Review-Findings Kategorien
-
-| Kategorie | Bedeutung |
-|-----------|-----------|
-| 🔴 **Blocker** | Muss vor Merge behoben werden |
-| 🟠 **Fachlich** | Anforderung nicht/falsch umgesetzt (standardmässig Blocker) |
-| 🟡 **Warnung** | Sollte behoben werden, blockiert nicht |
-| 🔵 **Hinweis** | Verbesserungsvorschlag, optional |
-| ✅ **Gut** | Besonders gute Lösung |
-
----
-
-## Schnell-Checks
-
-### PHPStan ausführen
-```bash
-# Projektüblicher Aufruf — siehe CLAUDE.md, z.B.:
-iwf run phpstan
-```
-
-### Tests ausführen
-```bash
-# Runner siehe .claude/rules/testing.md, z.B.:
-
-# Einzelner Test
-iwf run "vendor/bin/phpunit tests/Controller/Pfad/ZumTest.php"
-
-# Alle Tests in einem Verzeichnis
-iwf run "vendor/bin/phpunit tests/Controller/Feature/"
-```
-
-### Code-Style prüfen
-```bash
-# Geänderte PHP-Dateien im Feature-Branch (nur Branch-eigene Änderungen)
-$GIT diff --name-only $MERGE_BASE..$REF -- "*.php"
-```
-
----
-
-## Wichtige Regeln (Zusammenfassung)
-
-1. **Namespaces:** IMMER mit `use` importieren
-2. **Commits:** Schema `<TICKET> | <Beschreibung>` einhalten
-3. **Tests:** PFLICHT für neue Controller UND Änderungen an Business-Logik
-4. **Patterns:** Bestehende Patterns wiederverwenden (siehe `CLAUDE.md`)
-5. **Translations:** Nur DE bearbeiten, keine hardcodierten Strings
-6. **Keine AI-Erwähnung:** Weder in Commits noch in Code-Kommentaren
-7. **Learnings:** Die Code-Review-Learnings-Doku des Projekts vor Reviews lesen (falls vorhanden)!
-8. **⚠️ Test-Review:** `.claude/rules/testing.md` lesen und Tests gegen diese Richtlinien prüfen!
-9. **⚠️ Permissions-Review:** Permissions-/Rollen-Doku des Projekts bzw. `config/packages/security.yaml`
-   lesen bei Berechtigungs-Änderungen!
-10. **⚠️ Zeit/Datum:** „now" über den DateProvider, nie via `new \DateTimeImmutable()`
-
----
-
-## Workflow
-
-### Phase 0: Branch auflösen & Voraussetzungs-Check (IMMER ZUERST!)
-
-**Dieses Review setzt voraus, dass der Task bereits umgesetzt wurde UND ein Feature-Branch existiert.**
-Zusätzlich muss der Task durch `start-task` gelaufen sein (Analyse + Lösungsplan im Task-File).
-
-**Schritt 0a — Task-File + Feature-Branch auflösen:**
-
-1. **Task-File suchen:** Ticket-Nummer aus `$ARGUMENTS` oder dem ausgecheckten Branch ableiten:
-   ```bash
-   git branch --show-current
-   # → feature/<PREFIX>-3963_change_request_table → Suche <tasksPath>/<PREFIX>-3963*.md
-   ls <tasksPath>/<PREFIX>-3963*.md
-   ```
-2. **Feature-Branch + Worktree bestimmen** (siehe „Feature-Branch & Worktree auflösen" im Scope):
-   - bevorzugt aus dem **Worktree-Block** des Task-Files (`🌿 **BRANCH**:` / `🌳 **WORKTREE**:`);
-   - sonst `git branch -a --list "*<PREFIX>-3963*"`;
-   - bei Uneindeutigkeit **den Benutzer fragen** — nicht raten.
-
-   Lege daraus `GIT` (`git` bzw. `git -C <WORKTREE_PATH>`) und `REF` (`HEAD` bzw. `origin/<branch>`) fest.
-   „Aktueller Branch" = dieser Feature-Branch für den Rest des Reviews.
-
-**Schritt 0b — Umsetzung sicherstellen (Branch hat Commits):**
+Bevor `get-task` oder `start-task` ausgeführt werden:
 
 ```bash
-$GIT log --oneline $($GIT merge-base $REF <BASE>)..$REF | head
+git branch -a --list "*<TICKET>*"
+git worktree list
 ```
 
-- Enthält der Branch **keine** Commits/Änderungen gegenüber `<BASE>` → der Task ist **noch nicht umgesetzt**.
-  Dann STOPP: Dieses Command reviewt bereits umgesetzten Code — zuerst mit `/solve-task <task-file.md>` umsetzen.
+Falls GitLab/MR-Integration verfügbar ist, darf zusätzlich der zugehörige Remote-/MR-Branch zur Auflösung
+verwendet werden.
 
-**Schritt 0c — Task-File-Vollständigkeit prüfen:**
+Ergebnis:
 
-Das Task-File MUSS folgende Abschnitte enthalten:
-- `## Analyse` — Fachliche und technische Analyse
-- `## Lösungsplan` — Strukturierter Plan mit konkreten Schritten
-
-**Bei fehlendem Task-File oder fehlenden Abschnitten → ABBRUCH:**
-
-```
-⚠️ REVIEW NICHT MÖGLICH
-
-Das Task-File für <TICKET-NUMMER> fehlt oder ist unvollständig.
-Ein Review erfordert eine abgeschlossene Analyse und Planung.
-
-Fehlend:
-- [ ] Task-File existiert
-- [ ] ## Analyse vorhanden
-- [ ] ## Lösungsplan vorhanden
-
-→ Verwende zuerst `/start-task <TICKET-NUMMER>` um Analyse und Planung durchzuführen.
+```yaml
+review_bootstrap:
+  existing_feature_branch: <branch>
+  existing_worktree: <path|null>
 ```
 
-**Stoppe und informiere den Benutzer!** Fahre NUR fort wenn das Task-File vollständig ist.
+Bei mehreren plausiblen Branches ohne eindeutige Zuordnung: nicht raten.
 
-4. **Task-File lesen und merken:** Lies das vollständige Task-File — die Abschnitte `## Analyse` und `## Lösungsplan`
-   werden in Phase 1c für die fachliche Prüfung benötigt.
+> Ab diesem Moment ist der vorhandene Feature-Branch der Review-Gegenstand.
+> Kein Bootstrap-Schritt darf einen zweiten Feature-Branch für denselben Task erzeugen.
 
----
+## 4.2 Kanonisches Task-File auflösen — HARD GATE
 
-### Phase 1: Analyse
+Ein Review benötigt **immer zuerst ein echtes Task-File**.
 
-1. **Feature-Branch bestätigt** (aus Phase 0): `GIT` und `REF` stehen fest, „aktueller Branch" = der
-   aufgelöste Feature-Branch des Tasks. Kein blindes `git branch --show-current` mehr — der Branch kann in
-   einem Worktree liegen.
+### Was als Task-File zählt
 
-2. **Alle Änderungen ermitteln** im Feature-Branch (nur Branch-eigene Änderungen):
-   ```bash
-   MERGE_BASE=$($GIT merge-base $REF <BASE>)
-   $GIT diff --name-status $MERGE_BASE..$REF
-   $GIT status --short   # uncommittete Änderungen (nur bei ausgechecktem Branch/Worktree)
-   ```
+Zulässig:
 
-3. **Relevante Dokumentation lesen:**
-   - ⚠️ **PFLICHT:** `CLAUDE.md` (Projekt-Konventionen, Architektur, Gotchas) + Code-Review-Learnings-Doku,
-     falls vorhanden
-   - ⚠️ **PFLICHT bei Test-Änderungen:** `.claude/rules/testing.md`
-   - ⚠️ **PFLICHT bei Controller/Berechtigungen:** Permissions-/Rollen-Doku des Projekts bzw.
-     `config/packages/security.yaml`
-   - Diese Dokumentationen enthalten die verbindlichen Patterns!
+```text
+<TICKET>.md
+<TICKET>_<english_title>.md
+```
 
-4. **Jede geänderte Datei** gegen die obigen Kriterien UND die gelesene Dokumentation prüfen
+Nicht als Task-File zählen abgeleitete Artefakte wie:
 
-5. **Geänderte/neue Tests identifizieren und gegen die Testing-Rule prüfen:**
-   ```bash
-   # Test-Dateien finden die geändert/neu sind (nur Feature-Branch)
-   $GIT diff --name-only $MERGE_BASE..$REF | grep -E "Test\.php$"
-   ```
+```text
+<TICKET>_review.md
+<TICKET>_security_review.md
+<TICKET>_audit*.md
+```
 
-   **Test-Review Checkliste:**
-   - Erweitert der Test die Projekt-Basisklasse und nutzt `loadFixtures()`?
-   - Sind Access-Tests (403/401) über einen `userAccessProvider` vorhanden?
-   - Werden Test-User rollenbasiert über `TestUsers::...` verwendet?
-   - Verwendet `checkResponseAndGetRecordsData()` statt manuelles JSON-Parsing (falls vorhanden)?
-   - Verwendet `checkActionsFromRecordData()` für Action-Prüfung (falls vorhanden)?
-   - Sind Filter-Tests mit `assertNotEmpty()` abgesichert?
-   - Pagination/Search-Tests vorhanden (bei List-Endpoints)?
-   - Wird die Uhr über den `DateProvider` gepinnt (keine echten Datumsangaben)?
+Task-File-Discovery darf deshalb **niemals** nur mit einem unfiltrierten
 
-6. **Tests ausführen:**
-   ```bash
-   iwf run "vendor/bin/phpunit tests/..."
-   ```
-
-7. **PHPStan ausführen:**
-   ```bash
-   iwf run phpstan
-   ```
-
----
-
-### Phase 1b: Test-Ergebnisse
-
-**PFLICHT:** Alle geänderten/neuen Tests MÜSSEN ausgeführt werden!
-
-| Prüfung | Befehl | Ergebnis |
-|---------|--------|----------|
-| PHPStan | projektüblicher Aufruf, z.B. `iwf run phpstan` | ✅/❌ |
-| Tests | projektüblicher Runner, z.B. `iwf run "vendor/bin/phpunit tests/..."` | ✅/❌ |
-
-**Bei Fehlern:** Diese als 🔴 Blocker im Review-Report aufnehmen!
-
----
-
-### Phase 1c: Fachliche Analyse (Anforderungs-Abgleich)
-
-**PFLICHT:** Die Umsetzung muss gegen die Anforderungen aus dem Task-File geprüft werden!
-
-1. **Analyse-Abschnitt lesen:** Lies `## Analyse` aus dem Task-File und verstehe:
-   - Was ist das fachliche Ziel?
-   - Welche Bereiche sind betroffen?
-   - Welche fachlichen Anforderungen gibt es?
-
-2. **Lösungsplan abgleichen:** Lies `## Lösungsplan` und prüfe für JEDEN Schritt:
-   - Wurde der Schritt umgesetzt?
-   - Wurde er korrekt umgesetzt (nicht nur "irgendwie")?
-   - Fehlen Schritte im Code, die im Plan stehen?
-
-3. **Anforderungen aus der Beschreibung prüfen:**
-   - Lies `## Beschreibung` (Ist/Soll) aus dem Task-File
-   - Stimmt das "Soll" mit der tatsächlichen Umsetzung überein?
-   - Gibt es Edge-Cases die nicht abgedeckt sind?
-
-4. **Fachliche Findings dokumentieren:** Fachliche Probleme werden im Review-Report unter einer
-   eigenen Kategorie `### 🟠 Fachliche Findings` dokumentiert:
-
-   ```markdown
-   ### 🟠 Fachliche Findings
-
-   - [ ] **#F1** - Anforderung "XY" aus der Beschreibung nicht umgesetzt
-   - [ ] **#F2** - Lösungsplan Schritt 3 fehlt in der Implementierung
-   - [ ] **#F3** - Edge-Case: Was passiert wenn ...?
-   ```
-
-   Fachliche Findings sind standardmässig **Blocker**, ausser sie betreffen nur Randfälle.
-
----
-
-### Phase 1d: Test-Impact-Analyse (für Test-Ingenieur)
-
-**ZIEL:** Ermitteln, welche Controller, API-Endpunkte, Frontend-Bereiche und Verzweigungs-Varianten
-von den Code-Änderungen betroffen sind — damit der Test-Ingenieur weiss, **was er testen muss**.
-
-⚠️ **PFLICHT:** Lies und befolge die vollständige Impact-Analyse-Anleitung des Projekts —
-[impact-analysis methodology](../impact-analysis/methodology.md) — der kanonische Bestand gilt in
-jedem Projekt.
-
-**Modus:** `review-task` → Datenquelle ist der **git diff** des Feature-Branches (tatsächliche Code-Änderungen):
 ```bash
-MERGE_BASE=$($GIT merge-base $REF <BASE>)
-$GIT diff --name-only $MERGE_BASE..$REF
+ls <tasksPath>/<TICKET>*.md
 ```
 
-**Führe alle 5 Schritte aus der Anleitung durch:**
-1. Geänderte Dateien kategorisieren (nach Architektur-Schicht)
-2. Aufwärts-Verfolgung (Bottom-Up Tracing) bis Controller/Frontend
-3. Business-Logik-Verzweigungen erkennen (Enums UND Properties!)
-4. Betroffene Test-Bereiche zusammenstellen
-5. Nachfragen an den Developer formulieren
+arbeiten.
 
-**Ergebnis:** Dokumentiere die Analyse im Review-Report unter `## Test-Impact-Analyse`
-(siehe Report-Template in der Anleitung).
+Beispiel:
+
+```bash
+find <tasksPath> -maxdepth 1 -type f \
+  \( -name "<TICKET>.md" -o -name "<TICKET>_*.md" \) \
+  ! -name "<TICKET>_review.md" \
+  ! -name "<TICKET>_security_review.md" \
+  ! -name "<TICKET>_audit*.md"
+```
+
+Danach inhaltlich plausibilisieren:
+
+- Ticket-Nummer passt,
+- Datei ist **kein** Review-/Audit-Report,
+- enthält Task-Metadaten wie `Typ:` / Beschreibung bzw. JIRA-Inhalt.
+
+### Kein Task-File vorhanden → `get-task` MUSS laufen
+
+Dann:
+
+```text
+../get-task/SKILL.md
+```
+
+mit:
+
+```text
+<TICKET> --no-worktree
+```
+
+als echten Sub-Workflow ausführen.
+
+Der reale Feature-Branch existiert bereits; `get-task` darf hier nur:
+
+- JIRA laden,
+- Task-File normalisieren,
+- Metadaten bereinigen.
+
+Es darf keinen konkurrierenden Worktree/Branch anlegen.
+
+### Postcondition nach `get-task` — PFLICHT
+
+`review-task` muss den Handoff konsumieren:
+
+```yaml
+get_task_handoff:
+  task_file: <TASK_FILE>
+```
+
+Danach:
+
+```bash
+test -f <TASK_FILE>
+```
+
+und das File erneut als **kanonisches Task-File** validieren.
+
+Danach den `workflow_state` gemäß Rule laden. Fehlt er, einen v1-Block initialisieren; keine alten Fingerprints aus
+Prosa erraten.
+
+Nur wenn all das erfolgreich ist:
+
+```yaml
+task_file_gate:
+  status: PASS
+  task_file: <resolved-path>
+  source: existing | get-task
+```
+
+darf der Workflow fortfahren.
+
+Wenn:
+
+- `get-task` fehlschlägt,
+- kein `get_task_handoff.task_file` zurückkommt,
+- die Datei nicht existiert,
+- oder nur ein `_review.md`/anderes Derived Artifact existiert,
+
+dann sofort:
+
+```text
+🔴 REVIEW BOOTSTRAP FAILED — TASK-FILE FEHLT
+```
+
+und **STOP**.
+
+Insbesondere verboten:
+
+- Review-Report erzeugen,
+- `start-task` ohne echtes Task-File starten,
+- Branch-Impact/Quality starten,
+- ein `_review.md` als Ersatz für das Task-File verwenden.
+
+## 4.3 Parent-/Target-Branch bereits für den Bootstrap auflösen
+
+**Bevor `start-task` nachgeholt wird**, den tatsächlichen Parent bestimmen.
+
+Priorität:
+
+1. offener MR für den exakten Review-Branch → `MR.target_branch`,
+2. expliziter Task-/Workflow-Parent,
+3. Projekt-Default,
+4. Remote-Default als Fallback.
+
+Dieser Parent ist sowohl:
+
+- Planungsbasis für den retrospektiven `start-task`-Bootstrap,
+- Rebase-Ziel,
+- Diff-/Impact-/Quality-Basis des eigentlichen Reviews.
+
+```yaml
+review_parent:
+  branch: <PARENT>
+  remote_ref: origin/<PARENT>
+  source: merge_request | task_context | project_default | remote_default
+```
+
+## 4.4 Plan-Baseline fehlt → `start-task` im Review-Bootstrap-Modus
+
+Falls im Task-File eines davon fehlt oder stale ist:
+
+```text
+## Analyse
+## Lösungsplan
+## Impact-Analyse
+## Lösungsplan-Qualitätsreview
+```
+
+dann `../start-task/SKILL.md` als Embedded Review Bootstrap aufrufen:
+
+```yaml
+caller: review-task
+mode: review-bootstrap
+task_file: <TASK_FILE>
+ticket: <TICKET>
+existing_feature_branch: <REVIEW_BRANCH>
+existing_worktree: <REVIEW_WORKTREE|null>
+planning_source: parent
+planning_base: origin/<PARENT>
+create_worktree: false
+switch_branch: false
+quality_scope: auto
+```
+
+### Unabhängigkeitsregel für die Soll-Baseline
+
+`start-task` erstellt die Soll-Baseline aus:
+
+```text
+Task/JIRA
++
+Code des tatsächlichen Parent-/MR-Target-Branches
+```
+
+Der existierende Feature-Branch darf für operative Informationen verwendet werden:
+
+- Branch-Name,
+- Worktree-Pfad,
+- Merge-Base,
+- MR-Zuordnung.
+
+Sein Implementierungsinhalt darf jedoch nicht zur Ableitung des Soll-Lösungsplans verwendet werden.
+
+Damit vermeiden wir:
+
+```text
+fertigen Code lesen
+→ daraus Plan formulieren
+→ denselben Code später gegen diesen Plan reviewen
+```
+
+## 4.5 Danach normaler Review — inklusive Branch-Impact
+
+Jetzt existieren bewusst zwei Perspektiven:
+
+```text
+SOLL
+Task/JIRA + Parent/MR-Target
+→ Analyse
+→ Lösungsplan
+→ Impact(plan)
+→ Quality(plan)
+
+IST
+Feature-Branch
+→ Impact(code)
+→ Quality(code)
+→ Implementation-Conformance
+```
+
+Der Branch-Impact ist **Pflicht** und gerade deshalb besonders wertvoll:
+Er findet reale Side-Effects, die der Plan nicht vorausgesehen hat.
+
+Verglichen werden insbesondere:
+
+```text
+Plan C-*      ↔ Branch C-*
+Plan R-*      ↔ Branch R-*
+Plan D-/Q-*   ↔ Branch D-/Q-*
+Plan Tests    ↔ tatsächliche Tests
+```
 
 ---
 
-### Phase 2: Review-Plan erstellen
+# 5. Task / Branch / Worktree auflösen
 
-**WICHTIG:** Vor der Umsetzung wird ein Review-Report erstellt und gespeichert!
+## 4.1 Task-File
 
-**Dateiname:** `<tasksPath>/<TICKET-NUMMER>_review.md` (`tasksPath` aus `.claude/project.json`)
+Bei Ticket:
 
-**Format des Review-Reports:**
+```bash
+ls <tasksPath>/<TICKET>*.md 2>/dev/null
+```
+
+Mehrdeutigkeit nicht raten.
+
+Das Task-File ist die **fachliche Review-Baseline** und gehört nicht notwendigerweise zum gerade in der Shell
+ausgecheckten Branch.
+
+## 4.2 Review-Branch
+
+Priorität:
+
+1. explizites `--branch <feature-branch>`,
+2. gültiger Branch aus `workflow_state.workspace.branch`,
+3. Legacy-Fallback: gültiger Branch aus sichtbarer Worktree-Projektion des Task-Files,
+4. aktuell ausgecheckter eindeutig zum Ticket passender Feature-Branch,
+5. genau ein lokaler/remote Branch mit Ticket-Nummer.
+
+Bei mehreren möglichen Branches ohne explizite Auswahl: nicht raten.
+
+**Wichtig:** Der Review-Branch darf von einem anderen Entwickler stammen. Es gibt keine Anforderung, dass
+`solve-task` in der aktuellen Session oder überhaupt durch diesen Agenten ausgeführt wurde.
+
+## 4.3 Arbeitsort
+
+- existiert ein lokaler Worktree für genau den Review-Branch → dort lesen/reviewen,
+- ist der Branch im Haupt-Repo ausgecheckt → dort,
+- existiert er nur remote → gegen `origin/<branch>` reviewen.
+
+Bei Remote-only gilt:
+
+```text
+working_tree_visibility: false
+```
+
+und lokale staged/unstaged Änderungen des Branch-Autors sind naturgemäß nicht sichtbar.
+
+## 4.4 Base
+
+Projektkonvention verwenden; sonst Remote-Default als Hinweis ermitteln:
+
+```bash
+git symbolic-ref refs/remotes/origin/HEAD --short
+```
+
+Den tatsächlichen Merge-Zielbranch des Projekts verwenden, nicht blind `develop`.
+
+---
+
+# 6. Pre-Review Rebase Gate — PFLICHT
+
+Vor **jedem** eigentlichen Review muss der zu reviewende Feature-Branch auf den **aktuellen Remote-Stand seines
+tatsächlichen Parent-/Target-Branches** rebased werden.
+
+Erst nach erfolgreichem Rebase dürfen erzeugt/ausgeführt werden:
+
+- Review-Snapshot / Fingerprint
+- Branch-Impact
+- Branch-Quality
+- Feature-Security-Review
+- Tests / Static Analysis
+- `REV-*` Findings
+- Merge-Readiness
+
+## 6.1 Parent-/Target-Branch auflösen bzw. Bootstrap-Auflösung verifizieren
+
+Der Parent darf **nicht pauschal `develop`** sein. Wurde er bereits im Direct-Entry-Bootstrap aufgelöst, hier gegen aktuellen MR-/Projektkontext verifizieren und unverändert weiterverwenden, sofern noch korrekt.
+
+### A. Merge Request vorhanden
+
+Den MR anhand des **exakten Source-Branches** ermitteln.
+
+Wenn GitLab/Hermes verfügbar ist, z.B.:
+
+```text
+get-gitlab-merge-requests
+sourceBranch: <REVIEW_BRANCH>
+state: opened
+```
+
+Dann ist:
+
+```text
+MR.target_branch
+```
+
+die autoritative Review-/Rebase-Basis.
+
+Beispiele:
+
+```text
+feature/PROJ-1234_foo → develop
+feature/PROJ-1234_foo → release/2026-09
+feature/PROJ-1234_foo → feature/PROJ-1200_parent
+```
+
+Bei mehreren offenen MRs desselben Source-Branches mit unterschiedlichen Targets:
+**ambiguous parent** → Review stoppen, nicht raten.
+
+### B. Kein MR vorhanden
+
+Dann in dieser Reihenfolge:
+
+1. explizit im Task-/Workflow-Kontext dokumentierter Parent-/Base-Branch,
+2. projektspezifischer Default-Base aus `.claude/project.json` / `CLAUDE.md`, falls vorhanden,
+3. Remote-Default als Fallback:
+
+```bash
+git symbolic-ref refs/remotes/origin/HEAD --short
+```
+
+Aufgelösten Parent für den gesamten Review festhalten:
+
+```yaml
+review_parent:
+  source: merge_request | task_context | project_default | remote_default
+  branch: <parent>
+  remote_ref: origin/<parent>
+  mr: <project>!<iid>|null
+```
+
+## 6.2 Remote-Stand aktualisieren
+
+Vor dem Rebase:
+
+```bash
+git -C <REVIEW_REPO> fetch origin --prune
+git -C <REVIEW_REPO> rev-parse origin/<PARENT>
+```
+
+Der Rebase erfolgt gegen:
+
+```text
+origin/<PARENT>
+```
+
+und nicht gegen einen eventuell veralteten lokalen Parent-Branch.
+
+## 6.3 Vor-Rebase-Zustand dokumentieren
+
+Vor jeder Mutation:
+
+```bash
+git -C <REVIEW_REPO> status --short
+git -C <REVIEW_REPO> rev-parse HEAD
+git -C <REVIEW_REPO> rev-parse origin/<PARENT>
+```
+
+Speichern:
+
+```yaml
+pre_review_rebase:
+  feature_head_before: ...
+  parent_sha: ...
+  working_tree_dirty: true|false
+  status_before: [...]
+```
+
+Keine `reset`, `clean`, `checkout --` oder andere destruktive Bereinigung.
+
+## 6.4 Rebase ausführen
+
+Für lokalen Review-Branch / Worktree:
+
+```bash
+git -C <REVIEW_REPO> rebase --autostash origin/<PARENT>
+```
+
+`--autostash` erhält staged/unstaged tracked Änderungen soweit Git dies sicher durchführen kann.
+
+Untracked Dateien werden nicht versteckt; kollidieren sie mit dem Rebase, muss Git abbrechen.
+
+### Bereits aktuell
+
+Wenn Git meldet, dass der Branch aktuell ist:
+
+```text
+ALREADY_UP_TO_DATE
+```
+
+### Erfolgreich rebased
+
+Danach:
+
+```bash
+git -C <REVIEW_REPO> status --short
+git -C <REVIEW_REPO> rev-parse HEAD
+git -C <REVIEW_REPO> merge-base HEAD origin/<PARENT>
+```
+
+Speichern:
+
+```yaml
+pre_review_rebase:
+  status: REBASED | ALREADY_UP_TO_DATE
+  feature_head_before: ...
+  feature_head_after: ...
+  parent_branch: ...
+  parent_sha: ...
+  working_tree_restored: true|false
+```
+
+Der **neue** `HEAD` ist ab jetzt Review-Gegenstand.
+
+## 6.5 Rebase-Konflikt
+
+Bei Konflikt:
+
+```text
+🔴 REVIEW BLOCKED — REBASE CONFLICT
+```
+
+Keinen Branch-Impact, keine Quality-Analyse und keinen Review-Report über einen halb aufgelösten
+Rebase-Zustand erzeugen.
+
+Dokumentieren:
+
+- Parent-Branch
+- Parent-SHA
+- Feature-HEAD vor Rebase
+- Konfliktdateien (`git status --short`)
+
+Konfliktauflösung nicht automatisch erraten.
+
+Review erst fortsetzen, wenn der Rebase erfolgreich abgeschlossen wurde.
+
+## 6.6 Remote/MR-Synchronität nach lokalem Rebase
+
+Ein Rebase verändert Commit-IDs.
+
+Wenn ein MR existiert:
+
+```bash
+git -C <REVIEW_REPO> rev-parse HEAD
+git -C <REVIEW_REPO> rev-parse origin/<REVIEW_BRANCH>
+```
+
+Klassifikation:
+
+```text
+MR_SOURCE_SYNCED
+LOCAL_REBASE_NOT_PUSHED
+NO_REMOTE_SOURCE_REF
+```
+
+Bei `LOCAL_REBASE_NOT_PUSHED` darf der **lokale Code-Review** vollständig durchgeführt werden.
+
+Aber:
+
+- keine Inline-MR-Kommentare auf Basis dieses lokal rebased Snapshots,
+- `merge_ready` für den tatsächlichen MR nicht auf `true` setzen,
+- Blocking Reason `REBASED_BRANCH_NOT_PUSHED`,
+- Benutzer muss den rebased Branch selbst pushen,
+- `review-task` pusht niemals selbst.
+
+Nach dem Push vor MR-Kommentaren/Merge verifizieren, dass der Remote-MR-Source-SHA dem reviewten rebased SHA entspricht.
+
+---
+
+# 7. Plan-Baseline aus dem Task-File prüfen
+
+Neben den menschenlesbaren Abschnitten muss für einen frischen Plan gelten:
+
+```text
+workflow_state.start_task.plan_fingerprint
+== workflow_state.impact.plan.source_fingerprint
+== workflow_state.quality.plan.review_source_fingerprint
+```
+
+Fehlt ein Slot oder passt ein Fingerprint nicht, `start-task` nachholen/reconciliieren. Markdown-Prosa allein ist
+keine Freshness-Garantie.
+
+Vor dem Branch-Review muss das Task-File mindestens enthalten:
+
+```text
+## Analyse
+## Lösungsplan
+## Impact-Analyse
+## Lösungsplan-Qualitätsreview
+```
+
+Zusätzlich das aus JIRA importierte Feld prüfen:
+
+```text
+## Lösung
+```
+
+`## Lösung` ist **keine Voraussetzung dafür, dass start-task gelaufen ist**, sondern eine zusätzliche
+Developer-Evidenzquelle. Wenn vorhanden/gefüllt, muss sie im Review berücksichtigt werden.
+
+Äquivalente Quality-Überschriften sind zulässig, sofern eindeutig erkennbar ist, dass die Plan-Quality-Analyse
+gelaufen ist.
+
+Zusätzlich prüfen:
+
+- Plan-Impact basiert auf dem aktuellen Lösungsplan,
+- Plan-Quality basiert auf dem aktuellen Lösungsplan/Impact,
+- kein dokumentierter Status `PLAN/DESIGN ÜBERARBEITEN`,
+- keine unbehandelten blockierenden Plan-`R-*` / `Q-*` / `UNKNOWN`s.
+
+Wenn diese Baseline fehlt oder stale ist:
+
+```text
+🔴 REVIEW-BASELINE UNVOLLSTÄNDIG
+
+Der Branch kann nicht belastbar gegen einen freigegebenen Plan reviewed werden.
+→ `/start-task <TASK_FILE>`
+```
+
+`review-task` darf in diesem Fall keinen vollständigen Merge-Readiness-Status vortäuschen.
+
+Die Plan-Analyse ist der **Soll-Zustand**. Danach werden Impact und Quality nochmals gegen den tatsächlichen
+Branch ausgeführt und als **Ist-Zustand** verglichen.
+
+---
+
+# 8. JIRA-Lösungsfeld als Developer-Evidenz erfassen
+
+Falls das Task-File einen Abschnitt
 
 ```markdown
-# Code-Review: <TICKET-NUMMER>
-
-**Branch:** `<branch-name>`
-**Review-Datum:** <DATUM>
-**Status:** 🟡 Offen
-
----
-
-## Zusammenfassung
-
-[1-2 Sätze was der Branch macht]
-
----
-
-## Geprüfte Dateien
-
-- `src/Controller/...`
-- `src/Service/...`
-- `assets/...` bzw. `templates/...`
-
----
-
-## Anpassungen
-
-### 🔴 Blocker
-
-- [ ] **#1** - `src/File.php:42` - Beschreibung des Problems
-- [ ] **#2** - `src/Other.php:17` - Beschreibung des Problems
-
-### 🟠 Fachliche Findings
-
-- [ ] **#F1** - Anforderung "XY" aus Beschreibung nicht umgesetzt
-- [ ] **#F2** - Lösungsplan Schritt N fehlt in der Implementierung
-
-### 🟡 Warnungen
-
-- [ ] **#3** - `src/File.php:88` - Beschreibung des Problems
-- [ ] **#4** - `assets/component.jsx:25` - Beschreibung des Problems
-
-### 🔵 Hinweise
-
-- [ ] **#5** - `src/Handler.php:33` - Verbesserungsvorschlag
-- [ ] **#6** - `config/file.yaml:12` - Optional: Konsistenz
-
-### ✅ Positives
-
-- Gute Verwendung bestehender Patterns
-- Tests vollständig vorhanden
-
----
-
-## Test-Impact-Analyse (für Test-Ingenieur)
-
-*(Struktur gemäss der Impact-Analyse-Anleitung des Projekts → Report-Template)*
-
----
-
-## Test-Ergebnisse
-
-### PHPStan
-```
-✅ No errors (oder Fehler auflisten)
+## Lösung
 ```
 
-### Controller-Tests
+enthält, stammt dieser aus dem JIRA-Lösungsfeld und beschreibt die vom Developer dokumentierte Umsetzung.
+
+Vor der Branch-Analyse daraus normalisieren:
+
+```yaml
+jira_solution_evidence:
+  present: true|false
+  raw_section: <reference>
+  declared_changes: [...]
+  declared_decisions: [...]
+  declared_deviations: [...]
+  declared_assumptions: [...]
+  declared_not_implemented: [...]
+  declared_operational_notes: [...]
+  declared_test_notes: [...]
+```
+
+Wichtig:
+
+- `## Lösung` **nicht überschreiben oder umdeuten**.
+- Das Feld ist eine **Developer Declaration**, kein Beweis für tatsächliches Verhalten.
+- Es darf Requirements/AK nicht überstimmen.
+- Es darf aber erklären, ob eine Abweichung bewusst, angenommen oder absichtlich nicht umgesetzt wurde.
+- Widersprüche zwischen `## Lösung` und Branch/Test-Evidenz sind explizite Review-Signale.
+
+---
+
+# 9. Review Snapshot — die tatsächliche Review-Basis
+
+Das Review muss committed **und** staged/unstaged Implementierungsänderungen sehen.
+
+## 5.1 Lokaler Worktree / ausgecheckter Branch
+
 ```bash
-# Ausgeführte Tests:
-iwf run "vendor/bin/phpunit tests/Controller/Feature/"
+MERGE_BASE=$(git -C <REPO> merge-base HEAD origin/<PARENT>)
+git -C <REPO> diff --name-status "$MERGE_BASE"
+git -C <REPO> diff "$MERGE_BASE" --
+git -C <REPO> status --short
+```
 
-# Ergebnis:
-✅ OK (4 tests, 26 assertions)
+`git diff "$MERGE_BASE"` vergleicht den aktuellen Working Tree gegen den Merge-Base und enthält dadurch
+committed + staged + unstaged Änderungen an tracked Dateien.
+
+Untracked versionierte Kandidaten separat lesen und hashen.
+
+## 5.2 Remote-only Branch
+
+```bash
+MERGE_BASE=$(git merge-base origin/<branch> origin/<PARENT>)
+git diff --name-status "$MERGE_BASE..origin/<branch>"
+git diff "$MERGE_BASE..origin/<branch>"
+```
+
+Dann ausdrücklich:
+
+```text
+working_tree_visibility: false
+```
+
+Ein Review eines Remote-Branches darf nicht behaupten, lokale uncommitted Änderungen gesehen zu haben.
+
+## 5.3 Review-Fingerprint
+
+Erzeuge einen stabilen Fingerprint aus:
+
+- Base/Merge-Base SHA,
+- vollständigem tracked Diff gegen Merge-Base,
+- Pfaden + Hashes relevanter untracked Dateien.
+
+Dokumentiere:
+
+```yaml
+review_snapshot:
+  ticket: ...
+  task_file: ...
+  repository_path: ...
+  branch: ...
+  parent_branch: ...
+  parent_source: merge_request|task_context|project_default|remote_default
+  parent_sha: ...
+  pre_review_rebase_status: REBASED|ALREADY_UP_TO_DATE
+  mr_source_sync: MR_SOURCE_SYNCED|LOCAL_REBASE_NOT_PUSHED|NO_REMOTE_SOURCE_REF|null
+  merge_base_sha: ...
+  head_sha: ...
+  working_tree_visibility: true|false
+  review_source_fingerprint: ...
 ```
 
 ---
 
-## Umsetzungs-Log
+# 10. Optionaler `solve-task`-Handoff
 
-| # | Status | Umgesetzt am | Notizen |
-|---|--------|--------------|---------|
-| 1 | ⬜ | - | - |
-| 2 | ⬜ | - | - |
-| 3 | ⬜ | - | - |
+Ein `implementation_handoff` ist **kein Prerequisite**.
 
-**Legende:** ⬜ Offen | ✅ Umgesetzt | ⏭️ Übersprungen | ❌ Abgelehnt
+Bei unabhängiger Session zuerst `workflow_state.solve_task` lesen. Fehlt dieser Namespace bei einem fremden
+Feature-Branch, ist das normal. Ein direkter Handoff ist nur zusätzliche Evidenz.
+
+## Falls vorhanden
+
+Vergleiche:
+
+```text
+implementation_handoff.implementation_fingerprint
+vs.
+review_source_fingerprint
+```
+
+Bei Gleichheit liefert er zusätzliche Evidenz zu:
+
+- ausgeführten Tests,
+- Static Analysis,
+- bewusst dokumentierten lokalen Implementierungsentscheidungen,
+- Security-Follow-up.
+
+Bei Abweichung:
+
+```text
+⚠️ Implementation-Handoff ist stale:
+Code wurde nach solve-task verändert.
+```
+
+Dann gelten dessen Validation-Ergebnisse nicht automatisch für den aktuellen Review-Snapshot.
+
+## Falls nicht vorhanden
+
+Das ist beim Review eines fremden Feature-Branches **normal**.
+
+Dokumentiere:
+
+```text
+implementation_handoff: not_available
+implementation_origin: external_or_legacy
+```
+
+und reviewe den Branch vollständig anhand von:
+
+```text
+Task-File-Baseline
++
+tatsächlichem Branch-Diff
++
+Branch Impact
++
+Branch Quality
++
+aktueller Validation
+```
+
+Die Review-Tiefe wird dadurch nicht reduziert.
+
+---
+
+# 11. Branch-Impact-Analyse aufrufen
+
+Rufe **nicht** `impact-analysis/methodology.md` direkt auf.
+
+```text
+../impact-analysis/SKILL.md
+```
+
+Embedded Context:
+
+```yaml
+caller: review-task
+primary_source: working-tree-diff
+task_file: <TASK_FILE>
+ticket: <TICKET>
+repository_path: <REVIEW_REPO>
+base: origin/<PARENT>
+head: <HEAD/REF>
+include_working_tree: <true|false>
+source_fingerprint: <REVIEW_SOURCE_FINGERPRINT>
+output_target: <REVIEW_REPORT>
+```
+
+Der Impact-Skill liefert den tatsächlichen Branch-Impact:
+
+- `C-*`
+- `P-*`
+- `INV-*`
+- `R-*`
+- Risk→Test
+- Unknowns
+
+Dieser Branch-Impact darf vom Plan-Impact abweichen. Genau das ist Review-Evidenz.
+
+---
+
+Vor Quality muss gelten:
+
+```text
+workflow_state.impact.branch.source_fingerprint == <REVIEW_SOURCE_FINGERPRINT>
+```
+
+Andernfalls ist Branch-Impact nicht persistent/fresh und muss erneut ausgeführt werden.
+
+---
+
+# 12. Branch-Quality-Analyse aufrufen
+
+Rufe:
+
+```text
+../quality-analysis/SKILL.md
+```
+
+Embedded Context:
+
+```yaml
+caller: review-task
+review_mode: branch
+task_file: <TASK_FILE>
+ticket: <TICKET>
+repository_path: <REVIEW_REPO>
+base: origin/<PARENT>
+head: <HEAD/REF>
+include_working_tree: <true|false>
+review_source_fingerprint: <REVIEW_SOURCE_FINGERPRINT>
+requested_scope: <auto|full|lite|skip>
+output_target: <REVIEW_REPORT>
+```
+
+Quality prüft selbst die Freshness des Branch-Impact.
+
+Der Branch-Quality-Review beantwortet:
+
+> Ist die **tatsächliche Implementierung** architektonisch/qualitativ so gut wie geplant?
+
+`review-task` dupliziert SOLID-/Pattern-/Architecture-Decision-Checks nicht.
+
+---
+
+Vor Security-Follow-up muss gelten:
+
+```text
+workflow_state.quality.branch.review_source_fingerprint == <REVIEW_SOURCE_FINGERPRINT>
+```
+
+Andernfalls ist Branch-Quality stale/unvollständig.
+
+---
+
+# 13. Feature-Security-Follow-up
+
+Aus Plan-Quality, Branch-Quality und Implementation-Handoff den höchsten Security-Follow-up-Level bestimmen:
+
+```text
+NONE
+FEATURE_SECURITY_REVIEW
+FULL_APP_AUDIT_RECOMMENDED
+```
+
+## `FEATURE_SECURITY_REVIEW`
+
+Wenn im Repo ein eigener `security-review/SKILL.md` existiert, diesen gegen **denselben Review-Snapshot**
+aufrufen.
+
+Der Security-Review muss denselben `review_source_fingerprint` referenzieren.
+
+Existiert der Skill nicht oder kann er nicht laufen:
+
+```text
+security_review: REQUIRED_NOT_RUN
+```
+
+als Merge-Readiness-Gap dokumentieren.
+
+## `FULL_APP_AUDIT_RECOMMENDED`
+
+Nicht automatisch `audit-security` starten.
+
+Im Review-Handoff als separate Release-/Assurance-Empfehlung weiterreichen.
+
+---
+
+# 14. Review-Methodology ausführen
+
+⚠️ **PFLICHT:** Lies [methodology.md](methodology.md) vollständig.
+
+Normalisierter Kontext:
+
+```yaml
+review_context:
+  ticket: ...
+  task_file: ...
+  repository_path: ...
+  branch: ...
+  parent_branch: ...
+  parent_source: merge_request|task_context|project_default|remote_default
+  parent_sha: ...
+  pre_review_rebase_status: REBASED|ALREADY_UP_TO_DATE
+  mr_source_sync: MR_SOURCE_SYNCED|LOCAL_REBASE_NOT_PUSHED|NO_REMOTE_SOURCE_REF|null
+  merge_base_sha: ...
+  head_sha: ...
+  review_source_fingerprint: ...
+  working_tree_visibility: ...
+  plan_fingerprint: ...
+  implementation_origin: self_solve | external_branch | legacy
+  implementation_handoff: <optional|null>
+  jira_solution_evidence:
+    present: true|false
+    declared_changes: [...]
+    declared_decisions: [...]
+    declared_deviations: [...]
+    declared_assumptions: [...]
+    declared_not_implemented: [...]
+    declared_operational_notes: [...]
+    declared_test_notes: [...]
+  impact_handoff: ...
+  quality_handoff: ...
+  security_review_handoff: ...
+```
+
+Die Methodology ist die Single Source of Truth für Implementation-Conformance, Findings und Merge Readiness.
+
+Sie enthält auch die **fachlichen Regeln des ursprünglichen `review-task`** (z.B. Command-Validierung/`#[Ignore]`, DateProvider, Permissions, Translation- und Testkonventionen). Diese Regeln dürfen beim Orchestrierungs-Refactoring nicht verloren gehen.
+
+---
+
+# 15. Validation auf exakt dem Review-Snapshot
+
+Tests/Static Analysis sind nur gültig, wenn sie denselben Source-Stand sehen.
+
+Bei Worktree:
+
+- bevorzugt Worktree-eigener Stack,
+- oder belastbarer projektspezifischer Worktree-Runner.
+
+Nicht den Haupt-Stack gegen Base laufen lassen und als Branch-Validation ausgeben.
+
+Mindestens die von Risk→Test/Plan/Implementation betroffenen Checks ausführen.
+
+Wenn erforderliche Validation nicht möglich ist:
+
+```text
+VALIDATION_GAP
+```
+
+und Merge Readiness entsprechend blockieren.
+
+---
+
+# 16. Report-Creation Gate — PFLICHT
+
+Vor dem ersten Schreiben von:
+
+```text
+<tasksPath>/<TICKET>_review.md
+```
+
+muss gelten:
+
+```yaml
+task_file_gate:
+  status: PASS
+```
+
+und:
+
+```bash
+test -f <TASK_FILE>
+```
+
+Zusätzlich muss die Plan-Baseline validiert sein.
+
+**Ein Review-Report darf niemals das erste lokale Artefakt eines Tickets sein.**
+
+Reihenfolge:
+
+```text
+Task-File
+→ start-task Baseline
+→ Rebase
+→ Branch Analysen
+→ erst dann Review-Report
+```
+
+Falls `<TICKET>_review.md` bereits existiert, aber kein kanonisches Task-File:
+
+- Report nicht als Task-File verwenden,
+- Report als orphaned derived artifact markieren,
+- `get-task` ausführen,
+- erst nach erfolgreichem Task-File-Gate weiterarbeiten.
+
+---
+
+# 17. Review-Report
+
+Pfad:
+
+```text
+<tasksPath>/<TICKET>_review.md
+```
+
+Der Report enthält mindestens:
+
+1. Review Snapshot + Fingerprint + Implementation-Origin
+2. Plan-Baseline + optional Handoff-Freshness
+3. JIRA-Lösung: Developer Declaration ↔ tatsächliche Implementierung
+4. Requirement/Plan ↔ Implementation Traceability
+5. Branch Impact Summary
+6. Branch Quality Summary
+7. Feature Security Review / Gap
+8. **visuelle Anpassungsgruppen:** 🔴 Blocker / 🟠 Fachliche Findings / 🟡 Warnungen / 🔵 Hinweise / ✅ Positives
+9. strukturierte `REV-*`-Finding-Details
+10. Validation Results
+11. Merge Readiness
+12. **`## Umsetzungs-Log` als verpflichtenden letzten Abschnitt**
+
+
+## Info-Header-Format
+
+Der Review-Report-Header muss **physisch und gerendert zeilenweise** geschrieben werden.
+
+Pflichtformat:
+
+```markdown
+**Branch:** `<branch>`\
+**Parent/MR-Target:** `<parent>` (`<MR>` falls vorhanden)\
+**Merge-Base:** `<sha>` · **Parent HEAD:** `<sha>`\
+**Head:** `<sha>` — `<subject>` (`<author>`, `<date>`)\
+**Review-Fingerprint:** `<fingerprint>`\
+**Implementation-Origin:** `<origin>`\
+**Working-Tree:** sichtbar: ja/nein · `<path>` · `git status`: `<status>`\
+**Review-Datum:** `<YYYY-MM-DD>`\
+**Merge Request:** `<link>` oder `-`\
+**Pre-Review-Rebase:** `<status>` · **MR Source Sync:** `<status>`\
+**Status:** `<status>`\
+**Merge Ready:** **JA / NEIN** — `<Begründung>`
+```
+
+**Wichtig:** Die Backslashes am Zeilenende sind Teil des Templates und dürfen beim Schreiben des Reports nicht
+weggelassen werden. Einfache Newlines reichen in Markdown nicht zuverlässig aus.
+
+Die fünf visuellen Gruppen sind Teil des **öffentlichen Review-Vertrags** und dürfen bei Refactorings nicht durch eine reine Severity-Liste ersetzt werden:
+
+```text
+🔴 Blocker
+🟠 Fachliche Findings
+🟡 Warnungen
+🔵 Hinweise
+✅ Positives
+```
+
+Interne `REV-*`-IDs und Severity bleiben zusätzlich erhalten.
+
+Jede `REV-*`-Anpassung erscheint genau einmal in einer der vier Anpassungsgruppen und genau einmal im `Umsetzungs-Log`.
+`POS-REV-*` erscheint unter `✅ Positives`, aber nicht im Umsetzungs-Log.
+
+Jedes Code-Finding:
+
+```text
+path/to/file.ext:new_line
+```
+
+bezogen auf den **reviewten Snapshot**.
+
+Gelöschte Zeile:
+
+```text
+path/to/file.ext:old_line (old)
 ```
 
 ---
 
-### Phase 3: Benutzer-Interaktion
+# 18. MR-Kommentare
 
-Nach Erstellung des Review-Reports:
+Nur wenn:
 
-1. **Zeige dem Benutzer** den Review-Report
-2. **Frage welche Anpassungen** umgesetzt werden sollen:
+- ein MR eindeutig zum Branch gefunden wurde,
+- der Benutzer `--comment` bzw. explizit Kommentieren verlangt,
+- Finding-Positionen noch zum **gleichen Review-Fingerprint** passen.
 
+Kommentare **vor** Remediation posten.
+
+Nach Codeänderungen sind alte Line-Positions nicht mehr garantiert gültig.
+
+Wenn Inline-Position nicht kommentierbar ist, darf als allgemeiner MR-Kommentar mit `path:line`-Referenz
+gepostet werden. Bei erfolgreichem Posting im `Umsetzungs-Log` die 💬-Spalte für das Finding auf `💬` setzen.
+
+Keine automatischen externen Kommentare.
+
+Bei `LOCAL_REBASE_NOT_PUSHED` sind Inline-MR-Kommentare gesperrt, weil der MR noch nicht denselben Source-Snapshot enthält wie der lokale Review.
+
+---
+
+# 19. Optional Remediation (`--apply`)
+
+Default: Review-only.
+
+Bei `--apply` erst **nachdem der ursprüngliche Review-Report vollständig geschrieben wurde**.
+
+Für ausgewählte Findings:
+
+1. Fix implementieren,
+2. Finding als `RESOLVED_PENDING_REVIEW` markieren,
+3. Tests/Verification ausführen,
+4. neuen Review-Fingerprint erzeugen,
+5. `## Umsetzungs-Log` aktualisieren: `✅ Umgesetzt`, Datum, Notiz/Verification,
+6. Report-Status (`🟡 Offen` / `🟠 Teilweise` / `🟢 Abgeschlossen`) aus dem Log neu bestimmen.
+
+## Semantischer Fix
+
+Verändert ein Fix Business-Regel, Contract, Permission, Event, Pendenz, Migration, Boundary o.ä.:
+
+```text
+review fix
+  ↓
+start-task reconciliation
+  ↓
+impact/quality
+  ↓
+solve/review erneut
 ```
-📋 Review-Report erstellt: <tasksPath>/<TICKET-NUMMER>_review.md
 
-Gefundene Anpassungen:
-🔴 Blocker: #1, #2
-🟠 Fachlich: #F1, #F2
-🟡 Warnungen: #3, #4
-🔵 Hinweise: #5, #6
+Nicht still als „kleiner Review-Fix“ behandeln.
 
-🧪 Test-Impact-Analyse:
-- X API-Endpunkte betroffen
-- Y Frontend-Bereiche betroffen
-- Z Enum-Verzweigungen erkannt (davon N mit Risiko)
-- K Nachfragen an Developer formuliert
+## Lokaler Fix
 
-Welche Anpassungen sollen umgesetzt werden?
-- "alle" - Alle Anpassungen
-- "blocker" - Nur Blocker
-- "1,3,5" - Spezifische Nummern
-- "keine" - Nur Review-Report erstellen
+Naming, Import, offensichtlich lokale Null-/Style-/Test-Korrektur ohne semantischen Drift darf im Review
+direkt behoben werden.
+
+Nach Remediation ist der ursprüngliche Review-Snapshot historisch; Merge Readiness muss gegen den neuen
+Snapshot erneut bestimmt werden.
+
+---
+
+# 20. Review Handoff und persistenter Review-State
+
+Nach finaler Merge-Readiness-Entscheidung:
+
+```text
+merge_ready: true  → workflow_state.task.status = MERGE_READY
+merge_ready: false → workflow_state.task.status = REVIEW_BLOCKED
+```
+
+Danach sichtbare Status-/Workspace-Projektion synchronisieren.
+
+Nach finalem Report den direkten `review_handoff` ausgeben und zusätzlich `workflow_state.review_task` persistieren:
+
+```yaml
+review_task:
+  review_source_fingerprint: ...
+  parent_branch: ...
+  parent_sha: ...
+  rebase_status: REBASED|ALREADY_UP_TO_DATE
+  mr_source_sync: ...
+  jira_solution_reconciliation: CONFIRMED|PARTIAL|CONTRADICTED|NOT_VERIFIABLE|NOT_AVAILABLE
+  findings:
+    blocker: [REV-*]
+    fachlich: [REV-*]
+    warning: [REV-*]
+    hint: [REV-*]
+    positive: [POS-REV-*]
+  merge_ready: true|false
+  blocking_reasons: [...]
+```
+
+Nur `workflow_state.review_task` ändern; alle fremden Namespaces erhalten.
+
+## Direkter Handoff
+
+```yaml
+review_handoff:
+  ticket: ...
+  task_file_gate:
+    status: PASS
+    task_file: ...
+    source: existing|get-task
+  parent:
+    branch: ...
+    source: merge_request|task_context|project_default|remote_default
+    sha: ...
+    mr: ...|null
+  pre_review_rebase:
+    status: REBASED|ALREADY_UP_TO_DATE
+    head_before: ...
+    head_after: ...
+  mr_source_sync: MR_SOURCE_SYNCED|LOCAL_REBASE_NOT_PUSHED|NO_REMOTE_SOURCE_REF|null
+  review_source_fingerprint: ...
+  upstream:
+    implementation_origin: self_solve | external_branch | legacy
+    implementation_handoff_available: true|false
+    implementation_handoff_fresh: true|false|null
+    plan_fingerprint: ...
+    plan_impact_fingerprint: ...
+    plan_quality_fingerprint: ...
+  jira_solution:
+    present: true|false
+    reconciliation_status: CONFIRMED|PARTIAL|CONTRADICTED|NOT_VERIFIABLE|NOT_AVAILABLE
+    contradictions: [...]
+    undocumented_implementation_changes: [...]
+  impact:
+    source_fingerprint: ...
+    critical: [R-*]
+    high: [R-*]
+  quality:
+    source_fingerprint: ...
+    decision: ...
+    findings: [Q-*]
+  security:
+    level: ...
+    status: NOT_REQUIRED|PASSED|FAILED|REQUIRED_NOT_RUN
+    findings: [...]
+  review_findings:
+    visual_groups:
+      blocker: [REV-*]
+      fachlich: [REV-*]
+      warnings: [REV-*]
+      hints: [REV-*]
+      positives: [POS-REV-*]
+    severity:
+      blocker: [REV-*]
+      high: [REV-*]
+      medium: [REV-*]
+      low: [REV-*]
+  implementation_log:
+    open: [REV-*]
+    implemented: [REV-*]
+    skipped: [REV-*]
+    rejected: [REV-*]
+    mr_commented: [REV-*]
+  validation:
+    passed: [...]
+    failed: [...]
+    not_run: [...]
+  merge_ready: true|false
+  blocking_reasons: [...]
 ```
 
 ---
 
-### Phase 4: Umsetzung
+# 21. Merge-Readiness Gate
 
-Für jede ausgewählte Anpassung:
+`merge_ready: true` nur wenn:
 
-1. **Korrektur durchführen**
-2. **Im Review-Report** den Status aktualisieren:
-   - `⬜` → `✅` (Umgesetzt)
-   - Datum eintragen
-   - Optional: Notizen
+- `workflow_state.impact.branch.source_fingerprint` und `workflow_state.quality.branch.review_source_fingerprint`
+  exakt dem aktuellen Review-Fingerprint entsprechen,
 
-**Nach Abschluss aller Anpassungen:**
+- kanonisches Task-File existiert und `task_file_gate=PASS`,
+- Pre-Review-Rebase gegen den aktuellen tatsächlichen Parent/MR-Target erfolgreich war,
+- bei vorhandenem MR dessen Source-SHA dem reviewten rebased SHA entspricht,
+- Task/AK/Plan gegen Implementierung erfüllt,
+- JIRA-Lösung gegen tatsächliche Implementierung reconciled; keine blockierenden Widersprüche,
+- kein ungeklärter semantischer Plan-Drift,
+- Branch-Impact keine unbehandelten `CRITICAL/HIGH` Risiken enthält,
+- Branch-Quality nicht `PLAN/DESIGN ÜBERARBEITEN` fordert,
+- keine Blocker-/High-Review-Findings offen sind,
+- erforderliche Tests/Static Analysis bestanden haben,
+- erforderlicher Feature-Security-Review bestanden hat,
+- keine blockierenden Unknowns/Coverage-Gaps bestehen.
 
-1. **Review-Report Status** aktualisieren:
-   - `🟡 Offen` → `🟢 Abgeschlossen` (alle umgesetzt)
-   - `🟡 Offen` → `🟠 Teilweise` (nur einige umgesetzt)
-
-2. **Zusammenfassung ausgeben:**
-
-```
-✅ Review abgeschlossen
-
-Umgesetzt: #1, #2, #3
-Übersprungen: #5, #6
-Abgelehnt: -
-
-Review-Report: <tasksPath>/<TICKET-NUMMER>_review.md
-```
+`FULL_APP_AUDIT_RECOMMENDED` blockiert einen normalen Feature-Merge nicht automatisch, außer eure
+Projekt-/Release-Policy macht den Full Audit explizit zum Gate.
 
 ---
 
-## Starte jetzt!
+# 22. Abschluss
 
-Beginne mit **Phase 0: Branch auflösen & Voraussetzungs-Check** — löse aus Task-File/Ticket den
-**Feature-Branch** (+ ggf. Worktree) auf, stelle sicher, dass der Task **umgesetzt** ist (Branch hat Commits),
-und prüfe das Task-File auf `## Analyse` + `## Lösungsplan`. Danach **Phase 1: Analyse** auf genau diesem Branch.
+## Merge-ready
+
+```text
+✅ REVIEW ABGESCHLOSSEN — MERGE-READY
+
+Ticket: <TICKET>
+Review-Fingerprint: <...>
+
+Impact: <...>
+Quality: <...>
+Security: <...>
+Validation: <...>
+
+Offene Hinweise: <n>
+Blocker: 0
+
+📄 <review-report>
+```
+
+## Nicht merge-ready
+
+```text
+🔴 REVIEW ABGESCHLOSSEN — NICHT MERGE-READY
+
+Blockierende Punkte:
+- ...
+
+📄 <review-report>
+```
+
+Nicht automatisch committen/pushen/mergen.
+
+---
+
+# Starte jetzt
+
+1. Ticket und existierenden Feature-Branch/Worktree auflösen.
+2. **Kanonisches Task-File suchen; Derived Artifacts (`*_review.md` etc.) explizit ausschließen.**
+3. Falls kein Task-File: `get-task <TICKET> --no-worktree` als Sub-Workflow ausführen.
+4. `get_task_handoff.task_file` konsumieren und mit `test -f` + Inhaltscheck verifizieren.
+5. Wenn Task-File-Gate nicht `PASS`: **STOP — keinen Review-Report erzeugen.**
+6. `workflow_state` laden/validieren; bei Legacy-Task v1 initialisieren, aber keine Fingerprints raten.
+7. tatsächlichen Parent bestimmen — bei MR ist `target_branch` autoritativ.
+8. `git fetch origin --prune`.
+9. Falls Plan-Baseline fehlt/stale: `start-task` im Embedded `review-bootstrap` gegen `origin/<PARENT>` ausführen.
+10. Feature-Branch mit `git rebase --autostash origin/<PARENT>` aktualisieren; bei Konflikt Review stoppen.
+11. MR-Source-Synchronität nach Rebase prüfen.
+12. Plan-Baseline validieren.
+13. `## Lösung` aus JIRA als Developer-Evidenz erfassen.
+14. Review-Snapshot + Fingerprint des rebased Feature-Branches bilden.
+15. optionalen Implementation-Handoff einordnen.
+16. Branch-Impact gegen denselben Parent aufrufen.
+17. Branch-Quality gegen denselben Parent aufrufen.
+18. ggf. Feature-Security-Review.
+19. `methodology.md` ausführen.
+20. Validation auf exakt diesem Snapshot.
+21. **Erst jetzt** `<TICKET>_review.md` schreiben — mit 🔴/🟠/🟡/🔵/✅-Gruppen und verpflichtendem `## Umsetzungs-Log` am Ende.
+22. `workflow_state.review_task` persistieren und Parser-Postcondition prüfen.
+23. Review-Handoff + Merge-Readiness ausgeben.

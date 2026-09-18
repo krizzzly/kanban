@@ -30,7 +30,7 @@ Beschreibung des neuen Tasks: $ARGUMENTS
 - **Opt-out:** Wenn `$ARGUMENTS` das Flag `--no-worktree` enthält, Worktree-Erstellung überspringen.
   Entferne `--no-worktree` aus der Beschreibung, bevor sie ins Task-File geschrieben wird.
 
-> Vollständige Befehls-/Flag-Referenz zu `iwf worktree`: `~/Library/Application Support/Kanban/claude/rules/worktree.md`.
+> Vollständige Befehls-/Flag-Referenz zu `iwf worktree`: `.claude/rules/worktree.md`.
 
 ---
 
@@ -41,11 +41,17 @@ Beschreibung des neuen Tasks: $ARGUMENTS
 Lies alle bestehenden Task-Files:
 
 ```bash
-ls <tasksPath>/<PREFIX>-*.md | sort -t'-' -k2 -n | tail -5
+ls <tasksPath>/<PREFIX>-*.md | sort -V | tail -5
 ```
 
 Ermittle die höchste vorhandene Nummer und erhöhe um 1.
 Beispiel: `<PREFIX>-4383` existiert → nächste Nummer ist `<PREFIX>-4384`.
+
+> ⚠️ **Nicht `sort -t'-' -k2 -n` verwenden.** Bei mehrteiligen Prefixes (`IWF-LOCAL-DEV`) ist Feld 2
+> `LOCAL` statt der Nummer, der numerische Vergleich läuft ins Leere und `tail -1` liefert die falsche
+> Datei — gemessen: bei `…-1, -2, -9, -10, -100` kommt `…-9` als „höchste" heraus, die nächste Nummer
+> kollidiert also mit einer bestehenden. `sort -V` sortiert eingebettete Zahlen korrekt, unabhängig
+> davon, wie viele Bindestriche der Prefix hat.
 
 ### Schritt 2: Dateinamen generieren
 

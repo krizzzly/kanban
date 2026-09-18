@@ -1,178 +1,335 @@
 ---
 name: impact-analysis
-description: Impact-Analyse für einen Task (offen, in Bearbeitung oder abgeschlossen). Nur explizit aufrufen — kein Auto-Trigger.
-argument-hint: <task-file.md, branch-name, TICKET-NUMMER oder MR-Nummer>
+description: Evidenzbasierte Impact-Analyse für Plan, Branch, MR oder gemergte Änderungen. Kann standalone oder als Sub-Skill aufgerufen werden.
+argument-hint: <task-file.md | TICKET | branch-name | MR-Nummer> [--plan|--branch|--merged]
 disable-model-invocation: true
 ---
 
-# IMPACT-ANALYSE — Standalone
+# IMPACT ANALYSIS — Skill-Orchestrator
 
-> ⚙️ **Projektwerte** (`prefix`, `tasksPath`, `repoDir`, `worktreePrefix`, `stackDomain`, `gitlabProjectPath`):
-> stehen in `.claude/project.json` im Repo-Root. Platzhalter wie `<PREFIX>`/`<tasksPath>` stehen für diese Werte.
+> Diese Datei ist der **Invocation-/Routing-Layer**.
+> Die fachliche Analyse steht ausschließlich in [methodology.md](methodology.md).
+> Keine Analyseschritte aus `methodology.md` hier duplizieren.
 
-Führe eine Test-Impact-Analyse für einen beliebigen Task durch — unabhängig davon,
-ob der Task offen, in Bearbeitung oder bereits abgeschlossen ist.
+## 1. Verantwortung dieses Skills
 
-## Input
+Dieser Skill ist zuständig für:
 
-$ARGUMENTS
+1. Projektkontext und Argumente auflösen,
+2. Caller-/Standalone-Kontext normalisieren,
+3. Task-File, Repository/Worktree, Base/Head und primäre Datenquelle bestimmen,
+4. einen reproduzierbaren Source-Fingerprint erzeugen,
+5. `methodology.md` vollständig ausführen,
+6. das Ergebnis am richtigen Ziel dokumentieren,
+7. einen kompakten Handoff an den Caller zurückgeben.
 
-**Akzeptierte Formate:**
-- Task-File: `<tasksPath>/<PREFIX>-1234_feature.md`
-- Ticket-Nummer: `<PREFIX>-1234`
-- Branch-Name: `feature/<PREFIX>-1234_feature`
-- MR-Nummer: `!969` oder `969`
-- Kein Argument: Aktueller Branch wird verwendet
+Dieser Skill ist **nicht** zuständig für:
+
+- Semantic-Change-Analyse,
+- Fan-in/Fan-out,
+- Invarianten,
+- Data Lineage,
+- Risk Scoring,
+- Testableitung,
+- Quality-Entscheidungen.
+
+Diese Logik gehört ausschließlich in `methodology.md`.
 
 ---
 
-## Workflow
+# 2. Projektkontext
 
-### Schritt 1: Task und Branch identifizieren
+Lies zuerst `.claude/project.json` im Repo-Root.
 
-1. **Ticket-Nummer ermitteln** aus dem Argument (Task-File-Name, Branch, MR oder direkt):
-   ```bash
-   # Falls kein Argument: aktuellen Branch verwenden
-   git branch --show-current
-   ```
+Projektwerte wie `prefix`, `tasksPath`, `repoDir`, `worktreePrefix`,
+`stackDomain`, `gitlabProjectPath` niemals raten.
 
-2. **Task-File suchen:**
-   ```bash
-   ls <tasksPath>/<PREFIX>-<NUMMER>*.md
-   ```
+## Workflow-State
 
-3. **Branch ermitteln:**
-   ```bash
-   git branch -a | grep -i "<TICKET-NUMMER>"
-   ```
+Lies `.claude/rules/workflow-state.md` vollständig.
 
-### Schritt 2: Status erkennen und Datenquelle bestimmen
+`workflow_state.task` und `.workspace` sind lesbare Shared Facts. Dieser Skill verändert sie nicht. Er schreibt ausschließlich seinen Analyse-Slot.
 
-| Situation | Erkennung | Datenquelle |
-|-----------|-----------|-------------|
-| **Offen (nur Plan)** | Task-File hat `## Lösungsplan`, aber kein Branch/keine Commits | Lösungsplan aus Task-File |
-| **In Bearbeitung** | Feature-Branch existiert mit Commits, nicht gemerged | git diff des Branches |
-| **Abgeschlossen** | Branch gemerged in develop/main | Commits aus git log |
+`impact-analysis` besitzt ausschließlich:
 
-**Erkennung automatisieren:**
-
-```bash
-TICKET="<TICKET-NUMMER>"
-
-# Branch suchen
-BRANCH=$(git branch -a --list "*${TICKET}*" | head -1 | tr -d ' ')
-
-# Prüfen ob gemerged
-if [ -n "$BRANCH" ]; then
-    MERGED=$(git log --oneline develop --grep="$TICKET" | head -5)
-    if [ -n "$MERGED" ]; then
-        echo "STATUS: Abgeschlossen (gemerged)"
-    else
-        echo "STATUS: In Bearbeitung (Branch: $BRANCH)"
-    fi
-else
-    echo "STATUS: Offen (kein Branch)"
-fi
+```text
+workflow_state.impact.plan
+workflow_state.impact.branch
 ```
 
-**Datenquelle je nach Status:**
+`primary_source: plan` schreibt `.impact.plan`; Branch/Working-Tree/MR/Merged schreibt `.impact.branch`.
+Plan- und Branch-Slot niemals gegenseitig überschreiben.
 
-**Offen (nur Lösungsplan):**
-- Lies `## Lösungsplan` aus dem Task-File
-- Nutze die geplanten Dateien/Klassen als Ausgangspunkt
-- Entspricht dem `start-task`-Modus
+---
 
-**In Bearbeitung (Branch existiert):**
-```bash
-MERGE_BASE=$(git merge-base origin/<branch> develop)
-git diff --name-only $MERGE_BASE..origin/<branch>
+# 3. Invocation Context
+
+Der Skill unterstützt zwei Aufrufarten.
+
+## 3.1 Embedded Invocation
+
+Wenn ein Caller wie `start-task`, `review-task` oder `review-merge` bereits
+einen normalisierten Kontext liefert, diesen verwenden und nicht unnötig
+erneut autodetektieren.
+
+Erwarteter Kontext:
+
+```yaml
+caller: start-task | review-task | review-merge
+primary_source: plan | branch-diff | working-tree-diff | mr-diff | merged-commits
+task_file: <path|null>
+ticket: <ticket|null>
+repository_path: <repo-or-worktree>
+base: <sha-or-branch|null>
+head: <sha-or-branch|null>
+include_working_tree: true|false
+source_fingerprint: <optional caller-provided fingerprint>
+output_target: <task-file-or-review-report>
 ```
 
-**Abgeschlossen (gemerged):**
+## 3.2 Standalone Invocation
+
+Input:
+
+`$ARGUMENTS`
+
+Akzeptiert:
+
+- Task-File
+- Ticket-Nummer
+- Branch-Name
+- MR-Nummer (`!123` oder `123`)
+- kein Argument → aktueller Branch
+
+Optionale explizite Modus-Hinweise:
+
+- `--plan`
+- `--branch`
+- `--merged`
+
+Explizite Angaben schlagen Autodetektion.
+
+---
+
+# 4. Standalone-Kontext auflösen
+
+## 4.1 Ticket und Task-File
+
+Ticket aus Argument, Branch oder Task-File ableiten.
+
+Falls Ticket bekannt:
+
+Nur kanonische Task-Files suchen; Derived Artifacts ausschließen:
+
 ```bash
-# Commits des Tickets in develop finden
-git log --oneline develop --grep="<TICKET-NUMMER>"
-# Geänderte Dateien aus diesen Commits extrahieren
-git log --name-only --pretty=format: develop --grep="<TICKET-NUMMER>" | sort -u | grep -v "^$"
+find <tasksPath> -maxdepth 1 -type f \
+  \( -name "<TICKET>.md" -o -name "<TICKET>_*.md" \) \
+  ! -name "<TICKET>_review.md" \
+  ! -name "<TICKET>_security_review.md" \
+  ! -name "<TICKET>_audit*.md"
 ```
 
-### Schritt 3: Impact-Analyse durchführen
+Bei genau einem Treffer verwenden.
 
-⚠️ **PFLICHT:** Lies und befolge die vollständige, projekt-neutrale Anleitung in der gebündelten
-[methodology.md](methodology.md) — sie liegt neben dieser Datei im Skill-Verzeichnis
+Bei mehreren Treffern den aktuellsten/inhaltlich passenden Treffer nicht
+raten; die Mehrdeutigkeit als `UNKNOWN` dokumentieren, sofern der Caller
+sie nicht bereits aufgelöst hat.
 
-**Zuerst — Projekt-Profil bestimmen:** Die Auto-Detektions-Greps aus der Anleitung (Abschnitt
-„Projekt-Profil zuerst bestimmen") einmal ausführen und die `‹Profil.X›`-Werte festhalten (FE-Sprache,
-Read-Modell, Autorisierung, Async-Mechanismus, Hochrisiko-Enums). Diese Werte steuern alle folgenden
-Schritte. Der Projekt-Doku (`architecture.md`) dabei NICHT blind trauen — aus dem Code detektieren.
+## 4.2 Worktree-Routing
 
-Führe dann alle 6 Schritte der Anleitung aus:
+Wenn das Task-File einen gültigen `WORKTREE`-Block enthält:
 
-0. **Historische Ticket-Verfolgung** (PFLICHT, vor allem anderen) — Git-History jeder zu ändernden Datei
-   rückwärts nach Ticket-Commits durchsuchen, um bewusste frühere Design-Entscheidungen NICHT blind zu
-   überschreiben. Vollständige Befehle + Doku-Tabelle → Anleitung, „Schritt 0".
-1. Dateien kategorisieren (nach Architektur-Schicht)
-2. Aufwärts-Verfolgung (Bottom-Up Tracing) bis Controller/Frontend — Write Flow und Read Flow getrennt
-3. Business-Logik-Verzweigungen erkennen (Enums UND Properties!) — inkl. Datenfluss-Verfolgung bei
-   „Feld nicht befüllt / zeigt 0"-Bugs (nach **Property** statt Setter grep'en, Calc-/Lese-Schicht zu
-   Ende lesen, kanonisches Prädikat statt Eigenbau-Guard) → Anleitung, „Schritt 3c".
-4. Betroffene Test-Bereiche zusammenstellen
-5. Nachfragen formulieren
+- Source-Reads aus `src/`, `assets/`, `tests/`, `templates/`, `config/`,
+  `migrations/` auf den Worktree routen,
+- Git-Inspektion mit `git -C <WORKTREE> ...`,
+- Task-File, `.claude/*`, `CLAUDE.md` und zentrale Docs aus dem Haupt-Repo lesen.
 
-### Schritt 4: Ergebnis dokumentieren
+Ohne gültigen Worktree den aufgelösten Repository-Pfad verwenden.
 
-**Falls Task-File existiert:** Füge die Analyse unter `## Impact-Analyse` im Task-File ein
-(oder aktualisiere eine bestehende Sektion).
+## 4.3 Primäre Datenquelle bestimmen
 
-**Format:**
+Priorität:
+
+1. expliziter Modus,
+2. expliziter MR,
+3. expliziter Branch,
+4. ungemergter Feature-Branch zum Ticket,
+5. gemergte Ticket-Commits,
+6. vorhandener Lösungsplan.
+
+### Plan
+
+Primäre Quelle: `## Lösungsplan` im Task-File.
+
+### Branch / Working Tree
+
+Für einen reinen Commit-/Remote-Branch:
+
+```bash
+TARGET=<resolved-base>
+HEAD=<resolved-head>
+MERGE_BASE=$(git merge-base "$TARGET" "$HEAD")
+git diff "$MERGE_BASE..$HEAD"
+```
+
+Für einen lokal ausgecheckten Branch/Worktree mit `include_working_tree=true` muss die primäre Quelle den
+**gesamten aktuellen Working Tree gegen den Merge-Base** enthalten:
+
+```bash
+MERGE_BASE=$(git merge-base HEAD <resolved-base>)
+git diff "$MERGE_BASE" --        # committed + staged + unstaged tracked changes
+git status --short               # untracked zusätzlich inventarisieren
+```
+
+Untracked versionierte Kandidaten müssen in Semantic Change Set und Fingerprint einbezogen werden.
+
+Wenn der Caller bereits einen `source_fingerprint` für exakt diesen Working-Tree-Snapshot liefert, diesen
+übernehmen statt einen abweichenden zweiten Snapshot zu konstruieren.
+
+### MR
+
+MR-Branch/Base über die vorhandene GitLab-/Projektintegration auflösen.
+Danach denselben Merge-Base-/Diff-Mechanismus verwenden.
+
+### Gemerged
+
+Ticket-Commits im Zielbranch bestimmen und die tatsächlich zugehörigen
+Änderungen als Quelle verwenden.
+
+Wenn keine belastbare Quelle bestimmt werden kann: nicht raten; mit
+konkretem `UNKNOWN` abbrechen.
+
+---
+
+# 5. Reproduzierbarer Analyse-Snapshot
+
+Vor der Methodology einen Snapshot erzeugen:
+
+```yaml
+caller: ...
+mode: plan | branch | mr | merged
+primary_source: ...
+ticket: ...
+task_file: ...
+repository_path: ...
+base: ...
+head: ...
+source_fingerprint: ...
+```
+
+## Source-Fingerprint
+
+Der Fingerprint identifiziert genau den analysierten Stand.
+
+- **Plan:** stabiler Hash des aktuellen `## Lösungsplan`-Inhalts.
+- **Branch/MR ohne Working-Tree-Änderungen:** `BASE_SHA + HEAD_SHA`.
+- **Working-Tree-Diff:** Hash aus Merge-Base/Base SHA + vollständigem tracked Diff gegen Merge-Base +
+  Pfaden/Hashes relevanter untracked Dateien.
+- **Merged:** sortierte relevante Commit-SHAs bzw. daraus abgeleiteter Hash.
+
+Für Text kann z.B. `git hash-object --stdin` verwendet werden.
+
+Der Fingerprint muss im Report stehen. Downstream-Skills verwenden ihn
+zur Freshness-Prüfung.
+
+---
+
+# 6. Methodology ausführen
+
+⚠️ **PFLICHT:** Lies [methodology.md](methodology.md) vollständig und führe
+sie mit dem normalisierten Invocation Context aus.
+
+Die Methodology ist die **Single Source of Truth** für die Impact-Analyse.
+
+Keine Kurzfassung der Schritte aus `methodology.md` hier pflegen.
+
+---
+
+# 7. Ergebnis persistieren
+
+## Task-File vorhanden
+
+Impact-Report unter:
 
 ```markdown
 ## Impact-Analyse
-
-**Durchgeführt am:** <DATUM>
-**Basis:** [Lösungsplan / Branch `<name>` / Gemergte Commits]
-**Status bei Analyse:** [Offen / In Bearbeitung / Abgeschlossen]
-
-### Betroffene Schichten
-| Schicht | Dateien |
-|---------|---------|
-| ... | ... |
-
-### Impact-Pfade
-...
-
-### Verzweigungen (Risiko-Analyse)
-...
-
-### Test-Bereiche für QA
-...
-
-### Nachfragen
-...
 ```
 
-### Schritt 5: Zusammenfassung ausgeben
+einfügen oder die bestehende Impact-Analyse für denselben
+`source_fingerprint` aktualisieren.
 
+Eine ältere Analyse mit anderem Fingerprint nicht kommentarlos als aktuell
+ausgeben. Entweder ersetzen und Historie kenntlich machen oder als stale
+markieren.
+
+## Workflow-State persistieren
+
+Wenn ein kanonisches Task-File vorhanden ist, den kompakten Handoff immer zusätzlich in den passenden State-Slot
+schreiben:
+
+```yaml
+impact:
+  <plan|branch>:
+    source_fingerprint: ...
+    semantic_changes: [C-*]
+    impact_paths: [P-*]
+    invariants: [INV-*]
+    risks:
+      critical: [R-*]
+      high: [R-*]
+      medium: [R-*]
+    open_unknowns: [...]
+    test_matrix_present: true|false
 ```
-🔍 IMPACT-ANALYSE: <TICKET-NUMMER>
 
-**Status:** [Offen / In Bearbeitung / Abgeschlossen]
-**Basis:** [Lösungsplan / Branch / Gemergte Commits]
+Nur den gewählten Slot ändern.
 
-## Ergebnis
-- Betroffene Controller/Endpunkte: [Anzahl]
-- Betroffene Frontend-Bereiche: [Anzahl]
-- Erkannte Verzweigungen: [Anzahl, davon X mit Risiko]
-- Nachfragen: [Anzahl]
+## Review-Caller
 
-## Wichtigste Risiken
-[Top 3 Findings kurz aufgelistet]
+Wenn der Caller ein Review-Report-Ziel vorgibt, den ausführlichen Report dorthin schreiben. Der kompakte State wird
+im Task-File dennoch persistiert, sofern ein kanonisches Task-File existiert.
 
-📄 Dokumentiert in: <tasksPath>/<TICKET>_<name>.md → ## Impact-Analyse
-```
+## Kein persistentes Ziel
+
+Report in der Ausgabe vollständig zurückgeben.
 
 ---
 
-## Starte jetzt!
+# 8. Handoff an Caller
 
-Beginne mit Schritt 1: Task und Branch identifizieren.
+Am Ende immer einen kompakten Handoff liefern:
+
+```yaml
+impact_handoff:
+  source_fingerprint: ...
+  semantic_changes: [C-*]
+  impact_paths: [P-*]
+  invariants: [INV-*]
+  risks:
+    critical: [R-*]
+    high: [R-*]
+    medium: [R-*]
+  open_unknowns: [...]
+  test_matrix_present: true|false
+  caller_reconciliation_required: true|false
+```
+
+Der Handoff enthält Referenzen auf die Methodology-Ergebnisse, keine zweite
+Zusammenfassung derselben Analyse. Derselbe kompakte Inhalt wird im passenden State-Slot persistiert.
+
+---
+
+# 9. Abschluss
+
+Standalone zusätzlich kurz ausgeben:
+
+```text
+🔍 IMPACT-ANALYSE: <TICKET/FEATURE>
+Basis: <plan/branch/mr/merged>
+Fingerprint: <...>
+Risiken: Critical <n> · High <n> · Medium <n>
+Unknowns: <n>
+Dokumentiert in: <ziel>
+```
+
+Bei Embedded Invocation den Handoff an den Caller zurückgeben.

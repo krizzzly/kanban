@@ -16,7 +16,7 @@ löschen. Per Default bleibt der `feature/*`-Branch erhalten.
 Platzhalter in spitzen Klammern (`<PREFIX>`, `<tasksPath>`, `<worktreePrefix>`) stehen im Folgenden für die
 entsprechenden Werte aus `.claude/project.json`.
 
-> Vollständige Befehls-/Flag-Referenz zu `iwf worktree`: `~/Library/Application Support/Kanban/claude/rules/worktree.md`.
+> Vollständige Befehls-/Flag-Referenz zu `iwf worktree`: `.claude/rules/worktree.md`.
 
 ## Input
 
@@ -96,7 +96,7 @@ iwf worktree destroy <NUMMER> --force [--delete-branch] [--keep-data]
 (z.B. Stack gestoppt aber Worktree noch da).
 
 > Nur den Stack stoppen statt komplett abräumen? → `iwf worktree stop <NUMMER>` (Worktree + Volume + Branch
-> bleiben, `iwf worktree start <NUMMER>` bringt alles zurück). Siehe `~/Library/Application Support/Kanban/claude/rules/worktree.md`.
+> bleiben, `iwf worktree start <NUMMER>` bringt alles zurück). Siehe `.claude/rules/worktree.md`.
 
 ---
 
@@ -154,7 +154,7 @@ Nächste Schritte:
 5. **Nicht abbrechen:** Wenn der Stack-Stop schon läuft, `destroy` durchlaufen lassen — sonst bleibt
    halb-zerstörter Zustand zurück.
 6. **Task-File anpassen** (nicht löschen): Nur den Worktree-Block entfernen und Status aktualisieren.
-7. Vollständige Befehls-/Flag-Referenz: `~/Library/Application Support/Kanban/claude/rules/worktree.md`.
+7. Vollständige Befehls-/Flag-Referenz: `.claude/rules/worktree.md`.
 
 ---
 

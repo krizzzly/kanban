@@ -1,618 +1,825 @@
 ---
 name: solve-task
-description: Setze einen vorbereiteten JIRA-Task um (überspringt Analyse/Planung)
+description: Implementiere einen durch start-task freigegebenen Lösungsplan, validiere ihn und bereite den Implementation-Handoff für Review vor
 argument-hint: <TICKET-NUMMER oder task-file.md> [--no-worktree]
 disable-model-invocation: true
 ---
 
-# SOLVE TASK - Umsetzungs-Arbeitsanweisung
+# SOLVE TASK — Implementierung
 
-> ⚙️ **Projektwerte** (`prefix`, `tasksPath`, `repoDir`, `worktreePrefix`, `stackDomain`, `gitlabProjectPath`):
-> stehen in `.claude/project.json` im Repo-Root. Lies die Datei, bevor du einen Projektwert brauchst — nie raten.
+> `solve-task` ist der **Execution-Schritt** der Task-Lane.
+> Er plant den Task nicht neu und führt keine vollständige Impact-/Quality-Analyse durch.
+> Er implementiert ausschließlich einen **aktuellen, freigegebenen Plan** und erzeugt danach einen
+> reproduzierbaren Implementation-Handoff für den Review.
 
-Du bist ein erfahrener Software-Entwickler, der einen **bereits geplanten** JIRA-Task umsetzt.
-
-## Argument-Auflösung
-
-**Input:** $ARGUMENTS
-
-**Schritt 0: Task-File ermitteln**
-
-Falls das Argument eine Ticket-Nummer ist (Schema `<PREFIX>-NNNN`, `prefix` aus `.claude/project.json`),
-suche automatisch das passende Task-File im Task-Ordner (`tasksPath` aus `.claude/project.json`):
-
-```bash
-# Suche nach Task-File mit dieser Ticket-Nummer
-ls <tasksPath>/<TICKET-NUMMER>*.md
+```text
+get-task
+  ↓
+start-task
+  ├── impact-analysis (Plan)
+  └── quality-analysis (Plan)
+        ↓
+     READY
+        ↓
+solve-task
+  ├── Readiness/Freshness prüfen
+  ├── Plan implementieren
+  ├── Tests/Static Analysis ausführen
+  ├── tatsächlichen Diff dokumentieren
+  └── Implementation-Handoff
+        ↓
+review-task / security-review
 ```
 
-**Auswertung:**
+---
 
-| Situation | Aktion |
-|-----------|--------|
-| Genau 1 File gefunden | Verwende dieses File |
-| Mehrere Files gefunden | Zeige Liste und frage Benutzer welches verwendet werden soll |
-| Kein File gefunden | Hinweis: `/get-task <TICKET-NUMMER>` verwenden um Task zu laden |
-| Argument ist bereits ein Pfad | Verwende den Pfad direkt |
+# 1. Projektkontext
 
-**Ermitteltes Task-File:** `<TASK_FILE>` (wird im weiteren Workflow verwendet)
+Lies zuerst `.claude/project.json` im Repo-Root.
+
+Projektwerte niemals raten.
+
+Zusätzlich lesen:
+
+- `CLAUDE.md` und referenzierte Projekt-Dokumente,
+- `.claude/rules/testing.md`,
+- vorhandene Code-Review-Learnings,
+- projektspezifische Regeln für Übersetzungen, Zeit/Clock, Naming, Migrationen usw.
+
+Projektregeln gehören bevorzugt dorthin und werden hier nicht als allgemeine Architekturregeln dupliziert.
 
 ---
 
-## Dein Task-File
+# 2. Input und Task-File
 
-Lies und analysiere: `<TASK_FILE>`
+Input:
 
-**WICHTIG:** Dieses Command erfordert gründliches Nachdenken. Füge `ULTRATHINK` am Ende deiner Überlegungen hinzu,
-um maximale Analyse-Tiefe zu gewährleisten.
+```text
+$ARGUMENTS
+```
 
-## Worktree-Verhalten (Default: AN)
+Akzeptiert:
 
-- **Standard:** Falls das Task-File noch keinen Worktree-Block hat, wird in Phase 0a automatisch einer angelegt
-  und der Block ins Task-File eingefügt (nur Worktree, **kein** Docker-Stack).
-- **Opt-out:** Wenn `$ARGUMENTS` das Flag `--no-worktree` enthält, KEIN Worktree anlegen — Feature-Branch wird
-  im Haupt-Repo erzeugt (altes Default-Verhalten). Das Flag wird beim Task-File-Lookup ignoriert.
+```text
+<TICKET-NUMMER oder task-file.md> [--no-worktree]
+```
 
-> Vollständige Befehls-/Flag-Referenz zu `iwf worktree`: `~/Library/Application Support/Kanban/claude/rules/worktree.md` (bzw. `iwf worktree --help`).
+Bei Ticket:
 
----
+Nur kanonische Task-Files suchen; Derived Artifacts ausschließen:
 
-## Jira-Status und Zuweisung (macht Kanban)
+```bash
+find <tasksPath> -maxdepth 1 -type f \
+  \( -name "<TICKET>.md" -o -name "<TICKET>_*.md" \) \
+  ! -name "<TICKET>_review.md" \
+  ! -name "<TICKET>_security_review.md" \
+  ! -name "<TICKET>_audit*.md"
+```
 
-Wird dieses Skill **aus Kanban** abgesetzt (Karten-Kontextmenü oder Detail-Header), zieht die App das
-JIRA-Ticket dabei nach: Status auf **„In Arbeit"** und **dir zugewiesen**. Geschrieben wird nur, was
-fehlt; das Ergebnis steht in Kanbans Toolbar. Du musst dafür nichts tun — und sollst es auch nicht:
-für Transition und Zuweisung gibt es hier kein Werkzeug.
+| Befund | Aktion |
+|---|---|
+| genau ein File | verwenden |
+| mehrere Files | nicht raten; Mehrdeutigkeit melden |
+| kein File | `get-task`/`start-task` fehlt → nicht implementieren |
+| expliziter Pfad | genau diesen verwenden |
 
-Läuft das Skill **ausserhalb** von Kanban, bleibt das aus. Dann gehören Status und Zuweisung von Hand
-in JIRA gesetzt — der Status im Task-File (`🟡 In Arbeit`) sagt JIRA nichts.
-
-
----
-
-## Voraussetzungen
-
-Dieses Command setzt voraus, dass das Task-File bereits folgende Abschnitte enthält:
-
-- `## Analyse` - Fachliche und technische Analyse
-- `## Lösungsplan` - Strukturierter Plan mit konkreten Schritten
-
-> Falls diese fehlen, verwende stattdessen `start-task` für den vollständigen Workflow!
+`solve-task` erzeugt **kein neues Task-File**.
 
 ---
 
-## Workflow - Führe diese Schritte der Reihe nach aus:
+# 3. Persistenter Workflow-State laden
 
-### Phase 0a: Worktree-Routing (IMMER ALLERERST!)
+Lies `.claude/rules/workflow-state.md` vollständig und parse den State aus dem kanonischen Task-File.
 
-**Grundprinzip:** Claude wird IM HAUPT-REPO gestartet und BLEIBT dort als Working-Directory
-(`repoDir` aus `.claude/project.json`). Wenn das Task-File einen Worktree-Block enthält, werden ALLE
-Code-Operationen und Git-Befehle für den Feature-Branch in den Worktree-Pfad **geroutet** — ohne `cd`.
-Lesen aus Haupt-Repo (Task-File, CLAUDE.md, `.claude/`, Docs), Schreiben/Git ins Worktree.
+Für eine unabhängige `/solve-task`-Session sind maßgeblich:
 
-**Schritt 0a-1: Worktree-Block im Task-File suchen**
+```text
+workflow_state.start_task
+workflow_state.impact.plan
+workflow_state.quality.plan
+```
 
-Lies die ersten ~15 Zeilen des Task-Files und prüfe ob ein Block der Form
+Legacy-Task ohne State: nicht implementieren, sondern `/start-task <TASK_FILE>` nachholen.
+
+`solve-task` besitzt ausschließlich `workflow_state.solve_task`.
+
+---
+
+# 4. Upstream-Contract: Readiness Gate vor jedem Code-Edit
+
+`solve-task` setzt einen vollständig durch `start-task` vorbereiteten Task voraus.
+
+Pflicht:
+
+- `## Analyse`
+- `## Lösungsplan`
+- Traceability zu AK/erwartetem Verhalten
+- `## Impact-Analyse`
+- Quality-Review (`## Lösungsplan-Qualitätsreview` oder äquivalent)
+- Abschluss-Checkliste aus `start-task`
+
+## 4.1 Quality-Entscheidung
+
+Nur implementieren bei:
+
+```text
+FREIGEGEBEN
+oder
+FREIGEGEBEN MIT ÄNDERUNGEN
+```
+
+Nicht implementieren bei:
+
+```text
+PLAN/DESIGN ÜBERARBEITEN
+```
+
+oder blockierenden `R-*`, `Q-*`, `UNKNOWN`s.
+
+## 4.2 Plan-/Impact-/Quality-Freshness
+
+Den aktuellen `## Lösungsplan` genauso fingerprinten wie `impact-analysis/SKILL.md`.
+
+Dann muss gelten:
+
+```text
+CURRENT_PLAN_FINGERPRINT
+== workflow_state.start_task.plan_fingerprint
+== workflow_state.impact.plan.source_fingerprint
+== workflow_state.quality.plan.review_source_fingerprint
+```
+
+und `workflow_state.start_task.readiness == READY`.
+
+Prüfen:
+
+```text
+CURRENT_PLAN_FINGERPRINT
+    ==
+Impact Source-Fingerprint
+    ==
+Quality Review-Source-Fingerprint
+```
+
+Falls ein erforderlicher Quality→Impact-Recheck dokumentiert ist:
+
+```text
+impact_recheck.completed == true
+```
+
+### Bei Mismatch
+
+**Nicht implementieren.**
+
+Der Plan wurde nach der Analyse verändert oder die Analyse ist unvollständig.
+
+Ausgabe:
+
+```text
+🔴 IMPLEMENTIERUNG NICHT FREIGEGEBEN
+
+Der aktuelle Lösungsplan stimmt nicht mehr mit Impact/Quality überein.
+→ `/start-task <TASK_FILE>` erneut ausführen.
+```
+
+`solve-task` repariert stale Planung nicht selbst.
+
+---
+
+# 5. Worktree-/Repository-Routing
+
+Der Normalfall ist, dass `get-task`/`start-task` den Worktree bereits vorbereitet haben.
+
+## 5.1 Worktree-Block validieren
+
+Wenn vorhanden:
+
+```bash
+git worktree list
+git -C <WORKTREE_PATH> branch --show-current
+git -C <WORKTREE_PATH> status --short
+```
+
+Prüfen:
+
+- Worktree existiert,
+- erwarteter Branch ist aktiv,
+- Pfad gehört zum aktuellen Ticket.
+
+Dann für die gesamte Umsetzung:
+
+- Source Reads/Writes → absoluter Worktree-Pfad,
+- Git → `git -C <WORKTREE_PATH> ...`,
+- Task-File/`.claude`/Docs → Haupt-Repo.
+
+## 5.2 Fehlender/staler Worktree
+
+Ohne `--no-worktree` nicht die Bootstrap-Logik duplizieren.
+
+Den idempotenten `get-task/SKILL.md` als Recovery verwenden, damit Worktree-/Statusregeln eine Source of Truth
+behalten. Danach erneut validieren.
+
+Mit `--no-worktree` im Haupt-Repo arbeiten, aber niemals fremde lokale Änderungen überschreiben.
+
+---
+
+# 6. Implementation Snapshot
+
+Vor dem ersten Edit dokumentieren:
+
+```yaml
+implementation_snapshot:
+  ticket: ...
+  task_file: ...
+  repository_path: ...
+  branch: ...
+  base_branch: ...
+  start_head_sha: ...
+  plan_fingerprint: ...
+  impact_fingerprint: ...
+  quality_fingerprint: ...
+  quality_scope: FULL|LITE|SKIP
+  security_followup: NONE|FEATURE_SECURITY_REVIEW|FULL_APP_AUDIT_RECOMMENDED
+```
+
+## 6.1 Base Branch
+
+Projektkonvention verwenden.
+
+Falls sie nicht explizit dokumentiert ist:
+
+```bash
+git symbolic-ref refs/remotes/origin/HEAD --short
+```
+
+nicht blind `develop` annehmen.
+
+## 6.2 Bereits vorhandene Änderungen
+
+```bash
+git -C <REPO> status --short
+git -C <REPO> diff
+git -C <REPO> diff --cached
+```
+
+Wenn Working Tree nicht clean ist:
+
+1. bestehende Änderungen lesen,
+2. gegen Lösungsplan/aktuelles Ticket einordnen,
+3. passende Teilimplementierung **fortsetzen**, nicht überschreiben,
+4. klar fremde/unzuordenbare Änderungen nicht anfassen.
+
+Keine automatische `stash`, `reset`, `clean`, `checkout --` oder andere destruktive Reparatur.
+
+---
+
+# 7. Already-Solved / In-Progress
+
+Ticket-Historie und Branch prüfen, aber Ticket-Grep nicht allein als Beweis verwenden.
+
+```bash
+git log --oneline --all --grep="<TICKET>"
+git branch -a | grep -i "<TICKET>"
+```
+
+Ein Treffer in Base kann ein früherer Teilfix oder gleichnamiger Folgecommit sein.
+
+**Abgeschlossen** nur behaupten, wenn Task-Status + tatsächliche Änderungen/History eindeutig zum aktuellen
+Task passen.
+
+Bei bereits teilweise implementiertem Branch: vorhandenen Diff zuerst verstehen und dann ab dem offenen
+Plan-Schritt fortsetzen.
+
+---
+
+# 8. Umsetzung aus dem freigegebenen Plan
+
+Der `## Lösungsplan` ist die Execution-Baseline.
+
+## 8.1 Implementation Checklist erzeugen
+
+Aus jedem Plan-Schritt einen prüfbaren Umsetzungspunkt machen:
 
 ```markdown
-> 🌳 **WORKTREE**: `<worktreePrefix>/<TICKET-NUMMER>`\
-> 🌿 **BRANCH**: `feature/<TICKET-NUMMER>_<title>`\
+## Umsetzung
+
+**Plan-Fingerprint:** `<...>`
+
+| Schritt | Status | Artefakte | Verifikation |
+|---|---|---|---|
+| 1 | ⬜ / 🔄 / ✅ | ... | ... |
 ```
 
-existiert (die Metadaten-Zeilen enden auf `\` = harter Zeilenumbruch; `worktreePrefix` aus
-`.claude/project.json`). Falls ja, extrahiere `WORKTREE_PATH` und `BRANCH`.
+Keine zweite Planung erzeugen; lediglich Fortschritt und tatsächliche Artefakte dokumentieren.
 
-**Schritt 0a-2: Worktree validieren** (nur wenn Block vorhanden)
+## 8.2 Plan systematisch abarbeiten
 
-```bash
-pwd                                                  # sollte = repoDir (aus .claude/project.json) sein
-git worktree list                                    # bestätigen, dass WORKTREE_PATH ein gültiger Worktree ist
-git -C <WORKTREE_PATH> branch --show-current         # sollte = BRANCH sein
-```
+Für jeden Schritt:
 
-**Fallunterscheidung:**
+1. relevanten vorhandenen Code vollständig genug lesen,
+2. bestehende Architektur-/Projektkonventionen verwenden,
+3. kleinste plan-konforme Änderung implementieren,
+4. zugehörige Tests unmittelbar ergänzen,
+5. lokalen/direkten Test soweit sinnvoll direkt ausführen,
+6. Umsetzungstabelle aktualisieren.
 
-| Situation                                                                  | Aktion                                                                                                  |
-|----------------------------------------------------------------------------|---------------------------------------------------------------------------------------------------------|
-| Kein Worktree-Block im Task-File, KEIN `--no-worktree` im Input             | **Default:** Worktree per `iwf worktree create` anlegen, Block ins Task-File schreiben, dann WORKTREE-ROUTING aktivieren (siehe Schritt 0a-3). Weiter mit Phase 0b. |
-| Kein Worktree-Block im Task-File, `--no-worktree` im Input                  | Standard-Workflow im Haupt-Repo (Opt-out). Weiter mit Phase 0b.                                          |
-| Block vorhanden, Worktree gültig, Branch dort aktiv                         | **WORKTREE-ROUTING aktivieren** (siehe Schritt 0a-3). Weiter mit Phase 0b.                              |
-| Block vorhanden, Worktree-Pfad existiert nicht (mehr), KEIN `--no-worktree` | Benutzer informieren: Worktree wurde entfernt. Block aus Task-File löschen, dann erneut Default-Worktree anlegen (`iwf worktree create`), Block schreiben, Routing aktivieren. |
-| Block vorhanden, Worktree-Pfad existiert nicht (mehr), `--no-worktree`      | Block aus Task-File löschen, im Haupt-Repo weiter.                                                       |
-| Block vorhanden, Worktree-Pfad existiert aber Branch dort ist anders        | Inkonsistent — Benutzer fragen, was korrekt ist. NICHT raten.                                            |
-
-**Worktree-Default-Anlage (wenn obenstehende Default-Spalte greift):**
-
-1. Branch-Suffix aus dem Task-File-Namen ableiten (englischer Titel ohne `<PREFIX>-NNNN_` und `.md`; bzw. ohne Suffix).
-2. `iwf worktree create NNNN <suffix>` ausführen (NNNN = nackte Ticket-Nummer, nicht `<PREFIX>-NNNN`).
-   (Flag-/Befehls-Referenz: `~/Library/Application Support/Kanban/claude/rules/worktree.md` bzw. `iwf worktree --help`.)
-3. Worktree-Block direkt unter die H1 des Task-Files einfügen (Format identisch zu `create-worktree`).
-4. WORKTREE-ROUTING für den Rest der Session aktivieren.
-
-**Schritt 0a-3: Worktree-Routing-Regeln** (für die restliche Session)
-
-Wenn der Worktree aktiv ist, gelten ab hier folgende Regeln:
-
-**Code-Dateien (Edit/Write/Read von Source):**
-
-- Pfade IMMER absolut mit Worktree-Prefix verwenden, z.B.
-  `<WORKTREE_PATH>/src/Controller/Foo.php`.
-- Betroffen sind: `src/`, `assets/`, `templates/`, `tests/`, `config/`, `migrations/`, `translations/`,
-  `composer.json`, `composer.lock` — und generell alle versionierten Code-Files des Projekts.
-
-**Read-Only-Quellen (Lesen aus dem Haupt-Repo):**
-
-- Task-File (im Task-Ordner, `tasksPath` aus `.claude/project.json`)
-- CLAUDE.md, README.md und alle darin referenzierte Doku
-- der Agent-Ordner des Repos (`.claude/` bzw. `.codex/`): Skills, Rules, Settings
-- Alle Dokumentation und Memory-Files
-
-**Git-Befehle:**
-
-- IMMER mit `git -C <WORKTREE_PATH> ...`. Beispiele:
-  - `git -C <WORKTREE_PATH> status`
-  - `git -C <WORKTREE_PATH> add src/Foo.php`
-  - `git -C <WORKTREE_PATH> commit -m "<TICKET-NUMMER> | ..."`
-  - `git -C <WORKTREE_PATH> diff`
-- Recherche-Befehle (`git log --all --grep=...`) können auch im Haupt-Repo laufen — Git teilt die History.
-
-**Tests / PHPStan / iwf / Docker (WICHTIG — Container-Pfad-Problem):**
-
-- Die Container des **Haupt-Stacks** sehen NUR den Haupt-Repo-Pfad. Sie sehen den Worktree-Code NICHT.
-- → `iwf run phpstan` bzw. Container-basierte PHPUnit-Aufrufe gegen den Haupt-Stack würden den
-  **Haupt-Repo-Stand** testen, nicht die Worktree-Änderungen.
-- Bevor du Container-basierte Tests laufen lässt: dem Benutzer melden:
-  ```
-  ⚠️ Tests/PHPStan laufen im Docker-Container des Haupt-Stacks und sehen NUR den Haupt-Repo-Stand.
-  Worktree-Änderungen werden NICHT getestet, bis der Branch im Haupt-Repo ausgecheckt ist.
-  Optionen:
-  1) Tests im Worktree-eigenen Stack laufen lassen (falls vorhanden): cd <WORKTREE_PATH> && iwf run ...
-  2) Tests jetzt OHNE Docker laufen (cd <WORKTREE_PATH>; vendor/bin/phpunit ...)
-  3) Branch im Haupt-Repo auschecken (Worktree wird dadurch blockiert/entfernt) und dann Tests
-  4) Tests überspringen — Validation später durch User
-  ```
-- Default: Option 4 — Validation überlassen wir dem User.
+Nicht alle Änderungen zuerst schreiben und Tests erst am Ende „nachholen“.
 
 ---
 
-### Phase 0b: Already-Solved-Check (IMMER ZUERST!)
+# 9. Implementation Deviation Protocol
 
-**Haupt-Branch `<BASE>`:** der Merge-Ziel-Branch des Projekts (`develop` oder `main`) — ermitteln über
-`git symbolic-ref refs/remotes/origin/HEAD --short` (→ `origin/<BASE>`); im Zweifel den Benutzer fragen.
+Während der Umsetzung kann Repository-Evidenz zeigen, dass der Plan technisch präzisiert werden muss.
 
-**Schritt 0: Prüfe ob der Task bereits gelöst wurde**
+Nicht jede Abweichung ist eine Neuplanung.
 
-1. Extrahiere die Ticket-Nummer aus dem Dateinamen (z.B. `<PREFIX>-3963` aus `<PREFIX>-3963_some_title.md`)
-2. Durchsuche die Git-Historie nach Commits mit dieser Ticket-Nummer:
+## 9.1 Lokale Implementierungsentscheidung — erlaubt
+
+Beispiele:
+
+- Methodenname leicht anders,
+- bestehender Helper statt geplantem neuen Helper,
+- Test in bestehender Datei statt neuer Datei,
+- private Refactoring-Details ohne Verhaltens-/Boundary-Änderung.
+
+Dokumentieren unter:
+
+```markdown
+### Implementierungsentscheidungen
+```
+
+Impact/Quality bleiben gültig.
+
+## 9.2 Semantische oder architektonische Abweichung — STOPP
+
+Beispiele:
+
+- andere Business-Regel,
+- neues/entferntes API-Feld oder Contract,
+- zusätzliche Rolle/Berechtigung,
+- anderer Status-/Workflow-Pfad,
+- neues Event / Message / E-Mail / Pendenz,
+- neue Async-Grenze oder Retry-Semantik,
+- andere Persistenz-/Migrationsstrategie,
+- neue Shared-Abstraktion/Boundary,
+- zusätzliche externe Integration,
+- neue/entfernte Invariante,
+- bewusstes Weglassen eines geplanten Security-/Datenintegritäts-Schritts.
+
+Dann:
+
+1. nicht still weiterimplementieren,
+2. Evidenz + vorgeschlagene Planänderung unter `## Implementierungsabweichung` dokumentieren,
+3. betroffene Änderungen nicht als final behandeln,
+4. zurück zu:
+
+```text
+/start-task <TASK_FILE>
+```
+
+damit Plan → Impact → Quality erneut konsistent hergestellt werden.
+
+`solve-task` darf keine stale Architektur „durchziehen“.
+
+---
+
+# 10. Tests werden aus Traceability und Risk→Test abgeleitet
+
+Tests sind nicht nur „für neue Controller“.
+
+Primäre Quellen:
+
+1. Acceptance-Criteria-/Behavior-Traceability,
+2. Impact `Risk → Test`-Matrix,
+3. Quality-Findings/Decisions,
+4. projektspezifische Testing-Regeln,
+5. tatsächliche Implementation-Deltas.
+
+Für jeden relevanten `R-*` / `INV-*` / AC muss erkennbar sein, welcher automatisierte oder manuelle Nachweis ihn
+abdeckt.
+
+## 10.1 Typische Mindestnachweise
+
+| Änderung | Mindestnachweis |
+|---|---|
+| Business-Invariante | Domain-/Unit-/Use-Case-Test |
+| Command/Handler | Use-Case-/Integrationstest |
+| Query/Repository | DB-Integrationstest |
+| API Contract | Controller-/Contract-Test |
+| Permission | erlaubt + verboten |
+| Tenant | Cross-Tenant-Negativtest |
+| Status/Workflow | erlaubte + verbotene Transition |
+| Async/Event | Dispatch + Handler + Duplicate/Retry soweit relevant |
+| E-Mail | Trigger + Empfänger + Duplicate-Sicherheit soweit relevant |
+| Migration | realistische Bestands-/Randdaten |
+| Bugfix | reproduzierender Regressionstest |
+| kritische Journey | gezielter E2E-Test zusätzlich, nicht statt tieferer Tests |
+
+## 10.2 Testdaten
+
+Fixture-Tampering im Test ist erlaubt, wenn es die projektübliche, verständliche und isolierte Variante ist.
+Keine unnötige Fixture-Vermehrung.
+
+---
+
+# 11. Validation Environment — niemals den falschen Code testen
+
+Die alte Gefahr bleibt zentral:
+
+> Haupt-Stack sieht typischerweise Haupt-Repo-Code, nicht den separaten Worktree.
+
+Deshalb vor jedem Container-Test **Source-Parität** sicherstellen.
+
+## 11.1 Worktree vorhanden
+
+Bevorzugte Reihenfolge:
+
+1. **Worktree-Stack**, wenn das Projekt containerbasierte Tests vorsieht.
+   Falls gestoppt und für die Validierung erforderlich:
    ```bash
-   git log --oneline --all --grep="<TICKET-NUMMER>"
+   iwf worktree start <NNNN>
    ```
-3. Prüfe auch ob ein Feature-Branch existiert und bereits gemerged wurde:
-   ```bash
-   git branch -a | grep -i "<TICKET-NUMMER>"
-   git log --oneline <BASE> --grep="<TICKET-NUMMER>"
-   ```
+2. Projektunterstützter Host-/Worktree-Runner, falls ohne Container belastbar.
+3. Nur wenn beides technisch nicht möglich ist: Validation als **nicht ausgeführt** dokumentieren.
 
-**Auswertung:**
+Nie Tests im Haupt-Stack laufen lassen und behaupten, der Worktree sei validiert.
 
-| Situation                                 | Aktion                                 |
-|-------------------------------------------|----------------------------------------|
-| Commits mit Ticket-Nr in `<BASE>` gefunden | Task ist abgeschlossen und gemerged    |
-| Feature-Branch existiert mit Commits      | Task ist in Arbeit                     |
-| Keine Commits/Branches gefunden           | Task ist neu → weiter mit Phase 1      |
+## 11.2 Pflichtregel
 
-**Bei bereits gelöstem/bearbeitetem Task:**
+„Tests/PHPStan überspringen und dem User überlassen“ ist **kein erfolgreicher Solve-Abschluss**.
 
-- Zeige dem Benutzer die gefundenen Commits an
-- Zeige den Branch-Status an
-- Falls Task in Arbeit: Frage ob fortgesetzt werden soll
-- Aktualisiere den Status im Task-File entsprechend:
-    - `🟢 Abgeschlossen` - wenn in `<BASE>` gemerged
-    - `🟡 In Arbeit` - wenn Feature-Branch existiert aber nicht gemerged
+Wenn erforderliche Validierung wegen VPN, Stack, Tooling oder Umgebung nicht möglich ist:
 
-**Status-Meldungen:**
-
-```
-🟢 TASK BEREITS ABGESCHLOSSEN
-Ticket: <TICKET-NUMMER>
-Status: Gemerged in <BASE>
-Gefundene Commits: <Liste>
+```text
+🟠 IMPLEMENTIERUNG FERTIG — VALIDIERUNG UNVOLLSTÄNDIG
 ```
 
-ODER
+mit konkreten fehlenden Checks.
 
-```
-🟡 TASK IN ARBEIT
-Ticket: <TICKET-NUMMER>
-Branch: feature/<branch-name>
-Status: Nicht gemerged
-
-Möchtest du die Arbeit an diesem Task fortsetzen?
-```
+Keine grüne Abschlussmeldung.
 
 ---
 
-### Phase 1: Vollständigkeits-Check
+# 12. Validation Pipeline
 
-**Schritt 1: Task-File prüfen**
+Projektregeln bestimmen konkrete Runner.
 
-Prüfe ob folgende Pflicht-Abschnitte vorhanden und ausgefüllt sind:
+Mindestens, soweit relevant:
 
-- [ ] `### Status` - Status-Abschnitt vorhanden
-- [ ] `## Analyse` - Fachliche und technische Analyse
-- [ ] `## Lösungsplan` - Strukturierter Plan mit konkreten Schritten
+1. fokussierte geänderte Tests,
+2. angrenzende Regressionstests,
+3. statische Analyse (`PHPStan` etc.),
+4. Frontend Lint/Typecheck/Tests,
+5. Build bei Frontend-/Asset-Änderungen,
+6. E2E für kritische Journey, falls im Plan/Risk-Matrix vorgesehen.
 
-**Bei fehlenden Abschnitten:**
+Keine erfundenen Commands; `CLAUDE.md` / `.claude/rules/testing.md` sind autoritativ.
 
+## Fehler
+
+Fehler nicht nur „wegfixen“.
+
+Zuerst klassifizieren:
+
+```text
+Implementation Bug
+Plan Assumption wrong
+Environment/Test Infrastructure
+Existing unrelated failure
 ```
-⚠️ TASK-FILE UNVOLLSTÄNDIG
 
-Fehlende Abschnitte:
-- [ ] Analyse
-- [ ] Lösungsplan
-
-→ Verwende `/start-task <TICKET-NUMMER>` für den vollständigen Workflow mit Analyse und Planung.
-```
-
-**Stoppe und informiere den Benutzer!** Fahre NUR fort wenn alle Pflicht-Abschnitte vorhanden sind.
-
-**Schritt 2: Feature-Branch sicherstellen**
-
-- **Falls Worktree-Routing in Phase 0a aktiviert wurde** (Default-Pfad oder bestehender Worktree): Der
-  Feature-Branch ist im Worktree bereits aktiv. Im Haupt-Repo bleibt `<BASE>` (oder ein anderer Branch)
-  ausgecheckt — das ist gewollt. KEIN `git checkout` im Haupt-Repo. Nur Status auf `🟡 In Arbeit`
-  aktualisieren und weiter.
-- **Nur falls `--no-worktree` gesetzt ist** (Arbeit komplett im Haupt-Repo):
-  - Prüfe ob bereits ein passender Branch existiert
-  - Falls nein, erstelle Branch nach Schema: `feature/<TicketNummer>_<TicketTitelKurz>`
-  - Wechsle auf den Feature-Branch
-  - Aktualisiere Status auf `🟡 In Arbeit`
+Wenn ein Fix den freigegebenen Plan semantisch verändert → Deviation Protocol.
 
 ---
 
-### Phase 2: Umsetzung
+# 13. Post-Implementation Diff
 
-**Schritt 3: Relevante Dokumentation lesen**
-
-- Lies die `CLAUDE.md` im Projekt-Root und alle darin referenzierten Dokumente (falls noch nicht gelesen)
-- Lies den `## Lösungsplan` im Task-File sorgfältig
-
-**Schritt 4: Task implementieren**
-
-- Arbeite den Lösungsplan systematisch ab
-- Nutze die TODO-Liste um den Fortschritt zu tracken
-- **NIEMALS committen!** Der Benutzer committed selbst. Änderungen bleiben unstaged.
-
-**Schritt 5: Tests erstellen (PFLICHT!)**
-
-**WICHTIG:** Code-Änderungen ohne Tests sind unvollständig!
-
-**Test-Pflicht gilt für:**
-
-1. **Neue Controller** → Controller-Test MUSS erstellt werden
-2. **Änderungen an Business-Logik** → Tests MÜSSEN erstellt/erweitert werden
-   - Geänderte Entities (z.B. Berechnungs-Getter)
-   - Geänderte Services, Handlers, Commands
-   - Geänderte Export-/Import-Funktionalität
-   - Geänderte Berechnungs-/Bedingungs-Logik
-
-**Faustregel:**
-> "Wenn du eine Methode änderst, die in Tests verwendet wird, erweitere diese Tests um das neue Verhalten zu prüfen."
-
-**Dokumentation:**
-
-- Testing-Konventionen (verbindlich): `.claude/rules/testing.md` — Test-Struktur, Fixtures, Runner, Best Practices
-- Permissions-/Rollen-Doku des Projekts (siehe Verweise in der `CLAUDE.md`) — für Access-Tests
-
-**Naming-Convention für Controller-Tests:**
-
-| Controller                             | Test                                   |
-|----------------------------------------|----------------------------------------|
-| `src/Controller/.../FooController.php` | `tests/Controller/.../FooTest.php`     |
-
-**Test-Anforderungen (Controller-Tests):**
-
-- Mindestens ein Test für den "Happy Path" (erfolgreicher Request, `Response::HTTP_OK`)
-- Test für fehlende Berechtigung (403 Forbidden)
-- Test für nicht authentifiziert (401 Unauthorized) falls relevant
-
-**Test-Anforderungen (Business-Logik):**
-
-- Unit-Tests für geänderte Methoden/Logik
-- Integrations-Tests für geänderte Workflows (z.B. Export-Tests)
-- Bestehende Tests erweitern, wenn geänderter Code dort verwendet wird
-
-**Fixture-Tampering zur Laufzeit:**
-
-Falls die bestehenden Fixtures nicht ausreichen, um eine Änderung zu testen, ist es erlaubt, Fixtures
-**zur Laufzeit im Test anzupassen**:
-
-```php
-// Beispiel: Entity-Zustand für Test anpassen
-$project = $this->loadFixture(LoadProjects::class, 'project_in_review');
-$project->setStatus(ProjectStatus::FINISHED);
-$this->em->flush();
-
-// Jetzt Test mit angepasstem Zustand durchführen
-```
-
-Dies ist oft einfacher als neue Fixture-Dateien zu erstellen und vermeidet Fixture-Bloat.
-
-**Test ausführen:**
-
-Der konkrete Runner ist projektabhängig (siehe `.claude/rules/testing.md` bzw. `CLAUDE.md`), z.B.:
+Nach erfolgreicher Umsetzung:
 
 ```bash
-# Controller-Tests
-iwf run "vendor/bin/phpunit tests/Controller/Pfad/ZumTest.php"
-
-# Unit-Tests
-iwf run "vendor/bin/phpunit tests/Model/Enum/FooTest.php"
-
-# Einzelne Test-Methode
-iwf run "vendor/bin/phpunit --filter testHappyPath"
-
-# Alle Tests in einem Verzeichnis
-iwf run "vendor/bin/phpunit tests/Controller/Feature/"
+MERGE_BASE=$(git -C <REPO> merge-base HEAD <BASE>)
+git -C <REPO> status --short
+git -C <REPO> diff --stat "$MERGE_BASE"
+git -C <REPO> diff "$MERGE_BASE"
 ```
+
+Untracked Files ausdrücklich berücksichtigen.
+
+Dokumentieren:
+
+```markdown
+### Tatsächliche Umsetzung
+
+| Plan-Schritt | Tatsächliche Dateien/Symbole | Abweichung |
+|---|---|---|
+```
+
+Ziel ist **Plan↔Implementation Traceability**, keine neue Impact-Analyse.
+
+## Drift Gate
+
+Vor Abschluss fragen:
+
+- Ist jeder tatsächliche semantische Change durch einen Plan-Schritt gedeckt?
+- Wurde jeder Plan-Schritt umgesetzt oder bewusst dokumentiert nicht umgesetzt?
+- Sind keine neuen Permissions/Contracts/Events/Migrations-/Async-/Business-Regeln „nebenbei“ hinzugekommen?
+
+Wenn nein → Deviation Protocol, nicht einfach abschließen.
 
 ---
 
-### Phase 3: Qualitätssicherung
+# 14. Implementation Fingerprint und Handoff
 
-**Schritt 6: Tests und PHPStan ausführen**
+Da Änderungen laut Workflow **nicht automatisch committed** werden, reicht `HEAD` als Identität nicht.
 
-```bash
-# PHPStan (projektüblicher Aufruf — siehe CLAUDE.md)
-iwf run phpstan
+Erzeuge einen Fingerprint über den tatsächlichen Arbeitsstand, z.B. aus:
 
-# Controller-Tests (Runner siehe .claude/rules/testing.md)
-iwf run "vendor/bin/phpunit tests/Controller/Pfad/ZumTest.php"
+- Merge-Base/Base SHA,
+- `git diff --binary <MERGE_BASE>` (staged + unstaged gegenüber Base),
+- Liste + Hashes untracked versionierter Kandidaten.
+
+Speichere:
+
+```yaml
+
+Nach Validation/Freshness:
+
+```text
+ready_for_review: true  → workflow_state.task.status = READY_FOR_REVIEW
+ready_for_review: false → workflow_state.task.status = IN_PROGRESS
 ```
 
-**Bei Fehlern:** Behebe sie bevor du fortfährst!
+Danach sichtbare Status-/Workspace-Projektion synchronisieren.
+
+implementation_handoff:
+  ticket: ...
+  plan_fingerprint: ...
+  implementation_fingerprint: ...
+  repository_path: ...
+  branch: ...
+  base_sha: ...
+  head_sha: ...
+  changed_files: [...]
+  tests:
+    passed: [...]
+    failed: [...]
+    not_run: [...]
+  static_analysis:
+    passed: [...]
+    failed: [...]
+    not_run: [...]
+  plan_drift:
+    semantic: false
+    local_decisions: [...]
+  security_followup:
+    level: NONE|FEATURE_SECURITY_REVIEW|FULL_APP_AUDIT_RECOMMENDED
+    reasons: [...]
+  ready_for_review: true|false
+```
+
+Dieser Handoff ist für `review-task`/`security-review`; er ersetzt deren Review nicht.
+
+Denselben kompakten Inhalt zusätzlich unter `workflow_state.solve_task` persistieren. Nur diesen Namespace ändern,
+State anschließend erneut parsen und `implementation_fingerprint` verifizieren.
 
 ---
 
-### Phase 4: Abschluss
+# 15. JIRA-Lösungsfeld / Task-Dokumentation
 
-**Schritt 7: Dokumentation finalisieren**
+Nach der Umsetzung Task-File aktualisieren — **beide Abschnitte werden in die Datei geschrieben, nicht
+nur in der Konsole ausgegeben.** Das ist der einzige Schritt dieses Skills, dessen Ergebnis die Session
+überdauert: Commit-Message und Verifikationsziel sind danach nirgends sonst, und Kanban liest die
+Commit-Message für seinen Commit-Dialog aus `## Commit`.
 
-> **Warum `### Für Kunde` der wichtigste Absatz des Task-Files ist:** genau dieser Unterabschnitt wird
-> ins Jira-Feld „Lösung" übernommen (Kanban belegt den Editor damit vor). Das Task-File selbst wird
-> **nicht mitcommittet** — nach dem Merge und dem Aufräumen des Worktrees ist das Jira-Feld die
-> **einzige** Stelle, an der noch steht, was entschieden, abgewichen und angenommen wurde. Was hier
-> fehlt, ist dauerhaft weg.
+**Ablauf, in dieser Reihenfolge:**
 
-Ergänze/aktualisiere im Task-File den Abschnitt:
+1. `## JIRA Lösungsfeld` schreiben (Edit/Write auf das Task-File).
+2. `## Commit` schreiben.
+3. Das Task-File **zurücklesen** und prüfen, dass beide H2-Überschriften wirklich darin stehen.
+4. Erst danach die zwei zugehörigen Punkte der Abschluss-Checkliste abhaken (Kapitel 17).
+
+Steht einer der Abschnitte nach dem Rücklesen nicht in der Datei, bleibt sein Checklistenpunkt offen
+und die Abschlussausgabe nennt ihn als fehlend. Ein Haken ohne Abschnitt ist eine Falschaussage über
+die eigene Arbeit — sie fällt erst auf, wenn jemand die Commit-Message sucht und sie nicht mehr gibt.
+
+## JIRA Lösungsfeld
 
 ```markdown
 ## JIRA Lösungsfeld
 
 ### Für Test-Ingenieur
 
-**Manuelle Testanleitung:**
+**Manuelle Testanleitung**
+- Rolle:
+- Seite/Endpoint:
+- Vorbedingungen:
 
-- Rolle: [Welche Benutzerrolle für den Test erforderlich ist]
-- URL/Seite: [Exakte URL oder Menüpfad zur Funktion]
-- Vorbedingungen: [z.B. Testdaten, Feature-Flags, etc.]
+**Testschritte**
+1. ...
+2. ...
 
-**Testschritte:**
-
-1. [Schritt-für-Schritt Anleitung]
-2. [Was zu prüfen ist]
-3. [Erwartetes Ergebnis]
-
-**Geänderte Dateien:**
-
-- Backend: [Liste der geänderten/neuen PHP-Dateien]
-- Frontend: [Liste der geänderten/neuen Frontend-Dateien]
-- Config: [Geänderte Konfigurationsdateien]
-- Tests: [Neu erstellte Tests]
+**Automatische Nachweise**
+- ...
 
 ### Für Kunde
 
-[Verständliche Beschreibung: Welches Problem wurde gelöst? Was ist neu?]
+<verständliche Beschreibung des gelösten Problems und neuen Verhaltens>
 
-**Entscheidungen, Abweichungen, Annahmen:**
-
-- **Entscheidung:** [Was entschieden wurde — warum, welche Alternative verworfen]
-- **Abweichung von AK „[Kriterium]":** [Was anders umgesetzt ist als gefordert — warum]
-- **Annahme:** [Was angenommen wurde, weil Ticket/AK es nicht sagen — woraus abgeleitet; was zu tun ist, falls sie falsch ist]
-- **Bewusst nicht umgesetzt:** [Was ausgelassen wurde — warum, ggf. Folge-Ticket]
-- **Wichtig zu wissen:** [Nebenwirkung, Migration, Konfigurationsschritt, Grenze der Lösung]
+**Entscheidungen, Abweichungen, Annahmen**
+- **Entscheidung:** ...
+- **Abweichung von AK:** ...
+- **Annahme:** ...
+- **Bewusst nicht umgesetzt:** ...
+- **Wichtig zu wissen:** ...
 ```
 
-**Der Block „Entscheidungen, Abweichungen, Annahmen" ist PFLICHT** — er ist der Grund, warum es das
-Jira-Feld gibt (siehe Kasten oben). Regeln dafür:
+Wenn keine Abweichung/Annahme existiert:
 
-- **Quellen zusammentragen:** `## Entscheidungen` im Task-File, alles was während der Umsetzung mit dem
-  Benutzer besprochen wurde, jede Stelle wo du vom Lösungsplan oder von den Akzeptanzkriterien
-  abgewichen bist, und jede Lücke im Ticket, die du selbst gefüllt hast.
-- **Jede Abweichung von den AK muss dastehen** — mit dem betroffenen Kriterium und der Begründung.
-  Ein Reviewer, der die AK gegen die Umsetzung hält, darf nicht überrascht werden.
-- **Verständlich, nicht technisch:** „Warum" statt Klassennamen; Code-Mechanik steht im Code, die
-  Begründung nirgends.
-- **Nichts weglassen, weil es „nur eine Kleinigkeit" ist.** Wenn du beim Schreiben zögerst, ob es
-  reingehört: es gehört rein.
-- **Gibt es wirklich nichts:** genau eine Zeile schreiben — „Keine Abweichungen von den
-  Akzeptanzkriterien, keine offenen Annahmen." Den Block weglassen ist nicht erlaubt: dann bleibt
-  unklar, ob nichts war oder ob es vergessen wurde.
+```text
+Keine Abweichungen von den Akzeptanzkriterien, keine offenen Annahmen.
+```
 
-**Schritt 7b: `## Lösung` ins Task-File schreiben (PFLICHT)**
+Nicht einfach den Block weglassen.
 
-Commit-Message **und** Test-URL werden nicht nur am Schluss ausgegeben (Schritt 9), sondern **zusätzlich
-dauerhaft ins Task-File** geschrieben — sonst gehen sie nach der Session verloren. Ergänze/aktualisiere direkt
-nach `## JIRA Lösungsfeld` den Abschnitt `## Lösung`:
+## Commit
+
+> `## Lösung` ist für das aus JIRA importierte Developer-Lösungsfeld reserviert und darf von `solve-task`
+> nicht überschrieben werden.
 
 ```markdown
-## Lösung
+## Commit
 
-**Commit-Message:** `<TICKET-NUMMER> | <Beschreibung auf Englisch>`
+**Commit-Message:** `<TICKET> | <English description>`
 
-**Test-URL (Ergebnis ansehen):** `https://<Worktree-Stack-Host>/<konkreter-Pfad-zum-Ergebnis>`
-— <1 Satz: warum hier / ggf. konkreter Beispiel-Datensatz>
+**Verifikationsziel:** <URL / Endpoint / Testkommando / anderer konkreter Entry Point>
+**Warum hier:** ...
 ```
 
-(Worktree-Stack-Host aus dem Worktree-Block des Task-Files; ohne Worktree die Haupt-Stack-URL
-`https://<repo-ordnername>.<stackDomain>` — Repo-Ordnername = letzter Pfadbestandteil von `repoDir`,
-`stackDomain` aus `.claude/project.json`.)
+### UI-URL
 
-Dieser Abschnitt ist die Single Source of Truth: erst hier ins Task-File schreiben, dann inhaltlich identisch
-in die Abschluss-Zusammenfassung (Schritt 9, Blöcke „## Commit-Message" und „## 🔗 Ergebnis ansehen") übernehmen.
+Bei einem tatsächlich sichtbaren UI-Feature eine konkrete Worktree-URL verwenden.
 
-**Schritt 8: Abschluss-Checkliste abhaken**
+Routen nicht raten.
 
-Stelle sicher, dass im Task-File die Abschluss-Checkliste vorhanden ist und hake alle erledigten Punkte ab:
+### Kein sinnvoller UI-Entry-Point
+
+Bei reinem Backend-, Worker-, Migration- oder Infrastrukturverhalten **keine Fake-URL erfinden**.
+
+Dann stattdessen den konkreten Endpoint/Test/Command als primäres Verifikationsziel dokumentieren und,
+falls hilfreich, zusätzlich die nächstgelegene App-Seite nennen.
+
+---
+
+# 16. Status-Semantik
+
+`solve-task` bedeutet:
+
+```text
+Implementierung abgeschlossen
+≠
+Task gemerged/abgeschlossen
+```
+
+Deshalb `### Status` **nicht automatisch auf `🟢 Abgeschlossen` setzen**, solange Review/Commit/Merge noch ausstehen.
+
+Wenn das bestehende Projekt nur `🔴 Offen / 🟡 In Arbeit / 🟢 Abgeschlossen` kennt:
+
+```text
+🟡 In Arbeit
+```
+
+beibehalten und im Handoff:
+
+```text
+ready_for_review: true
+```
+
+dokumentieren.
+
+Falls das Projekt explizit einen `Bereit für Review`-Status definiert, diesen verwenden.
+
+---
+
+# 17. Abschluss-Checkliste
+
+Im Task-File:
 
 ```markdown
 ## Abschluss-Checkliste
 
-- [x] Already-Solved-Check durchgeführt
-- [x] Feature-Branch erstellt und aktiv
-- [x] Lösung vollständig implementiert
-- [x] Tests erstellt (Controller-Tests für jeden neuen Controller, Tests für geänderte Business-Logik)
-- [x] Tests/PHPStan ausgeführt und bestanden
-- [x] JIRA Lösungsfeld ausgefüllt (beide Abschnitte; „Für Kunde" inkl. Entscheidungen, Abweichungen von den AK und Annahmen)
-- [x] `## Lösung` ins Task-File geschrieben (Commit-Message + Test-URL)
-- [ ] Änderungen committed (vom Benutzer, mit korrekter Commit-Message, OHNE Co-Authored-By)
-- [x] Abschluss-Zusammenfassung dem Benutzer ausgegeben
+- [x] Planning Readiness/Freshness geprüft
+- [x] Lösungsplan vollständig umgesetzt
+- [x] Plan↔Implementation Drift Gate bestanden
+- [x] Tests ergänzt
+- [x] erforderliche Tests ausgeführt und bestanden
+- [x] erforderliche statische Analyse/Builds ausgeführt und bestanden
+- [x] JIRA Lösungsfeld ausgefüllt
+- [x] `## Commit` mit Commit-Message + Verifikationsziel geschrieben
+- [x] Implementation-Handoff dokumentiert
+- [ ] Review durchgeführt
+- [ ] Security-Follow-up durchgeführt (falls erforderlich)
+- [ ] Änderungen vom Benutzer committed
+- [ ] Änderungen gemerged
 ```
 
-**Schritt 9: Abschluss-Zusammenfassung ausgeben (PFLICHT!)**
+Nicht erfüllte Punkte bleiben offen; keine Checkmarks „auf Vertrauensbasis“.
 
-```
-✅ TASK ERFOLGREICH ABGESCHLOSSEN
+Die Checkliste ist eine Vorlage, kein Protokoll: sie wird **nicht** als Block übernommen. Die beiden
+Punkte `JIRA Lösungsfeld ausgefüllt` und `` `## Commit` … geschrieben `` dürfen nur abgehakt werden,
+nachdem das Task-File zurückgelesen wurde und die Abschnitte darin stehen (Kapitel 15).
+
+---
+
+# 18. Abschlussausgabe
+
+## Erfolgreich validiert
+
+```text
+✅ IMPLEMENTIERUNG ABGESCHLOSSEN — BEREIT FÜR REVIEW
+
+Ticket: <TICKET>
+Plan-Fingerprint: <...>
+Implementation-Fingerprint: <...>
 
 ## Zusammenfassung
-[1-2 Sätze was gemacht wurde]
+...
 
-## Manuelle Verifikation
-- **Rolle:** [Benutzerrolle]
-- **Seite:** [Menüpfad / URL]
-- **Was prüfen:** [Kurze Beschreibung]
+## Tatsächliche Änderungen
+...
 
-## 🔗 Ergebnis ansehen (Worktree)
-- **URL:** https://<Worktree-Stack-Host>/<konkreter-Pfad-zum-Ergebnis>
-- **Warum hier:** [1 Satz: an dieser Stelle ist die Änderung am besten sichtbar]
-- [ggf.] **Beispiel-Datensatz:** [Name/Nr eines Datensatzes/einer Entität, die das Feature tatsächlich zeigt]
+## Validation
+- Tests: <...>
+- Static Analysis: <...>
+- Build/E2E: <...>
 
-## Erstellte Tests
-- [Liste der Controller-Tests]
-- [Wie ausführen: projektüblicher Runner, z.B. iwf run "vendor/bin/phpunit tests/..."]
+## Security Follow-up
+<NONE / FEATURE_SECURITY_REVIEW / FULL_APP_AUDIT_RECOMMENDED>
+
+## Verifikationsziel
+<URL/Endpoint/Test/Command>
 
 ## Commit-Message
-```
-<TICKET-NUMMER> | <Beschreibung auf Englisch>
-```
+<TICKET> | <English description>
 
-## Nächste Schritte
-- [ ] Code Review
-- [ ] Merge in <BASE>
-- [ ] QA-Test auf Testumgebung
+👉 Nächster Schritt: Review des tatsächlichen Diffs.
 ```
 
-**PFLICHT — Commit-Message:** Am Schluss der Abschluss-Zusammenfassung IMMER die vorgeschlagene Commit-Message
-als eigenen, kopierbaren Block ausgeben (Schema `<TICKET-NUMMER> | <Beschreibung auf Englisch>`, siehe
-„Commit-Message Convention" unten) — auch wenn nicht committet wird. Der Benutzer committet selbst; dieselbe
-Message steht zusätzlich dauerhaft im Task-File unter `## Lösung` (Schritt 7b).
+## Validation unvollständig
 
-**PFLICHT — „Ergebnis ansehen"-URL:** Am Schluss IMMER eine konkrete, klickbare **Worktree-URL** ausgeben, unter
-der der Benutzer das Task-Ergebnis am besten sieht — und dieselbe URL zusätzlich ins Task-File unter `## Lösung`
-schreiben (Schritt 7b). So leitest du sie ab:
+```text
+🟠 IMPLEMENTIERUNG FERTIG — VALIDIERUNG UNVOLLSTÄNDIG
 
-1. **Basis-URL:** aus dem Worktree-Block des Task-Files (Worktree-Stack-Host). Falls kein Worktree
-   (`--no-worktree`), die Haupt-Stack-URL `https://<stackDomain>` verwenden (`stackDomain` aus
-   `.claude/project.json`).
-2. **Stack läuft?** Kurz prüfen (`docker ps` — laufen die Container des Worktree-Stacks?). Falls nicht:
-   Start-Hinweis dazuschreiben (`cd <WORKTREE_PATH> && iwf stack start`), URL trotzdem zeigen.
-3. **Zielseite wählen:** die Seite/Route, auf der die Änderung direkt sichtbar/auslösbar ist
-   (z.B. die Detail-Seite, der Report-Download-Button, die Liste, das Formular). Bei reinen API/Export-Änderungen
-   die Seite zeigen, von der aus der Export/die Aktion ausgelöst wird.
-4. **Auf einen passenden Datensatz verlinken (wenn sinnvoll):** Wo das Feature nur bei bestimmten Daten sichtbar
-   ist, einen **konkreten** Beispiel-Datensatz aus der Worktree-DB ermitteln und direkt verlinken — z.B. per
-   `bin/console dbal:run-sql '<einzeilige Query>'` (im Stack via `iwf run "..."`) die ID/Nr eines Datensatzes
-   finden, der die Bedingung erfüllt, und die Detail-/Report-URL daraus bauen. Findet sich kein Datensatz: den
-   Menüpfad + die nötige Vorbedingung beschreiben (was angelegt werden muss, damit es sichtbar wird).
-5. **Routen nicht raten** — aus dem Routing des Projekts ableiten (Symfony: `config/routes*`,
-   `#[Route]`-Attribute an den Controllern; React-Frontend: Router bzw. Route-Translations).
+Fehlende Nachweise:
+- ...
 
-Aktualisiere den Status im Task-File auf `🟢 Abgeschlossen`.
+Nicht als „erfolgreich abgeschlossen“ ausgeben.
+```
+
+## Semantischer Plan-Drift
+
+```text
+🔴 UMSETZUNG PAUSIERT — PLAN MUSS RECONCILED WERDEN
+
+Neue Repository-Evidenz verändert den freigegebenen Plan:
+- ...
+
+→ `/start-task <TASK_FILE>`
+```
 
 ---
 
-## Commit-Message Convention
+# 19. Unverhandelbare Regeln
 
-Alle Commits MÜSSEN diesem Schema folgen:
+0. **JIRA-`## Lösung` ist Developer-Evidenz:** niemals überschreiben; technische Solve-Metadaten unter `## Commit` speichern.
 
-```
-<TICKET-NUMMER> | <Beschreibung auf Englisch>
-```
 
-**Beispiele** (`<PREFIX>` aus `.claude/project.json`):
-
-- `<PREFIX>-3963 | Add correction request table component`
-- `<PREFIX>-3963 | Implement accept/reject actions for requests`
-
----
-
-## Wichtige Regeln
-
-1. **Already-Solved-Check**: IMMER zuerst prüfen ob Task schon bearbeitet wurde
-2. **Worktree-Default**: Worktree wird automatisch angelegt, sofern noch keiner existiert und `--no-worktree` nicht im Input ist
-3. **Vollständigkeits-Check**: Nur fortfahren wenn Analyse und Lösungsplan vorhanden sind
-4. **Tests**: PFLICHT für jeden neuen Controller (Controller-Test) und für Änderungen an Business-Logik
-5. **Nachfragen**: Bei Unklarheiten IMMER fragen, niemals raten
-6. **Sprache**: Branch-Namen, Commit-Messages und Code-Kommentare auf Englisch
-7. **Commits**: Aussagekräftige Messages mit Ticket-Nummer (Schema beachten!)
-8. **Keine AI-Erwähnung**: Weder in Commits noch in Code-Kommentaren
-9. **ULTRATHINK**: Dieses Command erfordert gründliche Analyse - nutze erweiterte Denkzeit
-10. **NIE PUSHEN**: Unter keinen Umständen selbst pushen oder danach fragen - das macht der Benutzer selbst
-11. **Verifikations-URL (PFLICHT)**: Jedes Lösen MUSS am Ende mit einer konkreten, klickbaren App-URL abschliessen,
-    unter der der Benutzer selbst einsehen/überprüfen kann, dass der Task erfolgreich umgesetzt wurde. Die
-    Abschluss-Zusammenfassung gilt OHNE diese URL als unvollständig — niemals ohne sie abschliessen. Ableitung und
-    Format siehe Phase 4, Schritt 9 (Block „🔗 Ergebnis ansehen" + „PFLICHT — „Ergebnis ansehen"-URL").
-12. **Aktuelles Datum/Zeit immer über den DateProvider (PFLICHT)**: NIEMALS `new \DateTimeImmutable()`,
-    `new \DateTime()`, `time()` o.ä. für „jetzt" verwenden. IMMER den Projekt-Provider
-    `Coala\DateProviderBundle\Service\DateProvider\DateProviderInterface` injizieren und
-    `->getCurrentDateImmutable()` (bzw. `->getCurrentDate()` für mutable) aufrufen. **Warum:** Die Projekte
-    pinnen bzw. warpen die Uhr über den Provider (Tests setzen ein Stichdatum; auch produktiv kann eine
-    Time-Warp/gepinnte Uhr aktiv sein) — Gedmo-Timestamps und die Geschäftslogik laufen über den Provider.
-    Ein direktes `new \DateTimeImmutable()` liefert Echtzeit und driftet von der Provider-Uhr ab → subtile
-    Bugs (z.B. Staleness/Retention oder Jahreswechsel-Logik vergleicht eine ge-warpte `createdAt` gegen ein
-    Echtzeit-`now`). **Schichtung:** „now" nur in der Service-/Handler-Schicht aus dem Provider holen und als
-    `$now`-Parameter in Entities/Repositories durchreichen (keine Clock-Zugriffe in Entity- oder Query-Schicht).
-    **In Tests:** die Provider-Uhr via `self::getService(DateProviderInterface::class)` lesen und Seed-Zeiten
-    relativ dazu setzen (`->getCurrentDateImmutable()->modify('-13 hours')`), damit Seed-Zeit und geprüfte „now"
-    dieselbe (gepinnte/ge-warpte) Uhr verwenden.
-13. **KEINE Ticket-Nummern in Code-Kommentaren (MUST NOT)**: Inline-Kommentare und PHPDoc/Docblocks dürfen
-    **NIEMALS** eine Ticket-Nummer enthalten (`<PREFIX>-NNNN`, inkl. `.a`/`.b`-Suffixe). Das „Warum" gehört in
-    den Kommentar selbst; die Ticket-Historie gehört ins Task-File und in die Commit-Message — nicht in den
-    Quellcode. (Einzige Ausnahme: die `getDescription()`-Zeile einer Doctrine-Migration führt die Ticket-Nr.
-    wie gehabt als Identifikations-Label.) Gilt zusätzlich zur AI-Erwähnungs-Regel (#8).
-14. **Kommentare beschreiben Zustand, nicht Änderung (MUST)**: Ein Kommentar erklärt **immer den aktuellen
-    Zustand** — was der Code IST und TUT —, **nie eine Änderung/Historie** relativ zu einem früheren Stand.
-    Vermeide Formulierungen wie „the **existing** X", „the **former** Y", „**replaces** Z", „**no longer** …",
-    „**now** … instead", „**Mirrors** …": sie veralten und werden verwirrend, sobald der referenzierte frühere
-    Zustand verschwunden ist (der Leser sieht nur noch den aktuellen Code). Schreibe stattdessen, was die
-    Sache standalone ist/tut. (Ausnahme: Doctrine-Migrations-Docblocks dürfen die Schema-Transition
-    beschreiben — eine Migration *ist* ein Änderungs-Skript.)
-15. **Lösung ins Task-File (PFLICHT)**: Commit-Message **und** Test-URL („Ergebnis ansehen") gehören nicht nur
-    in die Abschluss-Zusammenfassung, sondern zusätzlich **dauerhaft ins Task-File** unter den Abschnitt
-    `## Lösung` (Phase 4, Schritt 7b). Nur konsolen-ausgegeben zählt als unvollständig — nach der Session wäre
-    beides sonst weg.
+1. **Implementiere nur einen aktuellen, freigegebenen Plan.**
+2. **Keine stale Fingerprints ignorieren.**
+3. **Keine fremden lokalen Änderungen überschreiben.**
+4. **Keine semantischen Planabweichungen still implementieren.**
+5. **Tests aus AC/Impact-Risiken/Quality ableiten, nicht nur aus Dateitypen.**
+6. **Nie den Haupt-Stack als Worktree-Validation ausgeben.**
+7. **Keine erfolgreiche Abschlussmeldung bei nicht ausgeführter Pflicht-Validation.**
+8. **Nicht automatisch committen oder pushen.**
+9. **Keine Ticket-Nummern oder AI-Historie in normalen Code-Kommentaren.**
+10. **Kommentare beschreiben den aktuellen Zustand, nicht die Änderungshistorie.**
+11. **Workflow-State:** `workflow_state.solve_task` ist der persistente Implementation-Handoff; der direkte Return bleibt zusätzlich bestehen.
+11. **Projektregeln für Clock/DateProvider, Übersetzungen, Namespaces, Tests und Migrationen befolgen.**
+12. **`solve-task` ist Execution; Impact/Quality bleiben eigene Sub-Skills.**
+13. **Full-App `audit-security` wird hier nicht automatisch gestartet.**
+14. **Security-Follow-up wird an Review/Release weitergereicht.**
 
 ---
 
-## Weitere Infos
+# Starte jetzt
 
-- Importiere Namespaces prinzipiell mit "use", schreibe Namespaces niemals direkt in den Code
-- Beachte bei deinem Code die Code-Review-Learnings des Projekts (falls vorhanden — siehe Verweise in der `CLAUDE.md`)
-- Übersetzungen werden nur in den deutschen Translation-Dateien gepflegt — keine hardcodierten Strings im
-  Code/Template. Details: `~/Library/Application Support/Kanban/claude/rules/translations.md`
-
----
-
-## Starte jetzt!
-
-Beginne jetzt mit Phase 0a: Worktree-Routing, danach Phase 0b: Already-Solved-Check.
+1. Task-File + Projektkontext auflösen.
+2. Readiness-/Freshness-Gate prüfen.
+3. Worktree/Routing validieren.
+4. Implementation Snapshot erstellen.
+5. vorhandenen Diff einordnen.
+6. Plan schrittweise implementieren + Tests.
+7. Validation Pipeline ausführen.
+8. Diff/Drift Gate + Implementation-Handoff.
+9. Task-File/JIRA-Lösungsfeld und `## Commit` finalisieren.
+10. als „Bereit für Review“ abschließen — nicht als gemergten Task.
