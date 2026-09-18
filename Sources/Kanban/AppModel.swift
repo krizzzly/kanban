@@ -756,14 +756,17 @@ final class AppModel {
         if let tf = taskFile {
             var result: [TaskSection] = []
             if !tf.preamble.isEmpty {
-                // Synthetic first tab holding the file preamble (status + worktree/branch/stack block),
-                // with the title/worktree/branch/stack turned into clickable links.
+                // Synthetic first tab holding the file preamble (status + jira/worktree/branch/stack
+                // block), with the block's values turned into clickable links. `usesJira` entscheidet,
+                // ob eine fehlende JIRA-Zeile abgeleitet wird — ohne Jira-Anbindung gibt es kein Ticket,
+                // auf das sie zeigen könnte.
                 let linked = StatusLinks.linkify(
                     preamble: tf.preamble,
                     ticketKey: selectedTicketKey,
                     jiraBaseUrl: selectedProject?.jiraBaseUrl,
                     gitlabBaseUrl: config?.gitlabBaseUrl,
-                    gitlabProjectPath: selectedProject?.gitlabProjectPath)
+                    gitlabProjectPath: selectedProject?.gitlabProjectPath,
+                    usesJira: selectedProject?.usesJira ?? true)
                 result.append(TaskSection(id: -1, title: "Status", markdown: linked))
             }
             // Each review file as its own tab (ids -2, -3, …), right after Status so they're easy to

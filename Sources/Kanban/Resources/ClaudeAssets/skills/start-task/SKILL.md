@@ -94,6 +94,10 @@ Lies die ersten ~15 Zeilen des Task-Files und suche nach einem Block der Form:
 > 🌿 **BRANCH**: `feature/<PREFIX>-XXXX_<title>`\
 ```
 
+Die `🎫 **JIRA**`-Zeile steht — wo vorhanden — als erste Zeile über diesem Block. Für das
+Routing zählen WORKTREE und BRANCH; ältere Task-Files und Projekte ohne Jira führen keine
+JIRA-Zeile.
+
 **Grundprinzip:** Claude bleibt im Haupt-Repo (Working-Directory wird NICHT gewechselt). Wenn ein
 Worktree-Block existiert, werden Code-Reads und Git-Befehle für die Analyse in den Worktree-Pfad geroutet.
 Task-File, CLAUDE.md, `.claude/`, Docs werden weiterhin aus dem Haupt-Repo gelesen.

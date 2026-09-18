@@ -200,9 +200,10 @@ Lies das Task-File und füge **direkt nach der H1-Titelzeile** (`# <PREFIX>-XXXX
 Falls bereits ein Worktree-Block existiert (Quote mit `🌳 **WORKTREE**`), aktualisiere ihn statt einen
 neuen einzufügen.
 
-**Weg A (mit Stack)** — vier Metadaten-Zeilen:
+**Weg A (mit Stack)** — fünf Metadaten-Zeilen:
 
 ```markdown
+> 🎫 **JIRA**: `<jiraBaseUrl>/browse/<PREFIX>-XXXX`\
 > 🌳 **WORKTREE**: `<worktreePrefix>/<PREFIX>-XXXX`\
 > 🌿 **BRANCH**: `feature/<PREFIX>-XXXX[_<suffix>]`\
 > 🐳 **STACK**: `https://<worktree-ordnername>.<stackDomain>` (URL nach Stack-Start)\
@@ -216,6 +217,7 @@ neuen einzufügen.
 nichts sagt, ist schlechter als keine. Dafür nennt der Block den Basis-Branch, von dem abgezweigt wurde:
 
 ```markdown
+> 🎫 **JIRA**: `<jiraBaseUrl>/browse/<PREFIX>-XXXX`\
 > 🌳 **WORKTREE**: `<worktreePrefix>/<PREFIX>-XXXX`\
 > 🌿 **BRANCH**: `feature/<PREFIX>-XXXX[_<suffix>]` (von `<BASE>`)\
 > 📅 **Angelegt**: <YYYY-MM-DD>
@@ -228,11 +230,15 @@ Die Metadaten-Zeilen enden auf einen Backslash `\` — das ist ein harter Markdo
 kollabiert der Blockquote im gerenderten Task-File zu einer einzigen Zeile. Backslashes beim Einfügen also
 mitkopieren, nicht entfernen. (Die **letzte** Metadaten-Zeile — `📅 Angelegt` — braucht keinen.)
 
+Bei `usesJira: false` (`.claude/project.json`) **entfällt** die JIRA-Zeile — in beiden Wegen. Eine Zeile,
+die auf ein nicht existierendes Ticket zeigt, ist schlechter als keine.
+
 **Beispiel-Platzierung (Weg A):**
 
 ```markdown
 # <PREFIX>-4426 - Anhänge werden nicht in der Dateiablage angezeigt
 
+> 🎫 **JIRA**: `<jiraBaseUrl>/browse/<PREFIX>-4426`\
 > 🌳 **WORKTREE**: `<worktreePrefix>/<PREFIX>-4426`\
 > 🌿 **BRANCH**: `feature/<PREFIX>-4426`\
 > 🐳 **STACK**: `https://<worktree-ordnername>.<stackDomain>`\

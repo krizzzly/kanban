@@ -106,6 +106,33 @@ final class ClaudeProjectFileTests: XCTestCase {
                        repoDir.path + "-worktree")
     }
 
+    // MARK: - Jira ja/nein
+
+    /// Die Skills bauen daraus die JIRA-Zeile des Status-Blocks — ohne beides können sie sie weder
+    /// schreiben noch korrekt weglassen.
+    func testJiraBaseUrlAndUsesJiraAreWritten() throws {
+        try ClaudeProjectFile.write(for: project)
+        let text = try String(contentsOf: repoDir.appendingPathComponent(".claude/project.json"),
+                              encoding: .utf8)
+        XCTAssertTrue(text.contains("\"jiraBaseUrl\""), text)
+        XCTAssertTrue(text.contains("\"usesJira\" : true"), text)
+        let values = ClaudeProjectFile.read(repoDir: repoDir.path)
+        XCTAssertEqual(values?.jiraBaseUrl, "https://jira.example")
+        XCTAssertEqual(values?.usesJira, true)
+    }
+
+    /// Projekt ohne Jira-Anbindung: `usesJira: false` steht in der Datei, die Basis-URL fehlt.
+    /// `projectOhneStack` ist das echte Beispiel — `kanban` hat weder Stack noch Jira.
+    func testProjectWithoutJiraIsMarkedAndHasNoBaseUrl() throws {
+        try ClaudeProjectFile.write(for: projectOhneStack)
+        let values = ClaudeProjectFile.read(repoDir: repoDir.path)
+        XCTAssertEqual(values?.usesJira, false)
+        XCTAssertNil(values?.jiraBaseUrl)
+        let text = try String(contentsOf: repoDir.appendingPathComponent(".claude/project.json"),
+                              encoding: .utf8)
+        XCTAssertFalse(text.contains("jiraBaseUrl"), text)
+    }
+
     func testWriteReadRoundtripAndIdempotence() throws {
         XCTAssertTrue(try ClaudeProjectFile.write(for: project))
         XCTAssertEqual(ClaudeProjectFile.read(repoDir: repoDir.path),

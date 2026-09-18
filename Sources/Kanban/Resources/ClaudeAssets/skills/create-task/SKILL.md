@@ -189,6 +189,7 @@ Felder die du nicht sicher bestimmen kannst, markiere mit `[TODO: ...]`.
    wenn es einen gibt:
 
    ```markdown
+   > 🎫 **JIRA**: `<jiraBaseUrl>/browse/<PREFIX>-NNNN`\
    > 🌳 **WORKTREE**: `<worktreePrefix>/<PREFIX>-NNNN`\
    > 🌿 **BRANCH**: `feature/<PREFIX>-NNNN[_<suffix>]`\
    > 🐳 **STACK**: `https://<worktree-ordnername>.<stackDomain>`\
@@ -211,7 +212,8 @@ Felder die du nicht sicher bestimmen kannst, markiere mit `[TODO: ...]`.
    ```
 
    Alle Platzhalter mit den aufgelösten Werten aus `.claude/project.json` füllen. Die Stack-URL ist erst
-   nach Stack-Start erreichbar.
+   nach Stack-Start erreichbar. Bei `usesJira: false` (`.claude/project.json`) **entfällt** die JIRA-Zeile — eine Zeile, die auf ein nicht
+   existierendes Ticket zeigt, ist schlechter als keine.
 
 4. Stack NICHT automatisch starten — also `iwf worktree create` ohne `--start` aufrufen; nur in der
    Zusammenfassung erwähnen, wie er später gestartet wird (`iwf worktree start NNNN`). Ohne Stack entfällt

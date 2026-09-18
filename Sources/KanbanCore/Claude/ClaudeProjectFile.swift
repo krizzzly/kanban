@@ -29,6 +29,12 @@ public enum ClaudeProjectFile {
         /// Stack: ein Wert, hinter dem keine Domain steht, wäre eine Behauptung.
         public let stackDomain: String?
         public let gitlabProjectPath: String?
+        /// Basis-URL der Jira-Instanz dieses Projekts — **fehlt**, wenn keine konfiguriert ist.
+        /// Die Skills bauen daraus die `🎫 **JIRA**`-Zeile des Status-Blocks (`<jiraBaseUrl>/browse/<KEY>`).
+        public let jiraBaseUrl: String?
+        /// Hängt das Projekt an Jira? `false` heisst für die Skills: die JIRA-Zeile **entfällt** — eine
+        /// Zeile auf ein nicht existierendes Ticket ist schlechter als keine.
+        public let usesJira: Bool
         /// Hinweis an menschliche Leser — Kanban überschreibt die Datei beim Projektwechsel.
         public let generatedBy: String
     }
@@ -45,6 +51,8 @@ public enum ClaudeProjectFile {
                dockerStack: project.usesDockerStack,
                stackDomain: project.usesDockerStack ? "test" : nil,
                gitlabProjectPath: project.gitlabProjectPath,
+               jiraBaseUrl: project.jiraBaseUrl.isEmpty ? nil : project.jiraBaseUrl,
+               usesJira: project.usesJira,
                generatedBy: "Kanban — generiert aus der Kanban-Config, nicht von Hand editieren")
     }
 

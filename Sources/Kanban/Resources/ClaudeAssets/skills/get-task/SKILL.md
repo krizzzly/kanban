@@ -160,6 +160,7 @@ Falls ja, lies für jeden verwandten Task das entsprechende Task-File ein (falls
    wenn es einen gibt:
 
    ```markdown
+   > 🎫 **JIRA**: `<jiraBaseUrl>/browse/<PREFIX>-NNNN`\
    > 🌳 **WORKTREE**: `<worktreePrefix>/<PREFIX>-NNNN`\
    > 🌿 **BRANCH**: `feature/<PREFIX>-NNNN_<english_title>`\
    > 🐳 **STACK**: `https://<worktree-ordnername>.<stackDomain>`\
@@ -182,7 +183,8 @@ Falls ja, lies für jeden verwandten Task das entsprechende Task-File ein (falls
    ```
 
    Alle Platzhalter mit den aufgelösten Werten aus `.claude/project.json` füllen. Die Stack-URL ist erst
-   nach Stack-Start erreichbar.
+   nach Stack-Start erreichbar. Bei `usesJira: false` (`.claude/project.json`) **entfällt** die JIRA-Zeile — eine Zeile, die auf ein nicht
+   existierendes Ticket zeigt, ist schlechter als keine.
 
    `iwf worktree create` legt per Default **nur** den Worktree an (Branch + Configs + vorbereiteter Stack,
    aber NICHT gestartet). Mit `--start` wird der Stack zusätzlich hochgefahren — dann komplett durchlaufen

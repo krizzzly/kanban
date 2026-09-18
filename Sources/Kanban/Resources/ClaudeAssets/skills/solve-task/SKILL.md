@@ -107,6 +107,10 @@ Lies die ersten ~15 Zeilen des Task-Files und prüfe ob ein Block der Form
 > 🌿 **BRANCH**: `feature/<TICKET-NUMMER>_<title>`\
 ```
 
+Die `🎫 **JIRA**`-Zeile steht — wo vorhanden — als erste Zeile über diesem Block. Für das
+Routing zählen WORKTREE und BRANCH; ältere Task-Files und Projekte ohne Jira führen keine
+JIRA-Zeile.
+
 existiert (die Metadaten-Zeilen enden auf `\` = harter Zeilenumbruch; `worktreePrefix` aus
 `.claude/project.json`). Falls ja, extrahiere `WORKTREE_PATH` und `BRANCH`.
 

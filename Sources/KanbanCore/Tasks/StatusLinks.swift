@@ -2,10 +2,13 @@ import Foundation
 
 /// Turns the Status-tab preamble into clickable links, using base URLs from the Hermes config and
 /// the values shown in the block itself:
-///   • the H1 title            → Jira ticket URL              (browser)
+///   • 🎫 JIRA     `<url>`      → the URL itself               (browser)
 ///   • 🌳 WORKTREE `<path>`     → `kanban-ide://` scheme       (opens in PhpStorm, app-side)
 ///   • 🌿 BRANCH   `<branch>`   → GitLab branch tree URL       (browser)
 ///   • 🐳 STACK    `<url>`      → the URL itself               (browser)
+/// Die H1 bleibt unangetastet: eine Überschrift ist kein Navigationselement, und im Rohtext der
+/// Datei stand von der Verlinkung ohnehin nie etwas. Der Weg zum Ticket steht stattdessen als Zeile
+/// im Block — dort, wo auch Worktree, Branch und Stack stehen.
 /// Pure string logic — the app resolves the `kanban-ide` scheme and opens http(s) links externally.
 public enum StatusLinks {
     /// Custom scheme the app intercepts to open a directory in the IDE.
@@ -23,16 +26,17 @@ public enum StatusLinks {
                                ticketKey: String?,
                                jiraBaseUrl: String?,
                                gitlabBaseUrl: String?,
-                               gitlabProjectPath: String?) -> String {
-        let jira = jiraURL(ticketKey: ticketKey, base: jiraBaseUrl)
-        var titleLinked = false
+                               gitlabProjectPath: String?,
+                               usesJira: Bool = true) -> String {
+        // Bestandsdateien haben die Zeile nicht — sie wird für die Anzeige abgeleitet. Steht sie in
+        // der Datei, gewinnt die Datei; ohne Jira-Anbindung entsteht gar keine.
+        let source = usesJira
+            ? withJiraLine(preamble, url: jiraURL(ticketKey: ticketKey, base: jiraBaseUrl))
+            : preamble
 
-        return preamble.components(separatedBy: "\n").map { line -> String in
-            // H1 title → Jira (first H1 only; `##`/`###` are left alone).
-            if !titleLinked, line.hasPrefix("# "), let jira {
-                titleLinked = true
-                let text = String(line.dropFirst(2))
-                return text.contains("](") ? line : "# [\(text)](\(jira))"
+        return source.components(separatedBy: "\n").map { line -> String in
+            if line.contains("**JIRA**") {
+                return linkFirstCode(in: line) { $0.hasPrefix("http") ? $0 : nil }
             }
             if line.contains("**WORKTREE**") {
                 return linkFirstCode(in: line) { ideURL(forPath: $0) }
@@ -47,11 +51,66 @@ public enum StatusLinks {
         }.joined(separator: "\n")
     }
 
+    // MARK: - Die JIRA-Zeile
+
+    /// Die JIRA-Zeile, wie sie in den Block gehört — eine Stelle, an der sie gebaut wird, für das
+    /// Rendern und für die Migration der Bestandsdateien.
+    public static func jiraLine(url: String) -> String { "> 🎫 **JIRA**: `\(url)`" }
+
+    /// Führt der Block unter der H1 bereits eine JIRA-Zeile? Bewusst **nur** der Block: das Wort
+    /// `**JIRA**` kommt auch im Fliesstext eines Task-Files vor (eine Datei beschreibt genau diese
+    /// Zeile), und eine Suche über die ganze Datei hielte die Migration dort fälschlich für erledigt.
+    public static func hasJiraLine(_ markdown: String) -> Bool {
+        let lines = markdown.components(separatedBy: "\n")
+        guard let h1 = lines.firstIndex(where: { $0.hasPrefix("# ") }) else { return false }
+        return lines[blockRange(lines, belowHeadingAt: h1)].contains { $0.contains("**JIRA**") }
+    }
+
+    /// Setzt die JIRA-Zeile als **erste** Zeile in den Block unter der H1 — die Wurzel von allem
+    /// anderen im Block steht zuoberst. Unverändert zurück, wenn der Block schon eine `**JIRA**`-Zeile
+    /// führt (die Datei gewinnt), `url` fehlt oder es gar keine H1 gibt.
+    ///
+    /// Ohne bestehenden Block (`--no-worktree`) entsteht ein Blockquote mit nur dieser Zeile.
+    /// Arbeitet auf Präambel **und** ganzer Datei: beide fangen mit derselben H1 an.
+    public static func withJiraLine(_ markdown: String, url: String?) -> String {
+        guard let url, !url.isEmpty else { return markdown }
+        var lines = markdown.components(separatedBy: "\n")
+        guard let h1 = lines.firstIndex(where: { $0.hasPrefix("# ") }) else { return markdown }
+
+        let block = blockRange(lines, belowHeadingAt: h1)
+        guard !lines[block].contains(where: { $0.contains("**JIRA**") }) else { return markdown }
+
+        if !block.isEmpty {
+            // In den bestehenden Block: mit `\` am Ende, sonst kollabiert er beim Rendern zu einer Zeile.
+            lines.insert(jiraLine(url: url) + "\\", at: block.lowerBound)
+        } else {
+            let next = h1 + 1
+            let needsBlankAfter = next < lines.count && !isBlank(lines[next])
+            lines.insert(contentsOf: needsBlankAfter ? ["", jiraLine(url: url), ""] : ["", jiraLine(url: url)],
+                         at: next)
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    /// Die Zeilen des Blockquotes unter der H1 — leer, wenn keiner folgt. Der Block steht direkt
+    /// unter der Überschrift, durch höchstens eine Leerzeile abgesetzt.
+    private static func blockRange(_ lines: [String], belowHeadingAt h1: Int) -> Range<Int> {
+        var start = h1 + 1
+        if start < lines.count, isBlank(lines[start]) { start += 1 }
+        var end = start
+        while end < lines.count, lines[end].hasPrefix(">") { end += 1 }
+        return start..<end
+    }
+
+    private static func isBlank(_ line: String) -> Bool {
+        line.trimmingCharacters(in: .whitespaces).isEmpty
+    }
+
     // MARK: - URL builders
 
     /// Eine `!<iid>`-Karte ist Arbeit **ohne** Ticketnummer — zu ihr gibt es per Definition kein
-    /// Jira-Issue. Ohne diese Ausnahme verlinkte ihre H1 auf `/browse/!49` und liefe ins Leere.
-    private static func jiraURL(ticketKey: String?, base: String?) -> String? {
+    /// Jira-Issue. Ohne diese Ausnahme zeigte ihre Zeile auf `/browse/!49` und liefe ins Leere.
+    public static func jiraURL(ticketKey: String?, base: String?) -> String? {
         guard let key = ticketKey, !key.isEmpty, !key.hasPrefix("!"),
               let base, !base.isEmpty else { return nil }
         return "\(trimTrailingSlash(base))/browse/\(key)"

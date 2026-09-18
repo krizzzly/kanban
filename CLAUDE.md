@@ -740,14 +740,14 @@ Nischen-Commands wie open-task/get-mr/solve-support.
   liest beide Ebenen, überdeckte Projektkopien stehen in `shadowedProjectURL`.
 - **Keine Projektwerte in den Assets**: Platzhalter `<PREFIX>`/`<tasksPath>`/`<docsPath>`/
   `<kbPath>`/`<worktreePrefix>`/`<dockerStack>`/`<stackDomain>` (nur die TLD; Hosts =
-  `<ordnername>.<stackDomain>`) verweisen auf `<repo>/.claude/project.json`, das
+  `<ordnername>.<stackDomain>`)/`<jiraBaseUrl>` verweisen auf `<repo>/.claude/project.json`, das
   `ClaudeProjectFile` beim Projektwechsel aus Kanbans Config generiert (schreibt nur bei
-  inhaltlicher Änderung; `.claude/` ist überall gitignored). **Zwei Schlüssel fehlen bewusst, wenn
-  es sie nicht gibt**: `kbPath` ohne konfigurierte Knowledgebase und `stackDomain` ohne
-  Docker-Stack — ein Skill soll „hier ist sie" von „es gibt keine" unterscheiden können, und eine
-  TLD ohne Stack dahinter wäre eine Behauptung. `dockerStack` dagegen steht **immer** drin
-  (`true`/`false`): daran verzweigen die Skills, und ein fehlender Schlüssel würde dort als `true`
-  gelesen. Alle anderen Werte stehen immer da.
+  inhaltlicher Änderung; `.claude/` ist überall gitignored). **Drei Schlüssel fehlen bewusst, wenn
+  es sie nicht gibt**: `kbPath` ohne konfigurierte Knowledgebase, `stackDomain` ohne Docker-Stack
+  und `jiraBaseUrl` ohne konfigurierte Jira-Instanz — ein Skill soll „hier ist sie" von „es gibt
+  keine" unterscheiden können, und eine TLD ohne Stack dahinter wäre eine Behauptung. `dockerStack`
+  und `usesJira` dagegen stehen **immer** drin (`true`/`false`): daran verzweigen die Skills, und
+  ein fehlender Schlüssel würde dort als `true` gelesen. Alle anderen Werte stehen immer da.
 - **Editor**: eigener ✨-Toolbar-Button → `ClaudeWorkflowWindow` (eigenständiges Fenster in
   Commit-Dialog-Grösse; die Hermes-Einstellungen bleiben ein Sheet) — CodeEditorView über den
   Bestand, Symlink-Status/-Verwaltung je Asset, „Auf Auslieferungsstand zurücksetzen" (aus dem Bundle).
@@ -1019,6 +1019,44 @@ der nur den Normalfall wiederholt, stünde in jedem Projekt herum):
 - **Bestehende Task-Files werden nicht rückwirkend umgeschrieben.** Ein alter Worktree-Block mit
   `🐳 **STACK**: -` bleibt stehen; neue Blöcke lassen die Zeile ohne Stack einfach weg (nicht auf
   `-` setzen — eine Zeile, die nichts sagt, ist schlechter als keine).
+
+## Der Status-Block unter der H1
+
+Der Blockquote direkt unter der Überschrift eines Task-Files ist dessen Inhaltsverzeichnis — alles,
+was zum Ticket gehört, steht dort und nur dort:
+
+```markdown
+# EVEN-3530 - Ausführungskontrolle Status
+
+> 🎫 **JIRA**: `https://iwf-web-solutions.atlassian.net/browse/EVEN-3530`\
+> 🌳 **WORKTREE**: `/Users/…/code/even-worktree/EVEN-3530`\
+> 🌿 **BRANCH**: `feature/EVEN-3530_status`\
+> 🐳 **STACK**: `https://even-3530.test`\
+> 📅 **Angelegt**: 2026-09-18
+```
+
+`StatusLinks.linkify` verlinkt beim Rendern des Status-Tabs die Code-Spans: JIRA und STACK auf sich
+selbst, WORKTREE auf `kanban-ide://` (die App fängt das Schema ab und öffnet PhpStorm), BRANCH auf
+den GitLab-Tree. Die **H1 bleibt reiner Text** (KANBAN-003). Sie war bis dahin selbst der Jira-Link:
+unsichtbar — dass eine Überschrift anklickbar ist, sieht man ihr nicht an —, im Rohtext der Datei
+gar nicht vorhanden, und damit für jeden Leser ausserhalb des Status-Tabs (Claude liest die Datei,
+statt sie zu rendern) schlicht nicht da.
+
+- **Fehlende JIRA-Zeile wird abgeleitet** (`StatusLinks.withJiraLine`, aus `ticketKey` +
+  `jiraBaseUrl`) und als **erste** Blockzeile eingesetzt — die Wurzel von allem anderen steht
+  zuoberst. Steht sie in der Datei, gewinnt die Datei. Ohne Block (`--no-worktree`) entsteht ein
+  Blockquote mit nur dieser Zeile.
+- **`usesJira: false` → gar keine Zeile**, auch nicht abgeleitet. `linkify` wusste von `useJira`
+  nichts und verlinkte die H1 des Projekts `kanban` auf ein `/browse/KANBAN-…`, das es nie gab.
+- **`!<iid>`-Karten** haben per Definition kein Jira-Issue und bekommen keine Zeile.
+- **`.claude/project.json` führt `jiraBaseUrl` und `usesJira`** — ohne beides könnte eine Skill die
+  Zeile weder bauen noch korrekt weglassen. `jiraBaseUrl` **fehlt**, wenn keine konfiguriert ist
+  (dieselbe Regel wie bei `kbPath`: „es gibt keine" ist eine eigene Aussage).
+- **Der harte Zeilenumbruch** (`\` am Zeilenende) auf allen Metadaten-Zeilen ausser der letzten ist
+  Pflicht — ohne ihn kollabiert der Blockquote beim Rendern zu einer einzigen Zeile.
+- **Bestandsdateien migrieren**: `JiraLineMigration` trägt die Zeile einmalig in bestehende
+  Task-Files ein (siehe „Build / run"). Die Ableitung beim Rendern rettet die Anzeige, nicht die
+  Datei; wer sie im Editor öffnet oder mit `grep` liest, soll den Weg zum Ticket ebenfalls finden.
 
 ## Kommentare als Diskussion, nicht als JSON
 
@@ -2013,6 +2051,10 @@ und wer die eine Datei kennt, kennt die andere.
 swift build
 swift run Kanban    # Debug-Build aus .build/ — zum Ausprobieren, NICHT das, was installiert ist
 swift test          # KanbanCore unit tests (WorkflowStatus engine)
+
+swift run Kanban --migrate-jira-line --dry-run          # zeigt, was die Migration schriebe
+swift run Kanban --migrate-jira-line                    # trägt die 🎫-Zeile in Bestands-Task-Files ein
+swift run Kanban --migrate-jira-line --project even     # nur ein Projekt
 
 ./build-app.sh      # ausrollen: Release + Bundle + ad-hoc-Signatur → /Applications/Kanban.app
 ```
