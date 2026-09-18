@@ -62,6 +62,29 @@ public enum ThemeMapEdit {
     public static func namen(_ root: JSONValue, _ spec: ThemeMapSpec) -> [String] {
         (root.value(at: spec.path)?.objectValue ?? [:]).keys.sorted()
     }
+
+    /// Die mitgelieferten Fassungen in die Datei schreiben, **wenn dort noch keine steht**.
+    ///
+    /// Ohne das bleibt die Oberfläche leer, obwohl die Darstellung funktioniert: die Auswahl listet
+    /// die Namen aus der Datei, die eingebauten Fassungen stehen aber nur im Code. Der Seed hilft
+    /// nur einer frischen Installation — eine gewachsene Config hat nie einen `markdown`-Abschnitt
+    /// gesehen und zeigte deshalb genau nichts zum Einstellen. Das war der ursprüngliche Befund
+    /// dieses Tasks, nur eine Ebene weiter oben.
+    ///
+    /// Additiv und nur einmal: sobald **eine** Fassung dasteht (auch eine selbst angelegte oder die
+    /// aus einem Altblock übernommene), passiert nichts mehr.
+    @discardableResult
+    public static func ergaenzeVorlagen(_ root: inout JSONValue, spec: ThemeMapSpec) -> Bool {
+        guard !spec.vorlagen.isEmpty, namen(root, spec).isEmpty else { return false }
+        for vorlage in spec.vorlagen {
+            root.set(vorlage.werte, at: spec.path + [vorlage.name])
+        }
+        // Die aktive Wahl nur setzen, wenn keine dasteht — und dann auf das, was ohnehin gilt.
+        if root.value(at: spec.activePath)?.stringValue == nil {
+            root.set(.string(spec.vorlagen[0].name), at: spec.activePath)
+        }
+        return true
+    }
 }
 
 /// Der Umzug des flachen `markdown`-Blocks in eine benannte Fassung.
