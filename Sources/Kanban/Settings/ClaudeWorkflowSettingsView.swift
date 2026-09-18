@@ -19,8 +19,13 @@ final class ClaudeWorkflowModel {
         let missingName: String?
         /// Kein Repo-Ordner: es gibt keinen Ort, an den verlinkt werden könnte.
         let repoMissing: Bool
-        /// Andere Projekte, die sich dasselbe Repo teilen — sie teilen sich auch `<repo>/.claude/`.
-        let sharesRepoWith: [String]
+        /// Projekte, die sich dasselbe Repo teilen **und auf einem anderen Set stehen**.
+        ///
+        /// Nur dann ist die Teilung ein Problem: `<repo>/.claude/` gibt es einmal, also gewinnt das
+        /// zuletzt verlinkte Set und das andere Projekt sieht stillschweigend fremde Skills. Teilen
+        /// sich zwei Projekte ein Repo und dasselbe Set — bei `even`/`support` und
+        /// `bfezvm`/`tp1`/`zvmsupport` der Normalfall —, gibt es nichts zu melden.
+        let conflictingRepoMates: [String]
 
         var id: String { project.key }
     }
@@ -40,7 +45,13 @@ final class ClaudeWorkflowModel {
     private(set) var defaultIsImplicit = false
     private(set) var message: String?
 
-    func load() {
+    /// Liest den Stand — und stellt her, was fehlt.
+    ///
+    /// Es gibt keinen „Verlinken"-Knopf mehr: ein Projekt, das an einem Set hängt, ist verlinkt,
+    /// sonst wäre die Zuordnung eine Behauptung. Hergestellt wird beim Zuordnen, beim App-Start,
+    /// beim Projektwechsel — und hier, damit auch ein von Hand aufgelöster Zielort ohne Knopfdruck
+    /// nachzieht. Der Aufruf ist idempotent: steht alles, passiert nichts.
+    func load(herstellen: Bool = true) {
         let config = try? KanbanConfig.load()
         // Frühere Wurzeln nur behalten, solange sie noch gebraucht werden: nach dem Aufräumen zeigt
         // kein Symlink mehr dorthin, und ein alter Pfad im Store wäre ab da nur noch irreführend.
@@ -70,11 +81,38 @@ final class ClaudeWorkflowModel {
                 state: state,
                 missingName: resolution.missingName,
                 repoMissing: !repoDa,
-                sharesRepoWith: projects
-                    .filter { $0.key != project.key && $0.repoDir == project.repoDir }
+                conflictingRepoMates: projects
+                    .filter { anderes in
+                        anderes.key != project.key && anderes.repoDir == project.repoDir
+                            && store.resolve(skillSet: anderes.skillSet,
+                                             default: config?.defaultSkillSet).set?.name != set.name
+                    }
                     .map(\.key)))
         }
         verlinkungen = gruppen.mapValues { $0.sorted { $0.project.key < $1.project.key } }
+
+        if herstellen, verlinkungen.values.contains(where: { $0.contains { $0.state != .linked } }) {
+            stelleHer(projects, defaultSkillSet: config?.defaultSkillSet, melden: false)
+            load(herstellen: false)
+        }
+    }
+
+    /// Verlinkt jedes Projekt auf sein Set und legt das Standard-Set in die Agent-Homes.
+    @discardableResult
+    private func stelleHer(_ projects: [ProjectConfig], defaultSkillSet: String?,
+                           melden: Bool) -> [ClaudeLinkReport] {
+        var reports: [ClaudeLinkReport] = []
+        for project in projects {
+            if let report = ClaudeAssetFactory.link(project, defaultSkillSet: defaultSkillSet,
+                                                   store: store) {
+                reports.append(report)
+            }
+        }
+        if let standard = store.defaultSet(configured: defaultSkillSet) {
+            reports += store.link(standard, toHomes: AgentKind.allCases).values
+        }
+        if melden { message = melde(reports, titel: "Verlinkt") }
+        return reports
     }
 
     /// Hängt irgendwo noch ein Symlink an dieser früheren Wurzel? Geprüft wird an den Agent-Homes
@@ -111,37 +149,12 @@ final class ClaudeWorkflowModel {
 
     // MARK: Verlinken
 
-    /// Stellt die Verlinkung eines Projekts her. Fremde Zielorte werden gemeldet, nie überschrieben.
-    func verlinke(_ verlinkung: Verlinkung) {
+    /// Nach einer Änderung: Config neu lesen, alles herstellen, Ansicht auffrischen.
+    private func herstellenUndAuffrischen() {
         let config = try? KanbanConfig.load()
-        guard let report = ClaudeAssetFactory.link(verlinkung.project,
-                                                   defaultSkillSet: config?.defaultSkillSet,
-                                                   store: store) else {
-            message = "\(verlinkung.project.key): kein Repo-Ordner unter "
-                    + "\(abbreviateHome(verlinkung.project.repoDir)) — nichts zu verlinken."
-            return
-        }
-        message = melde([report], titel: verlinkung.project.key)
-        load()
-    }
-
-    /// Alle Projekte auf einmal — plus das Standard-Set in die Agent-Homes, damit auch eine Console
-    /// ausserhalb eines Projekts etwas sieht.
-    func verlinkeAlle() {
-        let config = try? KanbanConfig.load()
-        var reports: [ClaudeLinkReport] = []
-        for project in config?.projects ?? [] {
-            if let report = ClaudeAssetFactory.link(project,
-                                                    defaultSkillSet: config?.defaultSkillSet,
-                                                    store: store) {
-                reports.append(report)
-            }
-        }
-        if let standard = store.defaultSet(configured: config?.defaultSkillSet) {
-            reports += store.link(standard, toHomes: AgentKind.allCases).values
-        }
-        message = melde(reports, titel: "Alle Projekte")
-        load()
+        store = .configured(formerRoots: store.formerRoots)
+        stelleHer(config?.projects ?? [], defaultSkillSet: config?.defaultSkillSet, melden: true)
+        load(herstellen: false)
     }
 
     private func melde(_ reports: [ClaudeLinkReport], titel: String) -> String {
@@ -162,41 +175,6 @@ final class ClaudeWorkflowModel {
 
     func zeigeSetsOrdner() {
         NSWorkspace.shared.activateFileViewerSelecting([store.setsRoot])
-    }
-
-    func zeigeProjektOrdner(_ verlinkung: Verlinkung) {
-        let dir = URL(fileURLWithPath: verlinkung.project.repoDir)
-            .appendingPathComponent(verlinkung.project.agent.projectDirName, isDirectory: true)
-        NSWorkspace.shared.activateFileViewerSelecting([dir])
-    }
-
-    // MARK: Zuordnung ändern
-
-    /// Hängt ein Projekt auf ein anderes Set um: Config schreiben, sofort neu verlinken.
-    ///
-    /// Beides gehört zusammen — eine Zuordnung, die erst beim nächsten Projektwechsel wirkt, sähe
-    /// aus wie nichts passiert. Die alten Symlinks räumt `link(_:toProject:agent:)` dabei selbst weg.
-    func weise(_ verlinkung: Verlinkung, auf setName: String?) {
-        guard setName != verlinkung.project.skillSet else { return }
-        do {
-            try schreibeConfig { doc in
-                doc.set(setName.map(JSONValue.string),
-                        at: ["modules", "jira", "projects", verlinkung.project.key, "skillSet"])
-            }
-            let config = try? KanbanConfig.load()
-            let projekt = config?.projects.first { $0.key == verlinkung.project.key }
-            if let projekt, let report = ClaudeAssetFactory.link(projekt,
-                                                                defaultSkillSet: config?.defaultSkillSet,
-                                                                store: store) {
-                message = melde([report], titel: verlinkung.project.key)
-            } else {
-                message = "\(verlinkung.project.key) → \(setName ?? "Standard-Set") — kein Repo-Ordner, "
-                        + "nichts zu verlinken."
-            }
-        } catch {
-            message = "Zuordnung nicht gespeichert: \(error.localizedDescription)"
-        }
-        load()
     }
 
     /// Ein Set anlegen: Name plus Ordner. Der Ordner muss `skills/` oder `rules/` enthalten —
@@ -231,7 +209,7 @@ final class ClaudeWorkflowModel {
             message = "Nicht entfernt: \(error.localizedDescription)"
         }
         store = .configured(formerRoots: [set.url])
-        verlinkeAlle()
+        herstellenUndAuffrischen()
     }
 
     /// Den Ordner eines Sets auf einen anderen zeigen lassen.
@@ -249,7 +227,7 @@ final class ClaudeWorkflowModel {
             return
         }
         store = .configured(formerRoots: [set.url])
-        verlinkeAlle()
+        herstellenUndAuffrischen()
     }
 
     /// Welche Projekte dieses Set benutzen — die Auswahl am Set statt am Projekt.
@@ -271,7 +249,7 @@ final class ClaudeWorkflowModel {
             message = "Zuordnung nicht gespeichert: \(error.localizedDescription)"
             return
         }
-        verlinkeAlle()
+        herstellenUndAuffrischen()
     }
 
     func ordnerDialog(titel: String, start: URL?) -> URL? {
@@ -303,7 +281,7 @@ final class ClaudeWorkflowModel {
             return
         }
         store = .configured(formerRoots: [alt])
-        verlinkeAlle()
+        herstellenUndAuffrischen()
     }
 
     private func schreibeConfig(_ aendern: (inout JSONValue) -> Void) throws {
@@ -440,66 +418,41 @@ struct ClaudeWorkflowSettingsView: View {
         // nur in den Einstellungen unter dem jeweiligen Jira-Projekt — eine Zeile pro Projekt, ohne
         // Blick darauf, wer sonst noch an diesem Set hängt.
         let benutzt = Set((model.verlinkungen[set.name] ?? []).map(\.project.key))
-        FlowRow {
+        Fluss(abstand: 5, zeilenabstand: 5) {
             ForEach(model.alleProjekte) { projekt in
-                Toggle(isOn: Binding(
-                    get: { benutzt.contains(projekt.key) },
-                    set: { an in
-                        model.nutzen(set, projekte: an ? benutzt.union([projekt.key])
-                                                       : benutzt.subtracting([projekt.key]))
-                    })) {
-                    Text(projekt.key).font(.system(size: 11, design: .monospaced))
-                }
-                .toggleStyle(.checkbox)
-                .frame(width: 130, alignment: .leading)
-            }
-        }
-
-        let projekte = model.verlinkungen[set.name] ?? []
-        if projekte.isEmpty {
-            Text("Kein Projekt hängt an diesem Set.")
-                .font(.caption).foregroundStyle(.tertiary)
-        } else {
-            ForEach(projekte) { projektZeile($0) }
-        }
-    }
-
-    /// Die Projekt-Haken in Reihen umbrechen — eine Liste mit 13 Einträgen untereinander wäre
-    /// länger als alles andere im Fenster zusammen.
-    private struct FlowRow<Content: View>: View {
-        @ViewBuilder let content: Content
-        var body: some View {
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 130), alignment: .leading)],
-                      alignment: .leading, spacing: 2) { content }
-                .padding(.vertical, 2)
-        }
-    }
-
-    private func projektZeile(_ verlinkung: ClaudeWorkflowModel.Verlinkung) -> some View {
-        HStack(spacing: 8) {
-            zustand(verlinkung)
-            VStack(alignment: .leading, spacing: 1) {
-                HStack(spacing: 6) {
-                    Text(verlinkung.project.key).font(.system(size: 12, design: .monospaced))
-                    Text(verlinkung.project.agent.projectDirName)
-                        .font(.system(size: 10, design: .monospaced)).foregroundStyle(.tertiary)
-                }
-                if let hinweis = hinweis(verlinkung) {
-                    Text(hinweis).font(.caption).foregroundStyle(.orange)
-                        .fixedSize(horizontal: false, vertical: true)
+                ProjektChip(key: projekt.key, an: benutzt.contains(projekt.key)) {
+                    model.nutzen(set, projekte: benutzt.contains(projekt.key)
+                                 ? benutzt.subtracting([projekt.key])
+                                 : benutzt.union([projekt.key]))
                 }
             }
-            Spacer(minLength: 8)
-            if verlinkung.project.skillSet == nil {
-                Text("über Standard-Set").font(.caption).foregroundStyle(.tertiary)
-            }
-            Button("Verlinkung herstellen") { model.verlinke(verlinkung) }
-                .disabled(verlinkung.repoMissing)
-                .help("Legt die Symlinks in \(model.abbreviateHome(verlinkung.project.repoDir))/"
-                      + "\(verlinkung.project.agent.projectDirName) an — nötig nur, wenn der "
-                      + "Zustand links nicht grün ist")
         }
         .padding(.vertical, 2)
+
+        let probleme = (model.verlinkungen[set.name] ?? []).filter {
+            $0.repoMissing || $0.missingName != nil || $0.state != .linked
+                || !$0.conflictingRepoMates.isEmpty
+        }
+        ForEach(probleme) { problemZeile($0) }
+    }
+
+
+    /// Eine Zeile je Projekt, an dem etwas **nicht** stimmt.
+    ///
+    /// Im Normalfall sagt der Chip oben schon alles: er ist an, also ist das Projekt verlinkt.
+    /// Eine zweite Liste, die dasselbe noch einmal aufzählt, wäre Lärm — hier steht nur, was
+    /// Aufmerksamkeit braucht.
+    private func problemZeile(_ verlinkung: ClaudeWorkflowModel.Verlinkung) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            zustand(verlinkung)
+            Text(verlinkung.project.key).font(.system(size: 12, design: .monospaced))
+            if let hinweis = hinweis(verlinkung) {
+                Text(hinweis).font(.caption).foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.vertical, 1)
     }
 
     @ViewBuilder
@@ -516,7 +469,7 @@ struct ClaudeWorkflowSettingsView: View {
                     .help("Nicht (vollständig) verlinkt")
             case .otherSet(let ziel):
                 Image(systemName: "link").foregroundStyle(.orange)
-                    .help("Zeigt noch auf \(ziel) — „Verlinkung herstellen“ hängt es um")
+                    .help("Zeigt noch auf \(ziel) — wird beim nächsten Herstellen umgehängt")
             case .foreign(let was):
                 Image(systemName: "exclamationmark.triangle").foregroundStyle(.orange)
                     .help("Zielort belegt: \(was)")
@@ -533,9 +486,10 @@ struct ClaudeWorkflowSettingsView: View {
         if let fehlend = verlinkung.missingName {
             teile.append("gewähltes Set „\(fehlend)“ gibt es nicht — das Standard-Set gilt")
         }
-        if !verlinkung.sharesRepoWith.isEmpty {
-            teile.append("teilt das Repo mit \(verlinkung.sharesRepoWith.joined(separator: ", "))"
-                         + " — es gilt das zuletzt verlinkte Set")
+        if !verlinkung.conflictingRepoMates.isEmpty {
+            teile.append("teilt das Repo mit \(verlinkung.conflictingRepoMates.joined(separator: ", "))"
+                         + ", und die stehen auf einem anderen Set — `<repo>/.claude/` gibt es "
+                         + "einmal, es gilt das zuletzt verlinkte")
         }
         if case .foreign(let was) = verlinkung.state { teile.append(was) }
         return teile.isEmpty ? nil : teile.joined(separator: " · ")
@@ -547,18 +501,15 @@ struct ClaudeWorkflowSettingsView: View {
                 Text(message).font(.caption).foregroundStyle(.secondary)
             }
             HStack(spacing: 10) {
-                Text("Skills liegen im Projekt unter .claude/skills bzw. .codex/skills, Rules unter "
-                     + ".claude/rules — beides gitignored, und beides Symlinks auf den gepflegten "
-                     + "Ordner. Das Standard-Set hängt zusätzlich in ~/.claude und ~/.codex.")
+                Text("Ein Klick auf ein Projekt verlinkt es sofort: Skills nach .claude/skills bzw. "
+                     + ".codex/skills, Rules nach .claude/rules — Symlinks auf den Ordner des Sets. "
+                     + "Das Standard-Set hängt zusätzlich in ~/.claude und ~/.codex.")
                     .font(.caption).foregroundStyle(.tertiary)
                     .fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 8)
                 Button("Set anlegen…") { neuesSet = true }
                     .help("Ein Set ist ein Ordner mit skills/ und/oder rules/ — irgendwo auf der "
                           + "Platte, nicht zwingend im Sammelordner")
-                Button("Alle verlinken") { model.verlinkeAlle() }
-                    .help("Jedes Projekt auf sein Set bringen und das Standard-Set in die "
-                          + "Agent-Homes legen")
             }
         }
         .padding(12)
@@ -642,5 +593,102 @@ private struct NeuesSetSheet: View {
         guard let ordner else { return }
         if let meldung = model.legeSetAn(name: name, ordner: ordner) { fehler = meldung }
         else { onClose() }
+    }
+}
+
+/// Ein Projekt als anklickbarer Chip — an oder aus.
+///
+/// Statt Ankreuzfeldern, weil die Frage hier nicht „welche Häkchen sind gesetzt" lautet, sondern
+/// **„welche Projekte gehören zu diesem Set"**: eine Menge, keine Liste von Schaltern. Gesetzte
+/// Chips sind gefüllt und lesen sich als Aufzählung, die übrigen stehen blass daneben und laden
+/// zum Dazunehmen ein. Dieselbe Kapsel-Optik wie die Epic-Chips auf den Karten.
+private struct ProjektChip: View {
+    let key: String
+    let an: Bool
+    let tippen: () -> Void
+
+    @State private var drueber = false
+
+    var body: some View {
+        Button(action: tippen) {
+            Text(key)
+                .font(.system(size: 11, weight: an ? .semibold : .regular, design: .monospaced))
+                .foregroundStyle(an ? Color.accentColor : .secondary)
+                .lineLimit(1)
+                .padding(.horizontal, 9).padding(.vertical, 3)
+                .background(fuellung, in: Capsule())
+                .overlay(Capsule().strokeBorder(rand, lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+        .onHover { drueber = $0 }
+        .help(an ? "\(key) benutzt dieses Set — klicken nimmt es heraus"
+                 : "\(key) auf dieses Set legen")
+    }
+
+    private var fuellung: Color {
+        an ? Color.accentColor.opacity(drueber ? 0.24 : 0.16)
+           : Color.secondary.opacity(drueber ? 0.16 : 0.08)
+    }
+
+    private var rand: Color {
+        an ? Color.accentColor.opacity(0.45) : Color.secondary.opacity(drueber ? 0.35 : 0.2)
+    }
+}
+
+/// Fliessender Umbruch: so viele Chips je Zeile, wie hineinpassen.
+///
+/// Ein `LazyVGrid` mit fester Spaltenbreite wäre das Naheliegende, gibt aber ein Raster — bei
+/// Schlüsseln von `tp1` bis `iwf-local-dev` stünde überall Luft. Das `Layout`-Protokoll misst jeden
+/// Chip einzeln und bricht um, wenn die Zeile voll ist.
+private struct Fluss: Layout {
+    var abstand: CGFloat = 6
+    var zeilenabstand: CGFloat = 6
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let breite = proposal.width ?? .infinity
+        let zeilen = umbrechen(subviews: subviews, breite: breite)
+        let hoehe = zeilen.reduce(0) { $0 + $1.hoehe } +
+            CGFloat(max(0, zeilen.count - 1)) * zeilenabstand
+        return CGSize(width: proposal.width ?? zeilen.map(\.breite).max() ?? 0, height: hoehe)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews,
+                       cache: inout ()) {
+        var y = bounds.minY
+        for zeile in umbrechen(subviews: subviews, breite: bounds.width) {
+            var x = bounds.minX
+            for index in zeile.indizes {
+                let groesse = subviews[index].sizeThatFits(.unspecified)
+                subviews[index].place(at: CGPoint(x: x, y: y), anchor: .topLeading,
+                                      proposal: ProposedViewSize(groesse))
+                x += groesse.width + abstand
+            }
+            y += zeile.hoehe + zeilenabstand
+        }
+    }
+
+    private struct Zeile {
+        var indizes: [Int] = []
+        var breite: CGFloat = 0
+        var hoehe: CGFloat = 0
+    }
+
+    private func umbrechen(subviews: Subviews, breite: CGFloat) -> [Zeile] {
+        var zeilen: [Zeile] = []
+        var aktuell = Zeile()
+        for index in subviews.indices {
+            let groesse = subviews[index].sizeThatFits(.unspecified)
+            let benoetigt = aktuell.indizes.isEmpty ? groesse.width : aktuell.breite + abstand + groesse.width
+            if !aktuell.indizes.isEmpty, benoetigt > breite {
+                zeilen.append(aktuell)
+                aktuell = Zeile()
+            }
+            aktuell.breite = aktuell.indizes.isEmpty ? groesse.width
+                                                     : aktuell.breite + abstand + groesse.width
+            aktuell.hoehe = max(aktuell.hoehe, groesse.height)
+            aktuell.indizes.append(index)
+        }
+        if !aktuell.indizes.isEmpty { zeilen.append(aktuell) }
+        return zeilen
     }
 }
