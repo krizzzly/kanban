@@ -37,13 +37,13 @@ public enum KanbanConfigSchema {
                                 + "auf; wo nicht, stünde sie sonst in jedem Commit. Der Haken setzt "
                                 + "sie im Commit-Fenster nur **vorab** ab — abwählen lässt sich "
                                 + "dort jede Datei, und dazuwählen auch diese."),
-            ConfigFieldSpec(["claude", "setsPath"], "Skill-Sets-Ordner", kind: .path,
-                            placeholder: "kanban/\(ClaudeAssetStore.repoRelativeSetsPath)",
-                            help: "Wo die Skill-Sets **gepflegt** werden; genau diese Ordner werden "
-                                + "in die Projekte verlinkt — es gibt keine Kopie. Eine Änderung an "
-                                + "einem SKILL.md wirkt damit sofort in jedem Projekt. Absolut, ~ "
-                                + "oder relativ zum Basis-Pfad. Leer = das Kanban-Repo unter dem "
-                                + "Basis-Pfad."),
+            ConfigFieldSpec(["claude", "setsPath"], "Sammelordner für Skill-Sets", kind: .path,
+                            placeholder: "~/Library/Application Support/Kanban/claude",
+                            help: "Jeder Unterordner darin mit skills/ und/oder rules/ ist ein Set. "
+                                + "Genau diese Ordner werden in die Projekte verlinkt — es gibt "
+                                + "keine Kopie, eine Änderung an einem SKILL.md wirkt sofort. "
+                                + "Einzelne Sets anderswo trägt das Skill-Set-Fenster ein. "
+                                + "Absolut, ~ oder relativ zum Basis-Pfad."),
             // Steht hier und nicht bei Jira: das Set gilt für die ganze App, auch für eine
             // Console ausserhalb eines Projekts (dorthin wird es in die Agent-Homes verlinkt).
             ConfigFieldSpec(["claude", "defaultSkillSet"], "Standard-Skill-Set",

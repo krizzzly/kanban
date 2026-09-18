@@ -312,6 +312,52 @@ final class ClaudeAssetsTests: XCTestCase {
         XCTAssertEqual(befehl.level, .project)
     }
 
+    // MARK: Ordnerwechsel
+
+    /// Wer den Sets-Ordner wechselt, soll die Symlinks des alten nicht als fremd stehen lassen:
+    /// sie gehören uns und werden umgehängt. Ohne `formerRoots` bliebe in jedem Projekt ein toter
+    /// Satz Links liegen, den die `foreign`-Regel für immer schützt.
+    func testSymlinksEinesFruherenSetsOrdnersWerdenUmgehaengt() throws {
+        store.link(try set("iwf"), toProject: repo.path, agent: .claude)
+
+        // Der Ordner zieht um; der Store kennt den alten Ort noch.
+        let neu = setsRoot.deletingLastPathComponent().appendingPathComponent("sets-neu")
+        try FileManager.default.moveItem(at: setsRoot, to: neu)
+        let umgezogen = ClaudeAssetStore(setsRoot: neu, legacyRoot: legacyRoot,
+                                         formerRoots: [setsRoot],
+                                         userClaudeDir: userDir, userCodexDir: codexDir)
+        let iwf = try XCTUnwrap(umgezogen.set(named: "iwf"))
+        let asset = umgezogen.assets(.skill, in: iwf)[0]
+        let scope = ClaudeLinkScope.project(repoDir: repo.path, agent: .claude)
+        guard case .otherSet = umgezogen.symlinkState(for: asset, scope: scope) else {
+            return XCTFail("ein Link in den früheren Ordner gehört uns, ist nicht fremd")
+        }
+
+        let report = umgezogen.link(iwf, toProject: repo.path, agent: .claude)
+        XCTAssertTrue(report.isComplete)
+        XCTAssertEqual(umgezogen.state(of: iwf, scope: scope), .linked)
+        let ziel = try FileManager.default.destinationOfSymbolicLink(
+            atPath: repo.appendingPathComponent(".claude/skills/get-task").path)
+        XCTAssertTrue(ClaudeAssetStore.schreibweisen(ziel)
+            .contains { $0.hasPrefix(neu.resolvingSymlinksInPath().path) }, ziel)
+    }
+
+    /// Ohne den Hinweis auf den früheren Ordner bleibt derselbe Link fremd — das ist der Grund,
+    /// warum `formerRoots` existiert, und der Beweis, dass die Regel sonst greift.
+    func testOhneFruhereWurzelGiltDerAlteLinkAlsFremd() throws {
+        store.link(try set("iwf"), toProject: repo.path, agent: .claude)
+        let neu = setsRoot.deletingLastPathComponent().appendingPathComponent("sets-neu")
+        try FileManager.default.moveItem(at: setsRoot, to: neu)
+        let ahnungslos = ClaudeAssetStore(setsRoot: neu, legacyRoot: legacyRoot,
+                                          userClaudeDir: userDir, userCodexDir: codexDir)
+        let iwf = try XCTUnwrap(ahnungslos.set(named: "iwf"))
+        guard case .foreign = ahnungslos.symlinkState(
+            for: ahnungslos.assets(.skill, in: iwf)[0],
+            scope: .project(repoDir: repo.path, agent: .claude)) else {
+            return XCTFail("ohne frühere Wurzel ist der Link nicht zuzuordnen")
+        }
+    }
+
     // MARK: Auflösung
 
     func testProjektSetSonstStandardSet() throws {
@@ -334,10 +380,43 @@ final class ClaudeAssetsTests: XCTestCase {
         XCTAssertEqual(store.defaultSet(configured: nil)?.name, "iwf")
     }
 
-    /// Ohne Eintrag in der Config liegen die Sets im Kanban-Repo unter dem Basis-Pfad — eine
-    /// Konvention, die überschreibbar bleibt.
-    func testVorgabePfadZeigtInsKanbanRepo() {
-        XCTAssertEqual(ClaudeAssetStore.defaultSetsRoot(basePath: "/Users/x/code").path,
-                       "/Users/x/code/kanban/Sources/Kanban/Resources/ClaudeAssets/sets")
+    /// Ohne Eintrag in der Config liegen die Sets in Kanbans eigenem Datenordner — **nicht** im
+    /// Kanban-Repo: die Skills sind die Arbeit des Benutzers, nicht Teil der App.
+    func testVorgabePfadIstKanbansDatenordner() {
+        XCTAssertEqual(ClaudeAssetStore.defaultSetsRoot(basePath: "/Users/x/code"),
+                       ClaudeAssetStore.defaultLegacyRoot)
+        XCTAssertTrue(ClaudeAssetStore.defaultLegacyRoot.path.hasSuffix("Kanban/claude"))
+    }
+
+    /// Ein einzeln registriertes Set darf überall liegen — es muss nicht im Sammelordner stehen.
+    func testRegistriertesSetAusEinemBeliebigenOrdner() throws {
+        let woanders = repo.deletingLastPathComponent().appendingPathComponent("ganz-woanders")
+        try FileManager.default.createDirectory(
+            at: woanders.appendingPathComponent("skills/mein-skill"), withIntermediateDirectories: true)
+        try "eigen".write(to: woanders.appendingPathComponent("skills/mein-skill/SKILL.md"),
+                          atomically: true, encoding: .utf8)
+        let mit = ClaudeAssetStore(setsRoot: setsRoot,
+                                   registered: [ClaudeAssetStore.describe(name: "eigen", at: woanders)],
+                                   legacyRoot: legacyRoot,
+                                   userClaudeDir: userDir, userCodexDir: codexDir)
+        XCTAssertEqual(mit.sets().map(\.name), ["eigen", "iwf", "swift"])
+
+        let eigen = try XCTUnwrap(mit.set(named: "eigen"))
+        mit.link(eigen, toProject: repo.path, agent: .claude)
+        XCTAssertEqual(try String(contentsOf: repo.appendingPathComponent(".claude/skills/mein-skill/SKILL.md"),
+                                  encoding: .utf8), "eigen")
+        // Und der Ordner gehört uns: ein Wechsel räumt seine Links wieder weg.
+        let report = mit.link(try XCTUnwrap(mit.set(named: "swift")), toProject: repo.path, agent: .claude)
+        XCTAssertEqual(report.removed.count, 1)
+    }
+
+    /// Ein registriertes Set, dessen Ordner verschwunden ist, wird gemeldet statt verschwiegen.
+    func testKaputteRegistrierungWirdBenannt() {
+        let weg = repo.appendingPathComponent("gibts-nicht")
+        let mit = ClaudeAssetStore(setsRoot: setsRoot,
+                                   registered: [ClaudeAssetStore.describe(name: "weg", at: weg)],
+                                   legacyRoot: legacyRoot)
+        XCTAssertEqual(mit.sets().map(\.name), ["iwf", "swift"])
+        XCTAssertEqual(mit.brokenRegistrations().map(\.name), ["weg"])
     }
 }

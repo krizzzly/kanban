@@ -102,10 +102,31 @@ public struct AppConfig: Sendable {
     /// (`ClaudeAssetStore.defaultSet`), und die Übersicht sagt, dass hier nichts bestimmt ist.
     public let defaultSkillSet: String?
 
-    /// Der Ordner, in dem die Skill-Sets **gepflegt** werden und auf den die Symlinks der Projekte
-    /// zeigen (`claude.setsPath`, absolut/`~`/relativ zum Basis-Pfad). Immer gesetzt: ohne Eintrag
-    /// gilt das Kanban-Repo unter dem Basis-Pfad — eine Konvention, deshalb überschreibbar.
+    /// Die einzeln registrierten Skill-Sets (`claude.sets.<name>.path`) — Name plus Ordner, und der
+    /// Ordner darf überall liegen. Das ist der Normalfall: ein Set ist nichts als ein Ordner mit
+    /// `skills/` und/oder `rules/`, den jemand angelegt hat.
+    public let skillSets: [SkillSetEntry]
+
+    /// Sammelordner für Sets, die **nicht** einzeln registriert sind (`claude.setsPath`). Nur noch
+    /// Rückfallebene: wer mehrere Sets nebeneinander liegen hat, muss sie nicht einzeln eintragen.
     public let skillSetsPath: String
+
+    /// Ein registriertes Set, wie es in der Config steht.
+    public struct SkillSetEntry: Sendable, Hashable, Identifiable {
+        public let name: String
+        public let path: String    // absolut, aufgelöst
+        public var id: String { name }
+
+        public init(name: String, path: String) {
+            self.name = name
+            self.path = path
+        }
+
+        /// Name und Ordner zusammen mit dem, was die `set.json` des Ordners sagt.
+        public var asset: ClaudeAssetSet {
+            ClaudeAssetStore.describe(name: name, at: URL(fileURLWithPath: path))
+        }
+    }
 
     /// `.claude/project.json` im Commit-Fenster vorab abwählen (`commit.excludeClaudeProjectFile`).
     /// Vorgabe **an**: die Datei erzeugt Kanban selbst, und wo `.claude/` nicht gitignored ist
@@ -123,6 +144,7 @@ public struct AppConfig: Sendable {
                                         githubBaseUrl: nil, githubApiToken: nil, projects: [],
                                         watchdog: WatchdogSettings(),
                                         defaultSkillSet: nil,
+                                        skillSets: [],
                                         skillSetsPath: ClaudeAssetStore
                                             .defaultSetsRoot(basePath: ("~/code" as NSString)
                                                 .expandingTildeInPath).path,
@@ -303,6 +325,11 @@ public enum KanbanConfig {
             projects: projects,
             watchdog: watchdogSettings(raw.watchdog),
             defaultSkillSet: trimmedOrNil(raw.claude?.defaultSkillSet),
+            skillSets: (raw.claude?.sets ?? [:]).compactMap { name, eintrag in
+                guard let pfad = trimmedOrNil(eintrag.path) else { return nil }
+                return AppConfig.SkillSetEntry(name: name,
+                                               path: resolve(pfad, against: basePathExpanded))
+            }.sorted { $0.name < $1.name },
             skillSetsPath: trimmedOrNil(raw.claude?.setsPath)
                 .map { resolve($0, against: basePathExpanded) }
                 ?? ClaudeAssetStore.defaultSetsRoot(basePath: basePathExpanded).path,
@@ -445,6 +472,13 @@ private struct RawCommit: Decodable {
 private struct RawClaude: Decodable {
     let defaultSkillSet: String?
     let setsPath: String?
+    /// Name → Ordner. Die Registrierung ist ausdrücklich, deshalb ein Objekt und keine Liste: der
+    /// Schlüssel **ist** der Name, unter dem ein Projekt das Set wählt.
+    let sets: [String: RawClaudeSet]?
+}
+
+private struct RawClaudeSet: Decodable {
+    let path: String?
 }
 
 private struct RawModules: Decodable {

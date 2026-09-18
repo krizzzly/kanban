@@ -112,12 +112,24 @@ public struct ClaudeAssetError: LocalizedError {
 /// aufgehen. Dieselbe Überlegung wie bei `.claude/project.json`. In den Agent-Homes bekommen Rules
 /// keinen Zielort — dort gibt es keinen Ordner, auf den ein Skill zeigen könnte.
 public struct ClaudeAssetStore: Sendable {
-    /// Der Ordner, unter dem die Sets liegen und gepflegt werden.
+    /// Die Sets, die diese App kennt — **je eines mit eigenem Ordner**, irgendwo auf der Platte.
+    ///
+    /// Ein Set ist damit nichts anderes als „Name + Ordner". Sie müssen nicht nebeneinander liegen:
+    /// eins kann im Kanban-Repo stehen, das nächste in einem ganz anderen Projekt. Wo nichts
+    /// registriert ist, springt `setsRoot` ein und liest die Unterordner dort als Sets — so
+    /// funktioniert der Bestand weiter, den es vor dieser Registrierung schon gab.
+    public let registered: [ClaudeAssetSet]
+    /// Der Sammelordner für nicht einzeln registrierte Sets (Rückfallebene).
     public let setsRoot: URL
     /// Der flache Bestand aus dem Modell **vor** den Sets. Kanban schreibt dort nichts mehr; der
     /// Pfad wird nur noch gebraucht, um alte Symlinks als **unsere** zu erkennen und umzuhängen,
     /// statt sie als fremd liegenzulassen.
     public let legacyRoot: URL
+    /// Sets-Ordner, die **früher** einmal gegolten haben. Sie zählen wie der aktuelle als „unser":
+    /// wer den Ordner wechselt, soll die Symlinks des alten nicht als fremd stehen lassen, sondern
+    /// umgehängt bekommen. Ohne das bliebe nach jedem Wechsel in jedem Projekt ein toter Satz
+    /// Links liegen, den niemand mehr anfassen darf.
+    public let formerRoots: [URL]
     public let userClaudeDir: URL
     public let userCodexDir: URL
 
@@ -128,22 +140,25 @@ public struct ClaudeAssetStore: Sendable {
             .appendingPathComponent("Kanban/claude", isDirectory: true)
     }
 
-    /// Wo die Sets liegen, wenn die Config nichts sagt: im Kanban-Repo, das wie jedes andere
-    /// Projekt unter dem Basis-Pfad steht. Eine Konvention, kein Fund — deshalb ist der Pfad in der
-    /// Config überschreibbar, und die Übersicht sagt es, wenn dort nichts liegt.
-    public static let repoRelativeSetsPath = "Sources/Kanban/Resources/ClaudeAssets/sets"
-
-    public static func defaultSetsRoot(basePath: String) -> URL {
-        URL(fileURLWithPath: basePath)
-            .appendingPathComponent("kanban/\(repoRelativeSetsPath)", isDirectory: true)
-    }
+    /// Wo die Sets liegen, wenn die Config nichts sagt: `~/Library/Application Support/Kanban/claude`.
+    ///
+    /// Die Skills gehören **nicht** ins Kanban-Repo — sie sind die Arbeit des Benutzers, nicht Teil
+    /// der App, und werden mit ihr weder ausgeliefert noch versioniert. Jeder Unterordner mit
+    /// `skills/` und/oder `rules/` ist dort ein Set; wer seine Sets woanders hat, trägt sie einzeln
+    /// ein (`claude.sets.<name>.path`) oder zeigt mit `claude.setsPath` auf einen anderen
+    /// Sammelordner.
+    public static func defaultSetsRoot(basePath: String) -> URL { defaultLegacyRoot }
 
     public init(setsRoot: URL,
+                registered: [ClaudeAssetSet] = [],
                 legacyRoot: URL = ClaudeAssetStore.defaultLegacyRoot,
+                formerRoots: [URL] = [],
                 userClaudeDir: URL = AgentKind.claude.homeDir,
                 userCodexDir: URL = AgentKind.codex.homeDir) {
+        self.registered = registered
         self.setsRoot = setsRoot
         self.legacyRoot = legacyRoot
+        self.formerRoots = formerRoots
         self.userClaudeDir = userClaudeDir
         self.userCodexDir = userCodexDir
     }
@@ -153,10 +168,12 @@ public struct ClaudeAssetStore: Sendable {
     /// Die Config wird bei jedem Aufruf frisch gelesen — sie ist eine kleine Datei, und der Pfad
     /// darf sich ändern, ohne dass die App neu starten muss. Eine kaputte Config heisst „Vorgabe",
     /// nicht „keine Skills".
-    public static func configured() -> ClaudeAssetStore {
+    public static func configured(formerRoots: [URL] = []) -> ClaudeAssetStore {
         let config = try? KanbanConfig.load()
         let root = config?.skillSetsPath ?? defaultSetsRoot(basePath: AppConfig.empty.basePath).path
-        return ClaudeAssetStore(setsRoot: URL(fileURLWithPath: root))
+        return ClaudeAssetStore(setsRoot: URL(fileURLWithPath: root),
+                                registered: (config?.skillSets ?? []).map(\.asset),
+                                formerRoots: formerRoots)
     }
 
     /// Home des Agents — in Tests umgebogen, im Betrieb `~/.claude` bzw. `~/.codex`.
@@ -175,8 +192,20 @@ public struct ClaudeAssetStore: Sendable {
 
     // MARK: - Inventar
 
+    /// Alle bekannten Sets: die einzeln registrierten zuerst, dann die aus dem Sammelordner, die
+    /// nicht ohnehin registriert sind. Namensgleichheit gewinnt die Registrierung — sie ist die
+    /// ausdrückliche Angabe.
     public func sets() -> [ClaudeAssetSet] {
-        Self.sets(in: setsRoot)
+        let gueltig = registered.filter { Self.hasAnyKindDir($0.url) }
+        let namen = Set(gueltig.map(\.name))
+        return (gueltig + Self.sets(in: setsRoot).filter { !namen.contains($0.name) })
+            .sorted { $0.name < $1.name }
+    }
+
+    /// Registrierte Sets, deren Ordner es nicht (mehr) gibt — die Übersicht muss das sagen können,
+    /// statt sie stillschweigend wegzulassen.
+    public func brokenRegistrations() -> [ClaudeAssetSet] {
+        registered.filter { !Self.hasAnyKindDir($0.url) }
     }
 
     public func set(named name: String?) -> ClaudeAssetSet? {
@@ -205,15 +234,23 @@ public struct ClaudeAssetStore: Sendable {
         .sorted { $0.name < $1.name }
     }
 
-    private static func hasAnyKindDir(_ setURL: URL) -> Bool {
+    public static func hasAnyKindDir(_ setURL: URL) -> Bool {
         ClaudeAssetKind.allCases.contains {
             FileManager.default.fileExists(atPath: setURL.appendingPathComponent($0.rawValue).path)
         }
     }
 
+    /// Liest Name und Beschreibung eines einzeln registrierten Ordners aus dessen `set.json`.
+    /// Ohne Datei heisst das Set so, wie es registriert wurde.
+    public static func describe(name: String, at url: URL) -> ClaudeAssetSet {
+        let info = SetInfo.read(url.appendingPathComponent("set.json"))
+        return ClaudeAssetSet(name: name, displayName: info?.displayName,
+                              description: info?.description ?? "", url: url)
+    }
+
     /// Anzeigename und Beschreibung eines Sets. Fehlt die Datei oder ist sie unlesbar, heisst das
     /// Set wie sein Ordner — eine kaputte `set.json` darf ein Set nicht verschwinden lassen.
-    private struct SetInfo: Decodable {
+    struct SetInfo: Decodable {
         let displayName: String?
         let description: String?
 
@@ -326,13 +363,31 @@ public struct ClaudeAssetStore: Sendable {
     /// Zeigt ein Pfad auf etwas, das **uns** gehört? Das entscheidet, ob ein vorgefundener Symlink
     /// umgehängt werden darf.
     ///
-    /// Zwei Wurzeln zählen: der Sets-Ordner (ein anderes Set) und der alte flache Bestand in
-    /// Application Support. Letzterer nur deshalb, damit die Links des Modells vor den Sets sich
-    /// beim ersten Start umhängen lassen — sonst wäre `/get-task` mit dem Umbau eingefroren.
+    /// Drei Sorten Wurzel zählen: der aktuelle Sets-Ordner (ein anderes Set), ein früher gewählter
+    /// (der Ordner ist umgezogen) und der alte flache Bestand in Application Support. Der letzte nur
+    /// deshalb, damit die Links des Modells vor den Sets sich umhängen lassen — sonst wäre
+    /// `/get-task` mit dem Umbau eingefroren.
     private func isOurs(_ path: String) -> Bool {
-        [setsRoot, legacyRoot].contains {
-            path.hasPrefix($0.standardizedFileURL.path + "/")
+        let kandidaten = Self.schreibweisen(path)
+        let wurzeln = [setsRoot, legacyRoot] + formerRoots + registered.map(\.url)
+        return wurzeln.contains { wurzel in
+            Self.schreibweisen(wurzel.path).contains { prefix in
+                kandidaten.contains { $0.hasPrefix(prefix + "/") }
+            }
         }
+    }
+
+    /// Beide Schreibweisen eines Pfads — macOS speichert das Ziel eines Symlinks **aufgelöst**
+    /// (`/private/var/…`), während der konfigurierte Ordner unaufgelöst dasteht (`/var/…`). Solange
+    /// beide existieren, gleicht `standardizedFileURL` das aus; bei einem Ordner, den es nicht mehr
+    /// gibt — genau der Fall nach einem Umzug —, tut es das nicht mehr. Deshalb wird gegen beide
+    /// Formen verglichen statt auf die Normalisierung zu vertrauen.
+    static func schreibweisen(_ path: String) -> [String] {
+        let url = URL(fileURLWithPath: path)
+        var formen = [url.standardizedFileURL.path, url.resolvingSymlinksInPath().path, path]
+        if path.hasPrefix("/private/") { formen.append(String(path.dropFirst("/private".count))) }
+        else { formen.append("/private" + path) }
+        return Array(Set(formen))
     }
 
     /// Legt den Symlink an. Fremde Zielorte werden nie überschrieben, sondern gemeldet.
