@@ -9,7 +9,8 @@ import Foundation
 /// Wer weitere Hermes-Module pflegen will, tut das in Hermes.
 public enum KanbanConfigSchema {
     public static let sections: [ConfigSectionSpec] = [general, jira, gitlab, confluence,
-                                                       knowledgebase, appearance, watchdog, hermes]
+                                                       knowledgebase, docker, appearance, watchdog,
+                                                       hermes]
 
     /// Nur sinnvoll, solange eine `~/.hermes/config.json` existiert — die Einstellungen blenden die
     /// Sektion sonst aus (`HermesSync.isAvailable`).
@@ -56,23 +57,6 @@ public enum KanbanConfigSchema {
                                      + "aus Task-Files, Worktrees und Merge Requests. Der "
                                      + "Ticket-Präfix bleibt trotzdem nötig — er benennt Task-Files "
                                      + "und Branches, nicht die Jira-Anbindung."),
-                // Direkt darunter, weil es dieselbe Form hat und dieselbe Reichweite: ein Schalter,
-                // der eine ganze Hälfte des Projekts wegnimmt.
-                ProjectFieldSpec("dockerStack", "Docker-Stack", kind: .bool(defaultOn: true),
-                                 required: false,
-                                 help: "Aus = Projekt ohne eigenen Docker-Stack (z.B. ein Paket "
-                                     + "oder ein Skript-Repo). Es entfallen die Reiter Maintree "
-                                     + "und Worktree, die Snapshots, „Stacks stoppen\" und jeder "
-                                     + "iwf-Aufruf; Worktrees werden als reine Git-Worktrees "
-                                     + "angelegt (git worktree add). Es bleiben: Worktrees, "
-                                     + "Branches, Task-Files, Commits und Merge Requests. "
-                                     + "Vorbelegt beim Anlegen anhand einer .iwf.yml im Repo — "
-                                     + "entschieden wird hier. Läuft gerade ein Stack dieses "
-                                     + "Projekts, bleibt er nach dem Abschalten laufen; er "
-                                     + "verschwindet nur aus der Oberfläche (stoppen z.B. mit "
-                                     + "iwf worktree stop <NR>). Teilen sich zwei Projekte ein "
-                                     + "Repo, gehört <repo>/.claude/project.json dem zuletzt "
-                                     + "gewählten — dann sollten beide hier gleich stehen."),
                 ProjectFieldSpec("prefix", "Ticket-Präfix", required: true, placeholder: "EVEN"),
                 ProjectFieldSpec("tasksPath", "Tasks-Pfad", required: true,
                                  placeholder: "~/Library/Application Support/Kanban/tasks/even",
@@ -151,6 +135,42 @@ public enum KanbanConfigSchema {
                 ProjectFieldSpec("path", "Knowledgebase-Pfad", required: false,
                                  placeholder: "~/code/even-docs/kb",
                                  help: "Absolut, ~ oder relativ zum Basis-Pfad."),
+            ]))
+
+    /// Ob ein Projekt lokal als Docker-Stack läuft. Wie `knowledgebase` **kein Modul, das Kanban
+    /// betreibt** und auch keins, das Hermes kennt: eine Projekt-Eigenschaft, die Kanban an zwei
+    /// Stellen auswertet — in der eigenen Oberfläche und als `dockerStack` in
+    /// `<repo>/.claude/project.json`, woran die Skills verzweigen.
+    ///
+    /// Eigene Sektion statt eines Felds unter „Jira": der Schalter hat mit Jira nichts zu tun. Dass
+    /// er dieselbe **Form** hat wie `useJira` (ja/nein, Vorgabe ja, nur die Abschaltung wird
+    /// geschrieben) macht ihn noch nicht zu einer Jira-Einstellung.
+    static let docker = ConfigSectionSpec(
+        id: "docker", title: "Docker", icon: "shippingbox",
+        intro: "Optional — ob dieses Projekt einen eigenen Docker-Stack hat. Vorgabe ist **ja**: "
+             + "jedes bestehende Projekt bleibt unverändert eine Web-Applikation mit Stack, der "
+             + "Schlüssel wird nur geschrieben, wenn du ihn ausschaltest. Aus ist der Fall für "
+             + "Pakete und Skript-Repos (Kanban selbst ist eins) — sie haben keine .iwf.yml und "
+             + "sahen bisher falsch konfiguriert aus, obwohl alles stimmte.",
+        fields: [],
+        projectMap: ProjectMapSpec(
+            path: ["modules", "docker", "projects"],
+            keyPlaceholder: "even",
+            fields: [
+                ProjectFieldSpec("stack", "Docker-Stack", kind: .bool(defaultOn: true),
+                                 required: false,
+                                 help: "Aus = kein eigener Docker-Stack. Es entfallen die Reiter "
+                                     + "Maintree und Worktree, die Snapshots, „Stacks stoppen\" "
+                                     + "und jeder iwf-Aufruf; Worktrees werden als reine "
+                                     + "Git-Worktrees angelegt (git worktree add). Es bleiben: "
+                                     + "Worktrees, Branches, Task-Files, Commits und Merge "
+                                     + "Requests. Vorbelegt beim Anlegen anhand einer .iwf.yml im "
+                                     + "Repo — entschieden wird hier. Läuft gerade ein Stack "
+                                     + "dieses Projekts, bleibt er nach dem Abschalten laufen; er "
+                                     + "verschwindet nur aus der Oberfläche (stoppen z.B. mit "
+                                     + "iwf worktree stop <NR>). Teilen sich zwei Projekte ein "
+                                     + "Repo, gehört <repo>/.claude/project.json dem zuletzt "
+                                     + "gewählten — dann sollten beide hier gleich stehen."),
             ]))
 
     /// Woran man auf einen Blick sieht, in welchem Projekt man steht: ein Bild links in der
