@@ -249,8 +249,11 @@ public enum KanbanSettingsStore {
             background: farbe(raw.background, vorgabe.background),
             text: farbe(raw.text, vorgabe.text),
             secondaryText: farbe(raw.secondaryText, vorgabe.secondaryText),
-            // Ohne Eintrag **nicht** die Vorgabefarbe, sondern nil: dann folgt die Fläche dem Blatt.
-            codeBackground: raw.codeBackground.flatMap(TerminalRGB.init(hex:)),
+            // Ohne Eintrag **nicht** die Vorgabefarbe, sondern nil: dann folgt die Fläche dem
+            // Blatt. Dasselbe gilt für die zwei Farben, die aus den früher mitgelieferten
+            // Fassungen mitkopiert wurden — sie waren nie eine Wahl (`GeerbteFlaechenfarbe`).
+            codeBackground: GeerbteFlaechenfarbe.istGeerbt(raw.codeBackground)
+                ? nil : raw.codeBackground.flatMap(TerminalRGB.init(hex:)),
             shade: min(max(raw.shade?.wert ?? MarkdownTheme.shadeVorgabe, 0), 100),
             link: farbe(raw.link, vorgabe.link),
             border: farbe(raw.border, vorgabe.border),

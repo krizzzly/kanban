@@ -311,17 +311,17 @@ public enum KanbanConfigSchema {
         ThemeFieldSpec(["text"], "Text", help: "Vorgabe #060606."),
         ThemeFieldSpec(["secondaryText"], "Nebentext",
                        help: "Zitate, Fussnoten, H6. Vorgabe #6b6e7b."),
-        ThemeFieldSpec(["shade"], "Flächen-Abdunklung", kind: .number(min: 0, max: 100),
+        ThemeFieldSpec(["shade"], "Abdunklung der Tabellen", kind: .number(min: 0, max: 100),
                        placeholder: String(Int(MarkdownTheme.shadeVorgabe)),
-                       help: "In Prozent, relativ zum Hintergrund: wie stark sich Code-Blöcke, "
-                           + "Tabellenköpfe und Zebrastreifen vom Blatt absetzen. 0 = gar nicht. "
-                           + "Auf einem dunklen Blatt wird um denselben Anteil aufgehellt — dunkler "
-                           + "als fast schwarz sieht man nicht."),
-        ThemeFieldSpec(["codeBackground"], "Code-Hintergrund (fest)",
+                       help: "In Prozent, relativ zum Hintergrund: wie stark sich Tabellenkopf, "
+                           + "Zebrastreifen und Kommentarkarten vom Blatt absetzen. 0 = gar nicht. "
+                           + "Code-Blöcke bleiben unberührt, die haben ihre eigene Farbe. Auf einem "
+                           + "dunklen Blatt wird um denselben Anteil aufgehellt — dunkler als fast "
+                           + "schwarz sieht man nicht."),
+        ThemeFieldSpec(["codeBackground"], "Code-Hintergrund",
                        placeholder: "aus dem Blatt abgeleitet",
-                       help: "Übersteuert die Abdunklung mit einer festen Farbe — für alle, die "
-                           + "genau diesen Ton wollen. Leer ist der Normalfall: dann folgt die "
-                           + "Fläche dem Hintergrund."),
+                       help: "Gilt nur für Code-Blöcke und das Frontmatter. Leer heisst: dem Blatt "
+                           + "folgen, so wie die Tabellen es tun."),
         ThemeFieldSpec(["link"], "Links", help: "Vorgabe #2c65cf."),
         ThemeFieldSpec(["border"], "Linien",
                        help: "Tabellen, Trennlinien, Zitatbalken. Vorgabe #e4e4e8."),

@@ -136,11 +136,38 @@ final class MarkdownStyleConfigTests: XCTestCase {
         XCTAssertGreaterThan(dunkel.flaeche.r, dunkel.background.r)
     }
 
-    func testFesteFarbeSchlaegtDieAbleitung() {
+    /// Der gelebte Fall: die Fassung trägt die Code-Farbe der alten Vorgabe, weil sie beim Anlegen
+    /// mitkopiert wurde. Sie war nie eine Wahl — also zählt sie als nicht gesetzt, und zwar sofort
+    /// beim Lesen, ohne dass jemand erst die Einstellungen öffnen und speichern muss.
+    func testGeerbteCodeFarbeHaeltDieFlaecheNichtFest() {
+        let t = theme("""
+            { "markdown": { "background": "#f5eeda", "codeBackground": "#f1f1f4" } }
+            """)
+        XCTAssertNil(t.codeBackground)
+        XCTAssertEqual(MarkdownTheme.hex(t.flaeche), "#e6e0cd", "beige Tabellen auf beigem Blatt")
+        XCTAssertEqual(MarkdownTheme.hex(t.codeFlaeche), "#e6e0cd", "und beige Code-Blöcke dazu")
+    }
+
+    func testFesteFarbeGiltNurFuerCode() {
         let t = theme("""
             { "markdown": { "background": "#dce6ff", "codeBackground": "#112233" } }
             """)
-        XCTAssertEqual(MarkdownTheme.hex(t.flaeche), "#112233")
+        XCTAssertEqual(MarkdownTheme.hex(t.codeFlaeche), "#112233")
+        XCTAssertEqual(MarkdownTheme.hex(t.flaeche), "#cfd8f0",
+                       "die Tabellen folgen weiter dem Blatt — das war vorher dieselbe Variable")
+    }
+
+    /// Die andere Richtung derselben Trennung: an der Abdunklung zu drehen, färbte vorher die
+    /// Code-Blöcke mit.
+    func testAbdunklungLaesstDenCodeInRuhe() {
+        let t = theme("""
+            { "markdown": { "background": "#f5eeda", "shade": 30 } }
+            """)
+        XCTAssertEqual(MarkdownTheme.hex(t.flaeche), "#aca799", "Tabellen deutlich abgesetzt")
+        XCTAssertEqual(MarkdownTheme.hex(t.codeFlaeche),
+                       MarkdownTheme.hex(MarkdownTheme.abgesetzt(t.background,
+                                                                 prozent: MarkdownTheme.shadeVorgabe)),
+                       "der Code bleibt bei seiner eigenen Stärke")
     }
 
     func testStaerkeWirdAufDieGrenzenGezogen() {
