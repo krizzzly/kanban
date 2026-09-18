@@ -33,6 +33,8 @@ final class ClaudeWorkflowModel {
     private(set) var setsRoot = ""
     private(set) var setsRootMissing = false
     private(set) var verlinkungen: [String: [Verlinkung]] = [:]   // Set-Name → Projekte
+    /// Alle konfigurierten Projekte — die Auswahlliste am Set.
+    private(set) var alleProjekte: [ProjectConfig] = []
     private(set) var defaultSetName: String?
     /// Steht kein Standard-Set in der Config, gilt trotzdem eins — aber entschieden hat das niemand.
     private(set) var defaultIsImplicit = false
@@ -40,7 +42,9 @@ final class ClaudeWorkflowModel {
 
     func load() {
         let config = try? KanbanConfig.load()
-        store = .configured()
+        // Frühere Wurzeln nur behalten, solange sie noch gebraucht werden: nach dem Aufräumen zeigt
+        // kein Symlink mehr dorthin, und ein alter Pfad im Store wäre ab da nur noch irreführend.
+        store = .configured(formerRoots: store.formerRoots.filter(zeigtNochEtwasDorthin))
         setsRoot = store.setsRoot.path
         setsRootMissing = !store.setsRootExists
 
@@ -50,6 +54,7 @@ final class ClaudeWorkflowModel {
         defaultIsImplicit = config?.defaultSkillSet == nil && sets.count > 1
 
         let projects = config?.projects ?? []
+        alleProjekte = projects
         var gruppen: [String: [Verlinkung]] = [:]
         for project in projects {
             let resolution = store.resolve(skillSet: project.skillSet,
@@ -72,6 +77,32 @@ final class ClaudeWorkflowModel {
         verlinkungen = gruppen.mapValues { $0.sorted { $0.project.key < $1.project.key } }
     }
 
+    /// Hängt irgendwo noch ein Symlink an dieser früheren Wurzel? Geprüft wird an den Agent-Homes
+    /// und den Projekt-Ordnern — den einzigen Orten, an die Kanban je verlinkt hat.
+    private func zeigtNochEtwasDorthin(_ wurzel: URL) -> Bool {
+        let praefix = wurzel.standardizedFileURL.path + "/"
+        var ziele = AgentKind.allCases.map { store.homeDir($0).appendingPathComponent("skills") }
+        for gruppe in verlinkungen.values {
+            for v in gruppe {
+                let repo = URL(fileURLWithPath: v.project.repoDir)
+                ziele += AgentKind.allCases.map {
+                    repo.appendingPathComponent("\($0.projectDirName)/skills")
+                }
+                ziele.append(repo.appendingPathComponent(".claude/rules"))
+            }
+        }
+        return ziele.contains { dir in
+            guard let eintraege = try? FileManager.default.contentsOfDirectory(
+                at: dir, includingPropertiesForKeys: nil, options: []) else { return false }
+            return eintraege.contains { url in
+                guard let ziel = try? FileManager.default.destinationOfSymbolicLink(atPath: url.path)
+                else { return false }
+                return URL(fileURLWithPath: ziel, relativeTo: dir).standardizedFileURL.path
+                    .hasPrefix(praefix)
+            }
+        }
+    }
+
     func assetCount(_ set: ClaudeAssetSet, _ kind: ClaudeAssetKind) -> Int {
         store.assets(kind, in: set).count
     }
@@ -84,7 +115,8 @@ final class ClaudeWorkflowModel {
     func verlinke(_ verlinkung: Verlinkung) {
         let config = try? KanbanConfig.load()
         guard let report = ClaudeAssetFactory.link(verlinkung.project,
-                                                   defaultSkillSet: config?.defaultSkillSet) else {
+                                                   defaultSkillSet: config?.defaultSkillSet,
+                                                   store: store) else {
             message = "\(verlinkung.project.key): kein Repo-Ordner unter "
                     + "\(abbreviateHome(verlinkung.project.repoDir)) — nichts zu verlinken."
             return
@@ -100,7 +132,8 @@ final class ClaudeWorkflowModel {
         var reports: [ClaudeLinkReport] = []
         for project in config?.projects ?? [] {
             if let report = ClaudeAssetFactory.link(project,
-                                                    defaultSkillSet: config?.defaultSkillSet) {
+                                                    defaultSkillSet: config?.defaultSkillSet,
+                                                    store: store) {
                 reports.append(report)
             }
         }
@@ -137,6 +170,149 @@ final class ClaudeWorkflowModel {
         NSWorkspace.shared.activateFileViewerSelecting([dir])
     }
 
+    // MARK: Zuordnung ändern
+
+    /// Hängt ein Projekt auf ein anderes Set um: Config schreiben, sofort neu verlinken.
+    ///
+    /// Beides gehört zusammen — eine Zuordnung, die erst beim nächsten Projektwechsel wirkt, sähe
+    /// aus wie nichts passiert. Die alten Symlinks räumt `link(_:toProject:agent:)` dabei selbst weg.
+    func weise(_ verlinkung: Verlinkung, auf setName: String?) {
+        guard setName != verlinkung.project.skillSet else { return }
+        do {
+            try schreibeConfig { doc in
+                doc.set(setName.map(JSONValue.string),
+                        at: ["modules", "jira", "projects", verlinkung.project.key, "skillSet"])
+            }
+            let config = try? KanbanConfig.load()
+            let projekt = config?.projects.first { $0.key == verlinkung.project.key }
+            if let projekt, let report = ClaudeAssetFactory.link(projekt,
+                                                                defaultSkillSet: config?.defaultSkillSet,
+                                                                store: store) {
+                message = melde([report], titel: verlinkung.project.key)
+            } else {
+                message = "\(verlinkung.project.key) → \(setName ?? "Standard-Set") — kein Repo-Ordner, "
+                        + "nichts zu verlinken."
+            }
+        } catch {
+            message = "Zuordnung nicht gespeichert: \(error.localizedDescription)"
+        }
+        load()
+    }
+
+    /// Ein Set anlegen: Name plus Ordner. Der Ordner muss `skills/` oder `rules/` enthalten —
+    /// sonst wäre es kein Set, sondern irgendein Verzeichnis.
+    func legeSetAn(name roh: String, ordner: URL) -> String? {
+        let name = ClaudeAssetName.normalisiert(roh)
+        do { try ClaudeAssetName.pruefen(name) } catch { return error.localizedDescription }
+        guard !sets.contains(where: { $0.name == name }) else {
+            return ClaudeAssetName.Fehler.belegt(name).errorDescription
+        }
+        guard ClaudeAssetStore.hasAnyKindDir(ordner) else {
+            return "In \(ordner.lastPathComponent) liegt weder ein skills/- noch ein rules/-Ordner."
+        }
+        do {
+            try schreibeConfig { $0.set(.string(ordner.path), at: ["claude", "sets", name, "path"]) }
+        } catch {
+            return error.localizedDescription
+        }
+        load()
+        message = "Set „\(name)" + "“ angelegt — \(abbreviateHome(ordner.path))"
+        return nil
+    }
+
+    /// Ein Set aus der Registrierung nehmen. Der Ordner bleibt liegen: entfernt wird die Zuordnung,
+    /// nicht die Arbeit. Projekte, die daran hingen, fallen sichtbar aufs Standard-Set zurück.
+    func entferneSet(_ set: ClaudeAssetSet) {
+        do {
+            try schreibeConfig { $0.set(nil, at: ["claude", "sets", set.name]) }
+            message = "Set „\(set.name)" + "“ entfernt — der Ordner \(abbreviateHome(set.url.path)) "
+                    + "bleibt, wo er ist."
+        } catch {
+            message = "Nicht entfernt: \(error.localizedDescription)"
+        }
+        store = .configured(formerRoots: [set.url])
+        verlinkeAlle()
+    }
+
+    /// Den Ordner eines Sets auf einen anderen zeigen lassen.
+    func waehleOrdner(fuer set: ClaudeAssetSet) {
+        guard let neu = ordnerDialog(titel: "Ordner für „\(set.name)" + "“ wählen",
+                                     start: set.url) else { return }
+        guard ClaudeAssetStore.hasAnyKindDir(neu) else {
+            message = "In \(neu.lastPathComponent) liegt weder ein skills/- noch ein rules/-Ordner."
+            return
+        }
+        do {
+            try schreibeConfig { $0.set(.string(neu.path), at: ["claude", "sets", set.name, "path"]) }
+        } catch {
+            message = "Ordner nicht gespeichert: \(error.localizedDescription)"
+            return
+        }
+        store = .configured(formerRoots: [set.url])
+        verlinkeAlle()
+    }
+
+    /// Welche Projekte dieses Set benutzen — die Auswahl am Set statt am Projekt.
+    func nutzen(_ set: ClaudeAssetSet, projekte: Set<String>) {
+        let vorher = Set((verlinkungen[set.name] ?? []).map(\.project.key))
+        guard vorher != projekte else { return }
+        do {
+            try schreibeConfig { doc in
+                for key in projekte.subtracting(vorher) {
+                    doc.set(.string(set.name), at: ["modules", "jira", "projects", key, "skillSet"])
+                }
+                // Abgewählte bekommen kein anderes Set aufgedrängt: sie fallen auf das Standard-Set
+                // zurück, und das ist genau die Bedeutung von „kein Eintrag".
+                for key in vorher.subtracting(projekte) {
+                    doc.set(nil, at: ["modules", "jira", "projects", key, "skillSet"])
+                }
+            }
+        } catch {
+            message = "Zuordnung nicht gespeichert: \(error.localizedDescription)"
+            return
+        }
+        verlinkeAlle()
+    }
+
+    func ordnerDialog(titel: String, start: URL?) -> URL? {
+        let panel = NSOpenPanel()
+        panel.title = titel
+        panel.message = "Der Ordner mit skills/ und/oder rules/ — genau dorthin zeigen die Symlinks."
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.directoryURL = start
+        return panel.runModal() == .OK ? panel.url : nil
+    }
+
+    /// Wählt den Sammelordner, aus dem nicht registrierte Sets kommen.
+    ///
+    /// Der alte Ordner wird dabei als `formerRoots` mitgegeben: die Symlinks, die noch dorthin
+    /// zeigen, sind **unsere** und werden umgehängt statt als fremd liegengelassen. Die Zuordnungen
+    /// selbst stehen als Name in der Config und überleben den Wechsel ohnehin — ein Name, den der
+    /// neue Ordner nicht führt, fällt sichtbar aufs Standard-Set zurück, statt still zu verschwinden.
+    func waehleSetsOrdner() {
+        guard let neu = ordnerDialog(titel: "Sammelordner für Skill-Sets wählen",
+                                     start: store.setsRoot.deletingLastPathComponent()) else { return }
+        let alt = store.setsRoot
+        guard neu.standardizedFileURL != alt.standardizedFileURL else { return }
+        do {
+            try schreibeConfig { $0.set(.string(neu.path), at: ["claude", "setsPath"]) }
+        } catch {
+            message = "Ordner nicht gespeichert: \(error.localizedDescription)"
+            return
+        }
+        store = .configured(formerRoots: [alt])
+        verlinkeAlle()
+    }
+
+    private func schreibeConfig(_ aendern: (inout JSONValue) -> Void) throws {
+        let datei = ConfigStore()
+        var dokument = try datei.load()
+        aendern(&dokument.root)
+        try datei.save(dokument)
+    }
+
     func abbreviateHome(_ path: String) -> String {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         return path.hasPrefix(home) ? "~" + path.dropFirst(home.count) : path
@@ -145,6 +321,7 @@ final class ClaudeWorkflowModel {
 
 struct ClaudeWorkflowSettingsView: View {
     @State private var model = ClaudeWorkflowModel()
+    @State private var neuesSet = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -164,6 +341,9 @@ struct ClaudeWorkflowSettingsView: View {
             fuss
         }
         .onAppear { model.load() }
+        .sheet(isPresented: $neuesSet) {
+            NeuesSetSheet(model: model) { neuesSet = false }
+        }
     }
 
     private var kopf: some View {
@@ -181,7 +361,12 @@ struct ClaudeWorkflowSettingsView: View {
                 }
                 .buttonStyle(.link)
                 .lineLimit(1).truncationMode(.middle)
-                .help("Der gepflegte Ordner — einzustellen unter Einstellungen › Allgemein")
+                .help("Im Finder zeigen — hier werden die Sets gepflegt")
+                Button("Ordner wählen…") { model.waehleSetsOrdner() }
+                    .controlSize(.small)
+                    .help("Einen anderen Ordner als Quelle der Skill-Sets wählen. Bestehende "
+                          + "Zuordnungen bleiben: sie stehen als Set-Name in der Config. Die "
+                          + "Symlinks der Projekte werden auf den neuen Ordner umgehängt.")
                 if model.setsRootMissing {
                     Label("gibt es nicht", systemImage: "exclamationmark.triangle")
                         .font(.caption).foregroundStyle(.orange)
@@ -227,10 +412,17 @@ struct ClaudeWorkflowSettingsView: View {
             Text("\(model.assetCount(set, .skill)) Skills · \(model.assetCount(set, .rule)) Rules")
                 .font(.caption).foregroundStyle(.secondary)
             Spacer(minLength: 0)
-            Button { model.zeigeImFinder(set) } label: { Image(systemName: "folder") }
-                .buttonStyle(.borderless)
-                .help("Im Finder zeigen: \(model.abbreviateHome(set.url.path)) — hier wird das Set "
-                      + "gepflegt, und genau hierhin zeigen die Symlinks")
+            Menu {
+                Button("Im Finder zeigen") { model.zeigeImFinder(set) }
+                Button("Anderen Ordner wählen…") { model.waehleOrdner(fuer: set) }
+                Divider()
+                Button("Aus der Liste nehmen", role: .destructive) { model.entferneSet(set) }
+            } label: {
+                Image(systemName: "ellipsis.circle")
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .help("Ordner: \(model.abbreviateHome(set.url.path))")
         }
         .padding(.vertical, 2)
     }
@@ -240,12 +432,46 @@ struct ClaudeWorkflowSettingsView: View {
         if !set.description.isEmpty {
             Text(set.description).font(.caption).foregroundStyle(.secondary)
         }
+        Text(model.abbreviateHome(set.url.path))
+            .font(.system(size: 10, design: .monospaced)).foregroundStyle(.tertiary)
+            .lineLimit(1).truncationMode(.middle)
+
+        // Die Zuordnung wird hier getroffen: am Set, für alle Projekte auf einmal. Vorher stand sie
+        // nur in den Einstellungen unter dem jeweiligen Jira-Projekt — eine Zeile pro Projekt, ohne
+        // Blick darauf, wer sonst noch an diesem Set hängt.
+        let benutzt = Set((model.verlinkungen[set.name] ?? []).map(\.project.key))
+        FlowRow {
+            ForEach(model.alleProjekte) { projekt in
+                Toggle(isOn: Binding(
+                    get: { benutzt.contains(projekt.key) },
+                    set: { an in
+                        model.nutzen(set, projekte: an ? benutzt.union([projekt.key])
+                                                       : benutzt.subtracting([projekt.key]))
+                    })) {
+                    Text(projekt.key).font(.system(size: 11, design: .monospaced))
+                }
+                .toggleStyle(.checkbox)
+                .frame(width: 130, alignment: .leading)
+            }
+        }
+
         let projekte = model.verlinkungen[set.name] ?? []
         if projekte.isEmpty {
             Text("Kein Projekt hängt an diesem Set.")
                 .font(.caption).foregroundStyle(.tertiary)
         } else {
             ForEach(projekte) { projektZeile($0) }
+        }
+    }
+
+    /// Die Projekt-Haken in Reihen umbrechen — eine Liste mit 13 Einträgen untereinander wäre
+    /// länger als alles andere im Fenster zusammen.
+    private struct FlowRow<Content: View>: View {
+        @ViewBuilder let content: Content
+        var body: some View {
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 130), alignment: .leading)],
+                      alignment: .leading, spacing: 2) { content }
+                .padding(.vertical, 2)
         }
     }
 
@@ -264,13 +490,14 @@ struct ClaudeWorkflowSettingsView: View {
                 }
             }
             Spacer(minLength: 8)
-            Button { model.zeigeProjektOrdner(verlinkung) } label: { Image(systemName: "folder") }
-                .buttonStyle(.borderless)
-                .disabled(verlinkung.repoMissing)
-                .help("Im Finder zeigen: \(model.abbreviateHome(verlinkung.project.repoDir))/"
-                      + verlinkung.project.agent.projectDirName)
+            if verlinkung.project.skillSet == nil {
+                Text("über Standard-Set").font(.caption).foregroundStyle(.tertiary)
+            }
             Button("Verlinkung herstellen") { model.verlinke(verlinkung) }
                 .disabled(verlinkung.repoMissing)
+                .help("Legt die Symlinks in \(model.abbreviateHome(verlinkung.project.repoDir))/"
+                      + "\(verlinkung.project.agent.projectDirName) an — nötig nur, wenn der "
+                      + "Zustand links nicht grün ist")
         }
         .padding(.vertical, 2)
     }
@@ -326,11 +553,94 @@ struct ClaudeWorkflowSettingsView: View {
                     .font(.caption).foregroundStyle(.tertiary)
                     .fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 8)
+                Button("Set anlegen…") { neuesSet = true }
+                    .help("Ein Set ist ein Ordner mit skills/ und/oder rules/ — irgendwo auf der "
+                          + "Platte, nicht zwingend im Sammelordner")
                 Button("Alle verlinken") { model.verlinkeAlle() }
                     .help("Jedes Projekt auf sein Set bringen und das Standard-Set in die "
                           + "Agent-Homes legen")
             }
         }
         .padding(12)
+    }
+}
+
+/// „Set anlegen": ein Name und der Ordner, in dem es liegt.
+///
+/// Angelegt wird nichts auf der Platte — das Set **existiert** schon als Ordner, hier bekommt es
+/// nur seinen Namen in Kanban. Genau deshalb steht die Ordnerwahl gleichberechtigt neben dem Namen
+/// und nicht hinter einem „Erweitert".
+private struct NeuesSetSheet: View {
+    let model: ClaudeWorkflowModel
+    let onClose: () -> Void
+
+    @State private var name = ""
+    @State private var ordner: URL?
+    @State private var fehler: String?
+
+    private var normalisiert: String { ClaudeAssetName.normalisiert(name) }
+    private var bereit: Bool { !normalisiert.isEmpty && ordner != nil }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Skill-Set anlegen").font(.headline)
+
+            VStack(alignment: .leading, spacing: 4) {
+                TextField("name-in-kebab-case", text: $name)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(size: 13, design: .monospaced))
+                    .onSubmit { if bereit { anlegen() } }
+                Text(normalisiert.isEmpty
+                     ? "Kleinbuchstaben, Ziffern, Bindestriche — unter diesem Namen wählen ihn die Projekte."
+                     : "wird zu `\(normalisiert)`")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 8) {
+                    Button("Ordner wählen…") {
+                        if let url = model.ordnerDialog(titel: "Ordner des Sets wählen", start: nil) {
+                            ordner = url
+                            if name.trimmingCharacters(in: .whitespaces).isEmpty {
+                                name = url.lastPathComponent
+                            }
+                            fehler = nil
+                        }
+                    }
+                    if let ordner {
+                        Text(model.abbreviateHome(ordner.path))
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1).truncationMode(.middle)
+                    }
+                }
+                Text("Der Ordner muss `skills/` und/oder `rules/` enthalten. Er bleibt, wo er ist — "
+                     + "Kanban verlinkt ihn nur in die Projekte.")
+                    .font(.caption).foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if let fehler {
+                Text(fehler).font(.caption).foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            HStack {
+                Spacer()
+                Button("Abbrechen", role: .cancel) { onClose() }
+                    .keyboardShortcut(.cancelAction)
+                Button("Anlegen") { anlegen() }
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(!bereit)
+            }
+        }
+        .padding(18)
+        .frame(width: 460)
+    }
+
+    private func anlegen() {
+        guard let ordner else { return }
+        if let meldung = model.legeSetAn(name: name, ordner: ordner) { fehler = meldung }
+        else { onClose() }
     }
 }

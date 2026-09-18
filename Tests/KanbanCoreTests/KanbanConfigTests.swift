@@ -77,13 +77,18 @@ final class KanbanConfigTests: XCTestCase {
         XCTAssertNil(AppConfig.empty.defaultSkillSet)
     }
 
-    /// Wo die Sets **gepflegt** werden — genau dorthin zeigen die Symlinks der Projekte. Ohne
-    /// Eintrag gilt die Konvention „Kanban-Repo unter dem Basis-Pfad"; der Pfad wird aufgelöst wie
-    /// jeder andere (absolut, `~` oder relativ zum Basis-Pfad).
-    func testSetsPathDefaultsToTheKanbanRepo() throws {
+    /// Ohne Eintrag gilt Kanbans eigener Datenordner — die Skills liegen nicht im Repo.
+    func testSetsPathDefaultsToKanbansDataFolder() throws {
         let config = try load(#""even": {"prefix": "EVEN", "tasksPath": "even/docs/tasks"}"#)
-        XCTAssertEqual(config.skillSetsPath,
-                       "/base/kanban/Sources/Kanban/Resources/ClaudeAssets/sets")
+        XCTAssertEqual(config.skillSetsPath, ClaudeAssetStore.defaultLegacyRoot.path)
+        XCTAssertTrue(config.skillSets.isEmpty)
+    }
+
+    /// Einzeln registrierte Sets: Name → Ordner, überall auf der Platte.
+    func testRegisteredSetsFromConfig() throws {
+        let config = try loadRaw(#"{"basePath": "/base", "claude": {"sets": {"simple": {"path": "meine/sets/simple"}, "advanced": {"path": "/anderswo/advanced"}}}, "modules": {"jira": {"baseUrl": "https://x", "email": "a@b.c", "apiToken": "t"}}}"#)
+        XCTAssertEqual(config.skillSets.map(\.name), ["advanced", "simple"])
+        XCTAssertEqual(config.skillSets.map(\.path), ["/anderswo/advanced", "/base/meine/sets/simple"])
     }
 
     func testSetsPathCanBeOverridden() throws {

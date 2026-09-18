@@ -383,6 +383,42 @@ Die ⏱-Zeit lässt sich am Tagesende als Jira-Worklog buchen — direkt über d
   Ticket), Sammel-Buchung über den Toolbar-Button „X buchen" → `BookingSheet` (Übersicht mit Zeitraum
   je Ticket + Bestätigung), ✓ am Karten-Badge wenn vollständig gebucht.
 
+## Der Teiler im Detail-Bereich: beim Öffnen die Hälfte (KANBAN-009)
+
+Rechts stehen Task-File-Tabs oben und die Terminal-Zone unten, getrennt von einem `VSplitView`. Beim
+Öffnen bekommt das **Terminal die Hälfte** (`DetailView.terminalAnteil = 0.5`) — dort wird
+gearbeitet, das Task-File wird gelesen. Vorher fiel dem Arbeiten ein knappes Drittel zu und der
+Teiler wurde jedes Mal von Hand nachgezogen.
+
+- **`idealHeight` ist der falsche Hebel** — er tut schlicht nichts. Gegen echtes AppKit gemessen
+  (macOS 15): 220, 380, 600 und gar kein `idealHeight` ergeben dieselbe Position. `VSplitView`
+  verteilt **proportional zu den Mindesthöhen**; 240 oben zu 120 unten sind 2 : 1, also genau das
+  Drittel. (240/240 ergäbe 50 %, 240/480 zwei Drittel — die Regel ist nachgemessen, nicht geraten.)
+- **Die Mindesthöhen anzugleichen wäre der kürzere Weg und der falsche.** Die Hälfte wäre dann ein
+  Nebenprodukt zweier zufällig gleicher Zahlen — wer später die Mindesthöhe des Task-Files anhebt,
+  verschiebt den Teiler, ohne es zu merken. Und eine Mindesthöhe sagt etwas über die *kleinste*
+  erlaubte Grösse, nicht über die Startposition: das Terminal liesse sich nie wieder unter 240 pt
+  ziehen.
+- **Also die Position einmal direkt setzen** (`SplitFractionSetter` in `Detail/DetailSplit.swift`):
+  eine leere Hilfsansicht im unteren Bereich sucht über die Superview-Kette den `NSSplitView`, den
+  SwiftUI darunter führt, und ruft `setPosition`. Bewusst **kein** `autosaveName` — die Position soll
+  das Öffnen gerade *nicht* überleben.
+- **Genau einmal**, nicht bei jeder Aktualisierung: jede Teiler-Verschiebung ändert die Grösse der
+  Terminal-Pane, und das ist ein SIGWINCH — tmux baut Claudes ganze TUI neu auf (derselbe Grund, aus
+  dem die Prompt-Timeline über dem Terminal liegt statt daneben). Danach hat die Hand das letzte
+  Wort.
+- **Der Auslöser ist das Projekt, und er ergibt sich von selbst** — es braucht kein `.id(projektKey)`
+  (das würde nur zusätzlich die Terminal-Ansichten abreissen). Den Split gibt es nur mit gewähltem
+  Ticket; ein Projektwechsel läuft über `clearDetail()`, setzt `selectedTicketKey` auf nil und lässt
+  den Platzhalter stehen, die nächste Karte baut den Split frisch auf. Ein Fenster je Projekt
+  (KANBAN-006) fängt ohnehin frisch an. Ein Wechsel **von Ticket zu Ticket** bleibt dagegen im selben
+  Zweig: der Split lebt weiter, die gezogene Position bleibt, Claudes TUI bleibt stehen.
+- Gemessen mit der ausgelieferten Hilfsansicht: Vorgabefenster (1280 × 748 Inhalt) 374/374, kleinstes
+  Fenster (540 pt hoch, 488 Inhalt) 244/244 — beide über ihren Mindesthöhen. Ein von Hand auf 180 pt
+  gezogener Teiler überlebt zehn Ticketwechsel und den Weg 748 → 1100 → 748 unverändert (der Split
+  hält den **Anteil**, nicht die Pixel). Wäre die Hälfte einmal kleiner als eine Mindesthöhe, klemmt
+  `NSSplitView` selbst.
+
 ## Prompt-Timeline (Bubble-Button rechts in der Terminal-Tableiste)
 
 Slide-in **über** dem Terminal (Overlay, kein Split — ein Split würde die Pane resizen und Claudes
@@ -760,75 +796,71 @@ Der Start macht die Fenster wieder auf, die beim letzten Mal offen waren (`openP
   zuletzt benutzten Projekt hoch; geschlossen ist geschlossen. Beim ⌘Q dagegen bleibt die Liste
   stehen (`applicationWillTerminate` friert sie ein, bevor die Fenster abgebaut werden).
 
-## Skill-Sets: im Repo gepflegt, pro Projekt verlinkt (KANBAN-004)
+## Skill-Sets: eigene Ordner, pro Projekt verlinkt (KANBAN-004)
 
-Die Workflow-Skills und Rules liegen in **Sets** — benannten Zusammenstellungen, von denen ein
-Projekt genau eine sieht. Ein Set ist ein **physisch gepflegter Ordner**, und genau dieser Ordner
-ist das Ziel der Symlinks in den Projekten. Vorher lagen sie flach in Application Support und wurden
-in einem GUI-Editor mit selbstgebauter Versionierung gepflegt — ein zweites, schwächeres Git neben
-dem richtigen; und die eine Unterscheidung, die wirklich gebraucht wird, fehlte: nicht jedes Projekt
-will dieselben Skills.
+Die Workflow-Skills und Rules liegen in **Sets** — benannten Ordnern, von denen ein Projekt genau
+einen sieht. Ein Set ist nichts weiter als *ein Ordner mit `skills/` und/oder `rules/`*, und genau
+dieser Ordner ist das Ziel der Symlinks in den Projekten.
 
-Da liegt bisher **ein** Set, `iwf` (14 Skills, 7 Rules — der volle Satz mit Worktree-Stack, Jira und
-GitLab). Ein zweites entsteht, wenn es gebraucht wird; der Umbau macht es möglich, erfindet es nicht.
+**Die Skills gehören nicht ins Kanban-Repo.** Sie sind die Arbeit des Benutzers, nicht Teil der App:
+Kanban liefert keine aus, versioniert keine und kopiert keine. Vorher lagen sie flach in Application
+Support und wurden in einem GUI-Editor mit selbstgebauter Versionierung gepflegt — ein zweites,
+schwächeres Git neben dem richtigen; und die eine Unterscheidung, die wirklich gebraucht wird,
+fehlte: nicht jedes Projekt will dieselben Skills.
 
-- **Ein Ort, keine Kopie.** `claude.setsPath` sagt, wo die Sets gepflegt werden — per Vorgabe das
-  Kanban-Repo unter dem Basis-Pfad (`<basePath>/kanban/Sources/Kanban/Resources/ClaudeAssets/sets`,
-  eine Konvention, deshalb überschreibbar). Die Symlinks der Projekte zeigen **dorthin**: kein
-  Auslieferungsstand im App-Bundle, kein Sync, keine zweite Wahrheit. Eine Änderung an einem
-  `SKILL.md` wirkt damit sofort in jedem verlinkten Projekt — ohne `build-app.sh`, ohne Neustart,
-  ohne Knopfdruck im Übersichtsfenster. Deshalb ist `Resources/ClaudeAssets` in `Package.swift`
-  **`exclude`d** statt `.copy`: eine Kopie im Bundle wäre beim ersten Edit veraltet.
-- **Der Preis** ist die Kehrseite derselben Münze: verschiebst oder löschst du den Ordner, zeigen
-  alle Links ins Leere, und ein Branch-Wechsel im Kanban-Repo ändert die Skills aller Projekte mit.
-  `ClaudeAssetStore.setsRootExists` gibt es genau dafür — die Übersicht sagt „den Ordner gibt es
-  nicht" statt still leer zu bleiben.
+- **Woher die Sets kommen**, zwei Wege nebeneinander:
+  - **Sammelordner** (`claude.setsPath`, Vorgabe `~/Library/Application Support/Kanban/claude`):
+    jeder Unterordner mit `skills/` oder `rules/` ist ein Set. Wer seine Sets ohnehin nebeneinander
+    liegen hat, muss nichts eintragen.
+  - **Einzeln registriert** (`claude.sets.<name>.path`): Name plus Ordner, und der Ordner darf
+    überall liegen — im Repo eines Projekts, in einem eigenen Git-Repo, irgendwo. Angelegt wird das
+    im Skill-Set-Fenster über „Set anlegen…"; bei Namensgleichheit sticht die Registrierung den
+    Sammelordner, denn sie ist die ausdrückliche Angabe.
+  `set.json` im Ordner gibt Anzeigename und eine Zeile Beschreibung; ohne sie heisst das Set wie
+  sein Ordner. Ein Unterordner ohne `skills/`/`rules/` oder mit einem Namen, der kein kebab-case ist,
+  ist **kein** Set — sonst ginge jeder dahingelegte Backup-Ordner als eins durch.
+- **Keine Kopie, kein Sync, kein App-Bundle.** Die Symlinks zeigen auf den gepflegten Ordner selbst:
+  eine Änderung an einem `SKILL.md` wirkt sofort in jedem verlinkten Projekt — ohne `build-app.sh`,
+  ohne Neustart, ohne Knopfdruck im Übersichtsfenster. Ein Skill-Symlink zeigt auf das
+  **Verzeichnis**, also reist auch eine frisch dazugelegte Beiwerk-Datei ohne Zutun mit.
 - **Verlinkt wird ins Projekt, nicht ins Home** — das ist der Kern. Ein Agent-Home kann nicht zwei
   Sets gleichzeitig tragen, und Kanban fährt regelmässig mehrere tmux-Sitzungen parallel. Skills
   gehen nach `<repo>/.claude/skills/<name>` bzw. `<repo>/.codex/skills/<name>` (je nach `agent`),
   Rules nach `<repo>/.claude/rules/<name>.md` — **immer** `.claude/`, auch bei `agent: codex`: die
   Skills verweisen im Text auf `.claude/rules/…`, und dieser Pfad muss unter beiden Agents aufgehen.
-  Dieselbe Überlegung wie bei `.claude/project.json`, und `.claude/` ist in den Projekt-Repos
-  ohnehin gitignored. Ein Skill-Symlink zeigt auf das **Verzeichnis**, also reist auch eine frisch
-  dazugelegte Beiwerk-Datei ohne Zutun mit.
-- **Das Standard-Set hängt zusätzlich in `~/.claude` und `~/.codex`** — damit eine Console
-  ausserhalb eines Projekts nicht leer dasteht. ⚠️ Das kollidiert mit der Präzedenz (siehe unten):
-  bei **Namensgleichheit** sticht die User-Ebene die Projektkopie, ein Projekt auf einem anderen
-  Set sähe also weiter die Skills des Standard-Sets. Verifiziert ist diese Präzedenz für Commands
-  (2026-08-07); für Skills steht die Gegenprobe noch aus. Solange es nur ein Set gibt, ist der Fall
-  nicht erreichbar — wer ein zweites anlegt, prüft das zuerst und lässt die Home-Verlinkung
-  nötigenfalls weg (`ClaudeAssetFactory.linkDefaultSetIntoHomes`).
+  Dieselbe Überlegung wie bei `.claude/project.json`.
+- **Das Standard-Set hängt zusätzlich in `~/.claude` und `~/.codex`** — damit eine Console ausserhalb
+  eines Projekts nicht leer dasteht. ⚠️ Das kollidiert mit der Präzedenz (siehe unten): bei
+  **Namensgleichheit** sticht die User-Ebene die Projektkopie, ein Projekt auf einem anderen Set
+  sähe also weiter die Skills des Standard-Sets. Verifiziert ist diese Präzedenz für Commands
+  (2026-08-07); für Skills steht die Gegenprobe aus. Wer mit zwei Sets arbeitet, prüft das zuerst
+  und lässt die Home-Verlinkung nötigenfalls weg (`ClaudeAssetFactory.linkDefaultSetIntoHomes`).
 - **Aufgeräumt wird beim Verlinken**: Symlinks eines vorher verlinkten Sets verschwinden, ebenso die
   im Ordner des *anderen* Agents (ein Projekt hat genau einen). Erkannt werden sie daran, dass sie
-  auf etwas zeigen, das **uns** gehört — der Sets-Ordner oder der alte flache Bestand in
-  `~/Library/Application Support/Kanban/claude/`. Letzterer zählt nur deshalb noch mit: so hängen
-  sich die Links des **Modells vor den Sets** beim ersten Start von selbst um
-  (`ClaudeSymlinkState.otherSet`), statt als fremd liegenzubleiben — sonst wäre `/get-task`
-  eingefroren. Geschrieben wird dort nie mehr etwas; der alte Ordner bleibt unangetastet liegen. **Fremdes wird nie angefasst**:
-  eine echte Datei oder ein Symlink ausserhalb des Bestands wird gemeldet, nicht überschrieben
+  auf etwas zeigen, das **uns** gehört: ein bekannter Set-Ordner, der Sammelordner, ein früher
+  gewählter (`formerRoots` — wer den Ordner wechselt, soll die alten Links umgehängt bekommen statt
+  sie als fremd stehen zu lassen) oder der alte flache Bestand. **Fremdes wird nie angefasst**: eine
+  echte Datei oder ein Symlink irgendwo anders hin wird gemeldet, nicht überschrieben
   (`ClaudeSymlinkState.foreign`) — und ein belegter Zielort blockiert den Rest des Sets nicht.
-- **Wer welches Set sieht**: `modules.jira.projects.<key>.skillSet` (leer = Standard-Set),
-  editierbar im Projekt-Formular und in den Einstellungen; das Standard-Set steht global in
-  `claude.defaultSkillSet`. Fehlt es, gilt das einzige vorhandene Set — gibt es mehrere und ist
-  keins bestimmt, das erste, und die Übersicht sagt „Standard (nicht gesetzt)". Ein Projekt, dessen
-  Set es nicht (mehr) gibt, fällt aufs Standard-Set zurück, **mit Hinweis** statt stillschweigend
-  (`ClaudeAssetStore.resolve` liefert dafür `missingName`).
-- **Das Command-Menü am Ticket zeigt, was das Set anbietet** — alles davon, nicht eine Liste im
-  Code (`ClaudeCommandScanner.commands(in:first:)`). Vorn stehen die vier Workflow-Skills in der
-  Reihenfolge, die ein Ticket nimmt (`get-` → `start-` → `solve-` → `review-task`), dahinter der
-  Rest alphabetisch. Ein Skill, der einem Set dazukommt, steht damit ohne Codeänderung im Menü.
-  Gelesen wird das **Set**, nicht der Scan der Zielorte: was ein Projekt sieht, ist sein Set, nicht
-  die Vereinigung aus Projekt-Ebene und Agent-Home. Gibt es gar kein Set, fällt das Menü auf den
-  Scan zurück — die Symlinks von gestern funktionieren ja weiter.
+- **Pfade werden in beiden Schreibweisen verglichen** (`ClaudeAssetStore.schreibweisen`): macOS legt
+  das Ziel eines Symlinks **aufgelöst** ab (`/private/var/…`), während der konfigurierte Ordner
+  unaufgelöst dasteht (`/var/…`). Solange beide existieren, gleicht `standardizedFileURL` das aus —
+  bei einem Ordner, den es nicht mehr gibt, also genau nach einem Umzug, nicht mehr.
+- **Wer welches Set benutzt**, wird **am Set** entschieden: das Skill-Set-Fenster zeigt je Set alle
+  Projekte als Haken. Darunter steht weiterhin `modules.jira.projects.<key>.skillSet` (leer =
+  Standard-Set), und das Standard-Set global in `claude.defaultSkillSet`. Fehlt es, gilt das einzige
+  vorhandene Set — gibt es mehrere und ist keins bestimmt, das erste, und die Übersicht sagt
+  „Standard (nicht gesetzt)". Ein Projekt, dessen Set es nicht (mehr) gibt, fällt aufs Standard-Set
+  zurück, **mit Hinweis** statt stillschweigend (`ClaudeAssetStore.resolve` liefert `missingName`).
+- **Das Command-Menü am Ticket zeigt, was das Set anbietet** — alles davon, nicht eine Liste im Code
+  (`ClaudeCommandScanner.commands(in:first:)`). Vorn die vier Workflow-Skills in der Reihenfolge,
+  die ein Ticket nimmt (`get-` → `start-` → `solve-` → `review-task`), dahinter der Rest
+  alphabetisch. Gelesen wird das **Set**, nicht der Scan der Zielorte: was ein Projekt sieht, ist
+  sein Set, nicht die Vereinigung aus Projekt-Ebene und Agent-Home.
 - **Der Name des aufgelösten Sets steht in `.claude/project.json`** (`skillSet`) — ein Skill soll
   wissen, mit welchem Satz er gerade läuft, und nicht, was jemand einmal in die Config geschrieben
   hat. Geschrieben wird beides an einer Stelle (`AppModel.linkSkillSet`), beim Projektwechsel und
   beim Config-Load für **alle** Projekte.
-- **Ein Unterordner ist erst ein Set, wenn er `skills/` oder `rules/` hat** und sein Name
-  kebab-case ist (`ClaudeAssetName`). In einem gewachsenen Ordner liegt allerlei
-  (`skills-backup-2026-08-20`, `projektkopien-backup-*`, `.versions`, ein ZIP); nichts davon darf
-  als Set durchgehen, nur weil es ein Ordner ist. `set.json` gibt Anzeigename und eine Zeile
-  Beschreibung — fehlt sie oder ist sie kaputt, heisst das Set wie sein Ordner.
 - **Keine Projektwerte in den Assets**: Platzhalter `<PREFIX>`/`<tasksPath>`/`<docsPath>`/
   `<kbPath>`/`<worktreePrefix>`/`<dockerStack>`/`<stackDomain>` (nur die TLD; Hosts =
   `<ordnername>.<stackDomain>`)/`<jiraBaseUrl>`/`<skillSet>` verweisen auf
@@ -838,22 +870,16 @@ GitLab). Ein zweites entsteht, wenn es gebraucht wird; der Umbau macht es mögli
   `jiraBaseUrl` ohne konfigurierte Jira-Instanz — ein Skill soll „hier ist sie" von „es gibt keine"
   unterscheiden können, und eine TLD ohne Stack dahinter wäre eine Behauptung. `dockerStack` und
   `usesJira` dagegen stehen **immer** drin (`true`/`false`): daran verzweigen die Skills, und ein
-  fehlender Schlüssel würde dort als `true` gelesen. Alle anderen Werte stehen immer da.
+  fehlender Schlüssel würde dort als `true` gelesen.
 - **`.claude/` ist nicht überall gitignored** — gemessen am 2026-09-18: in `bfezvm`, `even`,
-  `reactbp` und `zba` ja, in `core`, `hermes`, `iwf-local-dev`, `kanban` und `rhyblox` nein. Dort
-  stehen die Symlinks des Sets als untracked in `git status`. Kanbans eigenes Repo ignoriert
-  `.claude/` seit diesem Umbau; in fremden Repos ist das eine Entscheidung des jeweiligen Teams,
-  keine, die Kanban treffen darf.
-- **Beiwerk-Dateien** (`methodology.md` bei audit-security, impact-, quality- und review-analysis)
-  sind kein Sonderfall: der Symlink zeigt auf das **Verzeichnis**, also reist alles mit, und ein
-  Verweis wie `[methodology.md](methodology.md)` löst überall auf. **Keine agent-eigenen
-  Platzhalter** (`${CLAUDE_SKILL_DIR}` existiert nirgends): Claude nennt das Skill-Verzeichnis beim
-  Aufruf selbst, Codex setzt keine solche Variable.
+  `reactbp` und `zba` ja, in `core`, `hermes`, `iwf-local-dev` und `rhyblox` nein. Dort stehen die
+  Symlinks des Sets als untracked in `git status`. In fremden Repos ist das eine Entscheidung des
+  jeweiligen Teams; lokal geht es ohne Commit über `.git/info/exclude`.
 - **Alles ist ein Skill** (`skills/<name>/SKILL.md`) — die einzige Gattung, die Claude Code *und*
   Codex kennen. Die Gattung `commands` ist mit den Sets **weggefallen**: der einmalige
-  Command→Skill-Umzug ist erledigt, `commands/` im Bestand war leer, und ein von Hand angelegter
-  Projekt-Command bleibt als Datei liegen — Kanban verwaltet ihn nur nicht mehr. `ClaudeCommandScanner`
-  liest ihn weiterhin, damit er im Kontextmenü nicht verschwindet.
+  Command→Skill-Umzug ist erledigt, und ein von Hand angelegter Projekt-Command bleibt als Datei
+  liegen — Kanban verwaltet ihn nur nicht mehr. `ClaudeCommandScanner` liest ihn weiterhin, damit er
+  im Kontextmenü nicht verschwindet.
 - **Präzedenz empirisch verifiziert** (CC 2.1.222, 2026-08-07): bei Namensgleichheit sticht die
   **User-Ebene** die Projektkopie — Gegenteil der verbreiteten Doku-Annahme. `ClaudeCommandScanner`
   liest beide Ebenen, überdeckte Projektkopien stehen in `shadowedProjectURL`.
@@ -862,12 +888,14 @@ GitLab). Ein zweites entsteht, wenn es gebraucht wird; der Umbau macht es mögli
 
 ### Die Übersicht (✨-Toolbar-Button, eigenes Fenster)
 
-Das Fenster **zeigt und stellt her**, mehr nicht: je Set Name, Beschreibung, Anzahl Skills/Rules und
-die Markierung „Standard"; darunter die Projekte, die daran hängen, jeweils mit dem Zustand ihrer
-Verlinkung (verlinkt / nicht verlinkt / zeigt noch auf ein anderes Set / fremd belegt) und einem
-Knopf „Verlinkung herstellen"; im Fuss einer für alle, der zugleich das Standard-Set in die
-Agent-Homes legt. Ein 📁-Knopf führt in den Bestand bzw. in den `.claude/`-Ordner des Projekts —
-**bearbeitet wird im Repo**, und das steht auch so da.
+Das Fenster **zeigt und stellt her**, mehr nicht: je Set Name, Beschreibung, Ordner, Anzahl
+Skills/Rules und die Markierung „Standard"; darunter **alle Projekte als Haken** — dort wird die
+Zuordnung getroffen, für alle auf einmal, statt Projekt für Projekt in den Einstellungen. Darunter
+die schon zugeordneten Projekte mit dem Zustand ihrer Verlinkung (verlinkt / nicht verlinkt / zeigt
+noch auf ein anderes Set / fremd belegt) und einem Knopf „Verlinkung herstellen"; im Fuss „Set
+anlegen…" und „Alle verlinken", das zugleich das Standard-Set in die Agent-Homes legt. Das
+⋯-Menü je Set führt in den Finder, lässt einen anderen Ordner wählen und nimmt das Set wieder aus
+der Liste — **ohne** den Ordner anzufassen: entfernt wird die Zuordnung, nicht die Arbeit.
 
 Drei Fälle stehen als Hinweis an der Zeile, statt still zu wirken:
 
@@ -879,10 +907,9 @@ Drei Fälle stehen als Hinweis an der Zeile, statt still zu wirken:
 
 Weggefallen sind mit dem Umbau: der Markdown-Editor über den Bestand, „Neues Asset", „Einlesen…",
 „Auf Auslieferungsstand zurücksetzen", die **Fassungen** (`ClaudeAssetVersions`, zeitgestempelte
-Kopien je Datei) und die Symlink-Schalter je Asset. Alles davon löste ein Problem, das eine Datei im
-Git-Repo nicht hat. Vorhandene `.versions/`-Ordner und der alte flache Bestand werden nicht gelöscht, nur nicht mehr
-gelesen. Der 📁-Knopf oben im Fenster führt in den gepflegten Sets-Ordner — dort wird editiert, und
-die Änderung ist ohne weiteres Zutun in jedem verlinkten Projekt da.
+Kopien je Datei) und die Symlink-Schalter je Asset. Alles davon löste ein Problem, das eine Datei in
+einem Git-Repo nicht hat. Vorhandene `.versions/`-Ordner werden nicht gelöscht, nur nicht mehr
+gelesen.
 
 ### Zwei Agents: Claude Code oder Codex (je Projekt)
 
@@ -1947,7 +1974,9 @@ Sources/
     ├── Board/             BoardSidebar / ColumnSection / TicketCard / EpicViews (Stripe + Pill) /
     │                      AvatarView (+ AvatarCache: Jira-Bilder mit Auth) / IssueTypeIcon /
     │                      NewTaskSheet (freier Modus)
-    ├── Detail/            DetailView / TaskTabsView / TerminalTabsView (Maintree|Worktree|Claude…) /
+    ├── Detail/            DetailView (Teiler beim Öffnen auf die Hälfte) + DetailSplit
+    │                      (SplitFractionSetter: setzt den NSSplitView einmal — `idealHeight` wirkt nicht) /
+    │                      TaskTabsView / TerminalTabsView (Maintree|Worktree|Claude…) /
     │                      WorktreeStackView (ein Panel, Ziel via StackTarget) /
     │                      StackSnapshotsView (iwf db snapshot: Liste/Restore/Create) /
     │                      TaskAttachmentsPanel (Task-Ordner: Baum + Quick-Look-Vorschau) /
@@ -2162,9 +2191,10 @@ und wer die eine Datei kennt, kennt die andere.
   das Projekt lahmzulegen. `skillSet` = Name eines Sets im Bestand, leer = Standard-Set; ein Set,
   das es nicht gibt, fällt ebenfalls aufs Standard-Set zurück — mit Hinweis in der Übersicht).
   Auth = `Authorization: Basic base64(email:apiToken)`.
-- `claude.setsPath` — der Ordner, in dem die Skill-Sets **gepflegt** werden und auf den die
-  Symlinks der Projekte direkt zeigen (absolut, `~` oder relativ zum Basis-Pfad). Leer =
-  `<basePath>/kanban/Sources/Kanban/Resources/ClaudeAssets/sets`.
+- `claude.setsPath` — Sammelordner für Skill-Sets: jeder Unterordner mit `skills/`/`rules/` ist
+  eins (absolut, `~` oder relativ zum Basis-Pfad). Leer =
+  `~/Library/Application Support/Kanban/claude`.
+- `claude.sets.<name>.path` — ein einzeln registriertes Set, dessen Ordner überall liegen darf.
 - `claude.defaultSkillSet` — das Skill-Set für jedes Projekt ohne eigene Wahl und für die
   Agent-Homes. Beides steht in einem Kanban-eigenen Abschnitt wie `commit` und `watchdog`, **kein**
   Modul (steht nicht in `ProjectProjection.moduleNames` und wandert nie nach Hermes). Fehlt
