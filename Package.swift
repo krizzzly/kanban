@@ -22,7 +22,10 @@ let package = Package(
                 .product(name: "SwiftTerm", package: "SwiftTerm"),
             ],
             path: "Sources/Kanban",
-            resources: [.copy("Resources/ClaudeAssets")],
+            // Die Skill-Sets werden **nicht** ins App-Bundle kopiert: sie sind physisch gepflegte
+            // Ordner, in die die Projekte direkt verlinken (siehe ClaudeAssetStore). Eine Kopie im
+            // Bundle wäre eine zweite Wahrheit, die beim ersten Edit veraltet.
+            exclude: ["Resources/ClaudeAssets"],
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),
         .target(

@@ -14,7 +14,8 @@ enum SelfTest {
         do {
             HermesImport.runIfNeeded()
             let cfg = try KanbanConfig.load()
-            print("✓ Config \(KanbanConfig.path): \(cfg.projects.count) Projekte, gitlab=\(cfg.hasGitlab)")
+            print("✓ Config \(KanbanConfig.path): \(cfg.projects.count) Projekte, "
+                  + "gitlab=\(cfg.hasGitlab), github=\(cfg.hasGithub)")
 
             let wanted = argValue("--project")
             guard let project = cfg.projects.first(where: { $0.key == wanted }) ?? cfg.projects.first else {
@@ -23,7 +24,7 @@ enum SelfTest {
             print("→ Projekt \(project.key) (\(project.prefix)) @ \(project.jiraBaseUrl)")
             print("  tasksPath = \(project.tasksPathAbsolute)")
             print("  repoDir   = \(project.repoDir)")
-            print("  gitlab    = \(project.gitlabProjectPath ?? "—")")
+            print("  forge     = \(project.forge.map { "\($0.kind.label) \($0.path)" } ?? "—")")
 
             let jira = JiraClient(config: cfg)
             guard let board = try await jira.board(prefix: project.prefix, baseUrl: project.jiraBaseUrl) else {
@@ -45,13 +46,25 @@ enum SelfTest {
             let subtaskCount = allIssues.count - issues.count
             print("✓ \(issues.count) Issues (\(subtaskCount) Unteraufgaben ausgeblendet)")
 
+            // Dieselbe Pipeline für beide Forges — welcher Client antwortet, entscheidet die
+            // Zuordnung des Projekts, nicht dieser Code.
             var mrs: [MergeRequestRef] = []
-            if let gitlab = GitLabClient(config: cfg), let path = project.gitlabProjectPath {
-                mrs = (try? await gitlab.openedAndMergedMRs(projectPath: path)) ?? []
+            if let forge = project.forge, let client = Self.client(for: forge.kind, config: cfg) {
+                mrs = (try? await client.openedAndMergedRequests(projectPath: forge.path)) ?? []
                 let drafts = mrs.filter { $0.state == "opened" && $0.draft }.count
-                print("✓ \(mrs.count) MRs (opened+merged)" + (drafts > 0 ? ", davon \(drafts) Draft (nicht Review)" : ""))
+                let kürzel = forge.kind.requestAbbreviation
+                let threads = mrs.filter { $0.totalDiscussions > 0 }.count
+                let approved = mrs.filter(\.approved).count
+                print("✓ \(mrs.count) \(kürzel)s (opened+merged) von \(forge.kind.label)"
+                      + (drafts > 0 ? ", davon \(drafts) Draft (nicht Review)" : ""))
+                print("  Review-Stand: \(approved) approved, \(threads) mit Threads"
+                      + (forge.kind == .github && threads == 0
+                         ? " (GitHub: 0 kann auch heissen, dass GraphQL nichts liefert — fail-open)"
+                         : ""))
+            } else if project.forge != nil {
+                print("• \(project.forge!.kind.label) übersprungen (kein Token in der Config)")
             } else {
-                print("• GitLab übersprungen (keine Zuordnung)")
+                print("• Forge übersprungen (keine Zuordnung)")
             }
 
             let worktrees = await WorktreeScanner.scan(repoDir: project.repoDir)
@@ -142,6 +155,14 @@ enum SelfTest {
                   + " · inkl. Wartezeit \(TimeFormatting.compact(timing.wallTotal))\(open)")
         }
         print("    Σ Sprint: \(TimeFormatting.compact(timings.values.reduce(0) { $0 + $1.total }))")
+    }
+
+    /// Der Client zur Forge eines Projekts — nil, wenn sie nicht konfiguriert ist.
+    private static func client(for kind: ForgeKind, config: AppConfig) -> (any ForgeClient)? {
+        switch kind {
+        case .gitlab: return GitLabClient(config: config)
+        case .github: return GitHubClient(config: config)
+        }
     }
 
     private static func argValue(_ flag: String) -> String? {

@@ -51,7 +51,12 @@ struct KanbanApp: App {
         if CommandLine.arguments.contains("--selftest") {
             SelfTest.runAndExit()
         }
-        ClaudeAssetFactory.seedAtLaunch()
+        if CommandLine.arguments.contains("--migrate-jira-line") {
+            JiraLineMigrationCLI.runAndExit()
+        }
+        // Das Standard-Set in die Agent-Homes; die Projekte bekommen ihres beim Config-Load und
+        // bei jedem Projektwechsel (AppModel.linkSkillSet).
+        ClaudeAssetFactory.linkAtLaunch()
     }
 
     /// **Mehrere Board-Fenster, je eines mit eigenem Projekt.** Der Szenenwert ist der Projekt-Key;

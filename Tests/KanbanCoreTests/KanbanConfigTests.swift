@@ -60,6 +60,40 @@ final class KanbanConfigTests: XCTestCase {
         XCTAssertFalse(ProjectProjection.moduleNames.contains("commit"))
     }
 
+    // MARK: - claude.defaultSkillSet
+
+    /// Das Standard-Skill-Set steht in einem Kanban-eigenen Abschnitt — wie `commit` und
+    /// `watchdog` und damit ebenfalls kein Hermes-Modul.
+    func testDefaultSkillSetFromConfig() throws {
+        let config = try loadRaw(#"{"basePath": "/base", "claude": {"defaultSkillSet": "iwf"}, "modules": {"jira": {"baseUrl": "https://x", "email": "a@b.c", "apiToken": "t"}}}"#)
+        XCTAssertEqual(config.defaultSkillSet, "iwf")
+        XCTAssertFalse(ProjectProjection.moduleNames.contains("claude"))
+    }
+
+    /// Ohne Abschnitt entscheidet der Sets-Ordner (`ClaudeAssetStore.defaultSet`), nicht die Config.
+    func testDefaultSkillSetIsNilWithoutTheSection() throws {
+        let config = try load(#""even": {"prefix": "EVEN", "tasksPath": "even/docs/tasks"}"#)
+        XCTAssertNil(config.defaultSkillSet)
+        XCTAssertNil(AppConfig.empty.defaultSkillSet)
+    }
+
+    /// Wo die Sets **gepflegt** werden — genau dorthin zeigen die Symlinks der Projekte. Ohne
+    /// Eintrag gilt die Konvention „Kanban-Repo unter dem Basis-Pfad"; der Pfad wird aufgelöst wie
+    /// jeder andere (absolut, `~` oder relativ zum Basis-Pfad).
+    func testSetsPathDefaultsToTheKanbanRepo() throws {
+        let config = try load(#""even": {"prefix": "EVEN", "tasksPath": "even/docs/tasks"}"#)
+        XCTAssertEqual(config.skillSetsPath,
+                       "/base/kanban/Sources/Kanban/Resources/ClaudeAssets/sets")
+    }
+
+    func testSetsPathCanBeOverridden() throws {
+        let relativ = try loadRaw(#"{"basePath": "/base", "claude": {"setsPath": "meine-sets"}, "modules": {"jira": {"baseUrl": "https://x", "email": "a@b.c", "apiToken": "t"}}}"#)
+        XCTAssertEqual(relativ.skillSetsPath, "/base/meine-sets")
+
+        let absolut = try loadRaw(#"{"basePath": "/base", "claude": {"setsPath": "/anderswo/sets"}, "modules": {"jira": {"baseUrl": "https://x", "email": "a@b.c", "apiToken": "t"}}}"#)
+        XCTAssertEqual(absolut.skillSetsPath, "/anderswo/sets")
+    }
+
     /// Bisheriges Verhalten ohne Override: Repo = Basis + erstes Segment des Tasks-Pfads.
     func testRepoDirDerivedFromTasksPath() throws {
         let config = try load(#""even": {"prefix": "EVEN", "tasksPath": "even/docs/tasks"}"#)
@@ -161,6 +195,26 @@ final class KanbanConfigTests: XCTestCase {
         let config = try load(
             #""even": {"prefix": "EVEN", "tasksPath": "even/docs/tasks", "agent": "kodex"}"#)
         XCTAssertEqual(config.projects[0].agent, .claude)
+    }
+
+    /// Das Skill-Set je Projekt wird wie `agent` gelesen: fehlt es, gilt das Standard-Set (nil).
+    func testSkillSetIsNilWithoutAnEntry() throws {
+        let config = try load(#""even": {"prefix": "EVEN", "tasksPath": "even/docs/tasks"}"#)
+        XCTAssertNil(config.projects[0].skillSet)
+    }
+
+    func testSkillSetFromConfig() throws {
+        let config = try load(
+            #""even": {"prefix": "EVEN", "tasksPath": "even/docs/tasks", "skillSet": "swift"}"#)
+        XCTAssertEqual(config.projects[0].skillSet, "swift")
+    }
+
+    /// Ein leerer Eintrag ist keiner — der Einstellungs-Editor legt Felder gern an und lässt sie
+    /// leer stehen; das darf nicht wie ein nicht auffindbares Set aussehen.
+    func testEmptySkillSetCountsAsUnset() throws {
+        let config = try load(
+            #""even": {"prefix": "EVEN", "tasksPath": "even/docs/tasks", "skillSet": "  "}"#)
+        XCTAssertNil(config.projects[0].skillSet)
     }
 
     /// HERMES-034: eigener repoDir entkoppelt das Repo vom Tasks-Pfad — relativ zum Basis-Pfad …

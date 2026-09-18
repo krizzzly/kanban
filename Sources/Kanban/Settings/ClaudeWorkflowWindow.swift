@@ -1,14 +1,15 @@
 import AppKit
 import SwiftUI
 
-/// Präsentiert den Claude-Workflow-Editor (Commands/Skills/Rules) als eigenständiges, zentriertes
-/// Fenster in Commit-Dialog-Grösse — der Markdown-Editor braucht Fläche, die ein Sheet am
-/// Board-Fenster nicht hergibt. Die übrigen Einstellungen bleiben bewusst ein Sheet.
+/// Präsentiert die Skill-Set-Übersicht als eigenständiges, zentriertes Fenster. Ein Sheet am
+/// Board-Fenster ginge auch — aber die Liste wird mit jedem Projekt länger, und sie steht oft
+/// neben dem Board offen, während man eine Verlinkung herstellt. Die übrigen Einstellungen bleiben
+/// bewusst ein Sheet.
 ///
-/// **Eines für die ganze App**, anders als der Commit-Dialog: Commands, Skills und Rules sind
-/// projektunabhängig — zwei Editoren auf denselben Dateien wären zwei Stände desselben Textes. Wer
-/// ihn aufmacht, merkt sich der Fensterbesitzer, damit ein zweites Board-Fenster ihn nach vorn holt,
-/// statt ihn dem ersten zuzuklappen.
+/// **Eines für die ganze App**, anders als der Commit-Dialog: Sets und ihre Verlinkung sind
+/// projektunabhängig — zwei Übersichten auf denselben Ordnern wären zwei Stände derselben Sache.
+/// Wer es aufgemacht hat, merkt sich der Besitzer, damit ein zweites Board-Fenster es nach vorn
+/// holt, statt es dem ersten zuzuklappen.
 @MainActor
 final class ClaudeWorkflowWindow {
     static let shared = ClaudeWorkflowWindow()
@@ -29,16 +30,16 @@ final class ClaudeWorkflowWindow {
         }
         besitzer = model
         let content = ClaudeWorkflowSettingsView()
-            .frame(minWidth: 1100, minHeight: 700)
+            .frame(minWidth: 620, minHeight: 420)
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 1920, height: 1060),
+            contentRect: NSRect(x: 0, y: 0, width: 860, height: 640),
             styleMask: [.titled, .closable, .resizable, .fullSizeContentView],
             backing: .buffered, defer: false)
-        window.title = "Claude-Workflow"
+        window.title = "Skill-Sets"
         window.titlebarAppearsTransparent = true
         window.isReleasedWhenClosed = false
         window.contentView = NSHostingView(rootView: content)
-        window.minSize = NSSize(width: 1100, height: 700)
+        window.minSize = NSSize(width: 620, height: 420)
         window.center()
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)

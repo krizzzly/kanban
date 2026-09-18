@@ -76,7 +76,7 @@ final class TicketRoutingTests: XCTestCase {
     private func projekt(_ key: String, _ prefix: String) -> ProjectConfig {
         ProjectConfig(key: key, prefix: prefix, jiraBaseUrl: "https://example.atlassian.net",
                       tasksPathAbsolute: "/tmp/\(key)", repoDir: "/tmp/repo/\(key)",
-                      gitlabProjectPath: nil)
+                      forge: nil)
     }
 
     private lazy var projekte = [projekt("even", "EVEN"), projekt("bfezvm", "BFEZVM"),

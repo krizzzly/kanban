@@ -161,8 +161,22 @@ final class SettingsModel {
         ProjectProjection.importing(from: document?.root ?? .object([:]))
     }
 
+    /// Der Vorschlag — und als erste Quelle der `origin`-Remote des Repos, das unter dem Basis-Pfad
+    /// vielleicht schon liegt: er **sagt**, auf welcher Forge das Projekt liegt, während die Muster
+    /// der Nachbarprojekte es nur raten. Liegt dort noch nichts, bleibt der bisherige Weg.
     func projectSuggestion(for key: String) -> ProjectRecord {
-        ProjectSuggestion.record(for: key, from: document?.root ?? .object([:]))
+        let root = document?.root ?? .object([:])
+        let origin = candidateRepoDir(for: key).flatMap(ProjectSuggestion.originURL(repoDir:))
+        return ProjectSuggestion.record(for: key, from: root, originURL: origin)
+    }
+
+    /// Wo das Repo läge, wenn es der Konvention folgt: `<basePath>/<key>` — dieselbe Ableitung, die
+    /// `KanbanConfig` ohne `repoDir`-Override benutzt.
+    private func candidateRepoDir(for key: String) -> String? {
+        let trimmed = key.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return nil }
+        let base = document?.root.value(at: ["basePath"])?.stringValue ?? "~/code"
+        return ((base as NSString).expandingTildeInPath as NSString).appendingPathComponent(trimmed)
     }
 
     func isProjectKeyTaken(_ key: String) -> Bool {
@@ -174,7 +188,12 @@ final class SettingsModel {
     func createProject(key: String, record: ProjectRecord) {
         let trimmed = key.trimmingCharacters(in: .whitespaces)
         guard !trimmed.isEmpty, !record.isEmpty else { return }
-        mutate { $0 = ProjectProjection.apply(record, key: trimmed, to: $0) }
+        mutate {
+            $0 = ProjectProjection.apply(record, key: trimmed, to: $0)
+            // Getrennter Aufruf, weil es getrennte Ziele sind: `apply` läuft auch gegen Hermes'
+            // Config, die Kanban-eigenen Sections (`modules.docker`) gehören nur hierher.
+            $0 = ProjectProjection.applyKanbanOnly(record, key: trimmed, to: $0)
+        }
     }
 
     /// Entfernt ein Projekt aus allen Sections auf einmal — samt seinem Kopfzeilen-Bild, das sonst

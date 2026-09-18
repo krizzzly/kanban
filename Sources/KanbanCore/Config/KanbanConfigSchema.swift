@@ -3,19 +3,27 @@ import Foundation
 /// Declarative schema of `~/Library/Application Support/Kanban/config.json` — the single source of
 /// truth the settings UI renders from (`ConfigFieldSpec` & co. live in `ConfigSchema.swift`).
 ///
-/// Die zwei Module, die Kanban selbst betreibt (Jira, GitLab) — plus **Confluence**, das keins ist:
-/// dort steht nur, wo die exportierten Seiten liegen und zu welchem Space sie gehören. Geholt werden
-/// sie von Hermes' `generate-confluence-page`, und genau dieser Eintrag sagt ihm, wohin.
+/// Die Module, die Kanban selbst betreibt (Jira, GitLab, GitHub) — plus **Confluence**, das keins
+/// ist: dort steht nur, wo die exportierten Seiten liegen und zu welchem Space sie gehören. Geholt
+/// werden sie von Hermes' `generate-confluence-page`, und genau dieser Eintrag sagt ihm, wohin.
 /// Wer weitere Hermes-Module pflegen will, tut das in Hermes.
 public enum KanbanConfigSchema {
-    public static let sections: [ConfigSectionSpec] = [general, jira, gitlab, confluence,
-                                                       knowledgebase, appearance, watchdog, hermes]
+    /// Berechnet statt konstant: die Auswahlliste der Skill-Sets steht nicht im Code, sondern im
+    /// gepflegten Sets-Ordner. Sie wird bei jedem Öffnen der Einstellungen neu gelesen — ein Set,
+    /// das im Repo dazukommt, taucht damit ohne Codeänderung im Auswahlfeld auf.
+    public static var sections: [ConfigSectionSpec] {
+        [general, jira, gitlab, github, confluence, knowledgebase, docker, appearance, watchdog,
+         hermes]
+    }
+
+    /// Die Namen der vorhandenen Sets — leer, solange der Sets-Ordner keins hergibt.
+    static var skillSetNames: [String] { ClaudeAssetStore.configured().sets().map(\.name) }
 
     /// Nur sinnvoll, solange eine `~/.hermes/config.json` existiert — die Einstellungen blenden die
     /// Sektion sonst aus (`HermesSync.isAvailable`).
     public static let hermesSectionID = "hermes"
 
-    static let general = ConfigSectionSpec(
+    static var general: ConfigSectionSpec { ConfigSectionSpec(
         id: "general", title: "Allgemein", icon: "gearshape",
         fields: [
             ConfigFieldSpec(["basePath"], "Basis-Pfad", kind: .path, placeholder: "~/code",
@@ -29,9 +37,23 @@ public enum KanbanConfigSchema {
                                 + "auf; wo nicht, stünde sie sonst in jedem Commit. Der Haken setzt "
                                 + "sie im Commit-Fenster nur **vorab** ab — abwählen lässt sich "
                                 + "dort jede Datei, und dazuwählen auch diese."),
-        ])
+            ConfigFieldSpec(["claude", "setsPath"], "Skill-Sets-Ordner", kind: .path,
+                            placeholder: "kanban/\(ClaudeAssetStore.repoRelativeSetsPath)",
+                            help: "Wo die Skill-Sets **gepflegt** werden; genau diese Ordner werden "
+                                + "in die Projekte verlinkt — es gibt keine Kopie. Eine Änderung an "
+                                + "einem SKILL.md wirkt damit sofort in jedem Projekt. Absolut, ~ "
+                                + "oder relativ zum Basis-Pfad. Leer = das Kanban-Repo unter dem "
+                                + "Basis-Pfad."),
+            // Steht hier und nicht bei Jira: das Set gilt für die ganze App, auch für eine
+            // Console ausserhalb eines Projekts (dorthin wird es in die Agent-Homes verlinkt).
+            ConfigFieldSpec(["claude", "defaultSkillSet"], "Standard-Skill-Set",
+                            kind: .choice(skillSetNames),
+                            help: "Das Skill-Set für jedes Projekt, das keins eigenes wählt — und "
+                                + "für Sitzungen ausserhalb eines Projekts (~/.claude/skills, "
+                                + "~/.codex/skills). Leer = das einzige vorhandene Set."),
+        ]) }
 
-    static let jira = ConfigSectionSpec(
+    static var jira: ConfigSectionSpec { ConfigSectionSpec(
         id: "jira", title: "Jira", icon: "checklist",
         intro: "Pflichtteil: ohne Jira-Zugang und mindestens ein Projekt zeigt das Board nichts an.",
         fields: [
@@ -53,7 +75,7 @@ public enum KanbanConfigSchema {
                                  required: false,
                                  help: "Aus = Projekt ohne Jira: kein Board, keine Sprints, keine "
                                      + "Worklog-Buchung. Das Board läuft dann nur im freien Modus "
-                                     + "aus Task-Files, Worktrees und Merge Requests. Der "
+                                     + "aus Task-Files, Worktrees und Merge/Pull Requests. Der "
                                      + "Ticket-Präfix bleibt trotzdem nötig — er benennt Task-Files "
                                      + "und Branches, nicht die Jira-Anbindung."),
                 ProjectFieldSpec("prefix", "Ticket-Präfix", required: true, placeholder: "EVEN"),
@@ -74,12 +96,21 @@ public enum KanbanConfigSchema {
                                  help: "Wer die Console dieses Projekts bedient. Claude tippt "
                                      + "/command, Codex $skill — die Workflow-Assets sind für beide "
                                      + "dieselben. Leer = Claude."),
-            ]))
+                ProjectFieldSpec("skillSet", "Skill-Set",
+                                 kind: .choice(skillSetNames),
+                                 required: false,
+                                 help: "Welchen Satz Skills und Rules dieses Projekt sieht. Kanban "
+                                     + "verlinkt ihn beim Projektwechsel nach <repo>/.claude/ "
+                                     + "(bzw. .codex/ für die Skills eines Codex-Projekts). "
+                                     + "Leer = das Standard-Set aus den allgemeinen "
+                                     + "Einstellungen."),
+            ])) }
 
     static let gitlab = ConfigSectionSpec(
         id: "gitlab", title: "GitLab", icon: "arrow.triangle.branch",
         intro: "Optional — liefert die Spalten Review und Done. Gleicher Projekt-Key wie bei Jira → "
-             + "Zuordnung. Ohne GitLab bleibt das Board auf den lokalen Artefakten.",
+             + "Zuordnung. Liegt ein Projekt stattdessen auf GitHub, gehört es in den Abschnitt "
+             + "darunter; ohne beides bleibt das Board auf den lokalen Artefakten.",
         fields: [
             ConfigFieldSpec(["modules", "gitlab", "baseUrl"], "Base-URL", kind: .string,
                             placeholder: "https://git.firma.io", validation: .url),
@@ -92,6 +123,34 @@ public enum KanbanConfigSchema {
             keyPlaceholder: "even",
             fields: [
                 ProjectFieldSpec("path", "Projekt-Pfad", required: true, placeholder: "applications/even"),
+            ]))
+
+    /// Die zweite Forge. Gleicher Zuschnitt wie GitLab — was ein Projekt bekommt, hängt nicht davon
+    /// ab, wo sein Code liegt: Review- und Done-Spalte, PR-Badge, Branch-Links, Review-Skills.
+    static let github = ConfigSectionSpec(
+        id: "github", title: "GitHub", icon: "chevron.left.forwardslash.chevron.right",
+        intro: "Optional, und die Alternative zu GitLab — dieselben Spalten Review und Done, nur "
+             + "heisst ein Merge Request dort Pull Request. Gleicher Projekt-Key wie bei Jira → "
+             + "Zuordnung. Ein Projekt gehört zu **einer** Forge: steht derselbe Key auch unter "
+             + "GitLab, meldet Kanban das als Konfigurationsfehler, statt sich eine auszusuchen.",
+        fields: [
+            ConfigFieldSpec(["modules", "github", "baseUrl"], "API-Basis", kind: .string,
+                            placeholder: "https://api.github.com",
+                            help: "Leer = https://api.github.com. Für GitHub Enterprise die "
+                                + "API-Basis der Instanz eintragen (https://<host>/api/v3); "
+                                + "GraphQL und die Web-Adressen leitet Kanban daraus ab.",
+                            validation: .url),
+            ConfigFieldSpec(["modules", "github", "apiToken"], "API-Token", kind: .secret,
+                            help: "Personal Access Token (Settings → Developer settings) mit "
+                                + "Lesezugriff auf das Repo, Header Authorization: Bearer. Ein "
+                                + "klassisches Token braucht den Scope „repo“ — ohne ihn bleiben "
+                                + "die Thread-Zähler leer, weil sie über GraphQL kommen."),
+        ],
+        projectMap: ProjectMapSpec(
+            path: ["modules", "github", "projects"],
+            keyPlaceholder: "kanban",
+            fields: [
+                ProjectFieldSpec("path", "Repository", required: true, placeholder: "owner/repo"),
             ]))
 
     static let confluence = ConfigSectionSpec(
@@ -134,6 +193,42 @@ public enum KanbanConfigSchema {
                 ProjectFieldSpec("path", "Knowledgebase-Pfad", required: false,
                                  placeholder: "~/code/even-docs/kb",
                                  help: "Absolut, ~ oder relativ zum Basis-Pfad."),
+            ]))
+
+    /// Ob ein Projekt lokal als Docker-Stack läuft. Wie `knowledgebase` **kein Modul, das Kanban
+    /// betreibt** und auch keins, das Hermes kennt: eine Projekt-Eigenschaft, die Kanban an zwei
+    /// Stellen auswertet — in der eigenen Oberfläche und als `dockerStack` in
+    /// `<repo>/.claude/project.json`, woran die Skills verzweigen.
+    ///
+    /// Eigene Sektion statt eines Felds unter „Jira": der Schalter hat mit Jira nichts zu tun. Dass
+    /// er dieselbe **Form** hat wie `useJira` (ja/nein, Vorgabe ja, nur die Abschaltung wird
+    /// geschrieben) macht ihn noch nicht zu einer Jira-Einstellung.
+    static let docker = ConfigSectionSpec(
+        id: "docker", title: "Docker", icon: "shippingbox",
+        intro: "Optional — ob dieses Projekt einen eigenen Docker-Stack hat. Vorgabe ist **ja**: "
+             + "jedes bestehende Projekt bleibt unverändert eine Web-Applikation mit Stack, der "
+             + "Schlüssel wird nur geschrieben, wenn du ihn ausschaltest. Aus ist der Fall für "
+             + "Pakete und Skript-Repos (Kanban selbst ist eins) — sie haben keine .iwf.yml und "
+             + "sahen bisher falsch konfiguriert aus, obwohl alles stimmte.",
+        fields: [],
+        projectMap: ProjectMapSpec(
+            path: ["modules", "docker", "projects"],
+            keyPlaceholder: "even",
+            fields: [
+                ProjectFieldSpec("stack", "Docker-Stack", kind: .bool(defaultOn: true),
+                                 required: false,
+                                 help: "Aus = kein eigener Docker-Stack. Es entfallen die Reiter "
+                                     + "Maintree und Worktree, die Snapshots, „Stacks stoppen\" "
+                                     + "und jeder iwf-Aufruf; Worktrees werden als reine "
+                                     + "Git-Worktrees angelegt (git worktree add). Es bleiben: "
+                                     + "Worktrees, Branches, Task-Files, Commits und Merge "
+                                     + "Requests. Vorbelegt beim Anlegen anhand einer .iwf.yml im "
+                                     + "Repo — entschieden wird hier. Läuft gerade ein Stack "
+                                     + "dieses Projekts, bleibt er nach dem Abschalten laufen; er "
+                                     + "verschwindet nur aus der Oberfläche (stoppen z.B. mit "
+                                     + "iwf worktree stop <NR>). Teilen sich zwei Projekte ein "
+                                     + "Repo, gehört <repo>/.claude/project.json dem zuletzt "
+                                     + "gewählten — dann sollten beide hier gleich stehen."),
             ]))
 
     /// Woran man auf einen Blick sieht, in welchem Projekt man steht: ein Bild links in der

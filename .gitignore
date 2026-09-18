@@ -12,3 +12,7 @@ dist/
 *.d
 *.swiftdeps
 *.swiftdeps~
+
+# Kanban legt hier seine eigenen Projektwerte und die Symlinks des Skill-Sets ab —
+# generiert, nicht gepflegt (siehe ClaudeProjectFile und ClaudeAssetStore).
+.claude/

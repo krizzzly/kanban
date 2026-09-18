@@ -2,7 +2,8 @@ import SwiftUI
 import KanbanCore
 
 /// Kleines abgeleitetes Schaubild: jeder Worktree-Branch unter seinem Parent, bis hinunter zur
-/// langlebigen Basis (develop/main). Chips wie in der Link-Bar; Klick öffnet den Branch auf GitLab.
+/// langlebigen Basis (develop/main). Chips wie in der Link-Bar; Klick öffnet den Branch auf der
+/// Forge des Projekts.
 struct BranchStackPopover: View {
     @Bindable var model: AppModel
 
@@ -86,7 +87,7 @@ struct BranchStackPopover: View {
                 .foregroundStyle(tint)
         }
         .buttonStyle(.plain)
-        .help("Auf GitLab öffnen: \(node.name)")
+        .help("Auf \(model.forgeKind.label) öffnen: \(node.name)")
     }
 
     /// `feature/EVEN-3518_show_…` → `EVEN-3518_show_…` — das Präfix trägt im Schaubild nichts.
