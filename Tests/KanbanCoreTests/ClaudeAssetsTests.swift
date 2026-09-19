@@ -399,10 +399,37 @@ final class ClaudeAssetsTests: XCTestCase {
 
     /// Ohne Eintrag in der Config liegen die Sets in Kanbans eigenem Datenordner — **nicht** im
     /// Kanban-Repo: die Skills sind die Arbeit des Benutzers, nicht Teil der App.
+    /// Ohne Profil zeigen beide Vorgaben auf denselben Ordner.
+    ///
+    /// Die Wurzel wird dafür **festgelegt**: `KanbanPaths.root` liest sonst das *gerade aktive*
+    /// Profil dieser Maschine, und der Test wäre grün oder rot, je nachdem welches Fenster offen
+    /// ist. (Genau so war es: er kippte zwischen zwei Läufen ohne eine Zeile Codeänderung.)
     func testVorgabePfadIstKanbansDatenordner() {
+        let temp = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("Kanban-\(UUID().uuidString)", isDirectory: true)
+        KanbanPaths.setGlobalRoot(temp)
+        KanbanPaths.reset()
+        defer { KanbanPaths.setGlobalRoot(nil); KanbanPaths.reset() }
+
         XCTAssertEqual(ClaudeAssetStore.defaultSetsRoot(basePath: "/Users/x/code"),
                        ClaudeAssetStore.defaultLegacyRoot)
-        XCTAssertTrue(ClaudeAssetStore.defaultLegacyRoot.path.hasSuffix("Kanban/claude"))
+        XCTAssertEqual(ClaudeAssetStore.defaultLegacyRoot.path,
+                       temp.appendingPathComponent("claude").path)
+    }
+
+    /// Mit aktivem Profil trennen sich die beiden: die Sets liegen beim Profil, der Altbestand
+    /// global. Das ist der Unterschied, über den der Test oben früher gestolpert ist.
+    func testMitProfilTrenntSichSetsOrdnerVomAltbestand() {
+        let temp = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("Kanban-\(UUID().uuidString)", isDirectory: true)
+        KanbanPaths.setGlobalRoot(temp)
+        KanbanPaths.setRoot(temp.appendingPathComponent("profiles/privat", isDirectory: true))
+        defer { KanbanPaths.setGlobalRoot(nil); KanbanPaths.reset() }
+
+        XCTAssertEqual(ClaudeAssetStore.defaultSetsRoot(basePath: "/Users/x/code").path,
+                       temp.appendingPathComponent("profiles/privat/claude").path)
+        XCTAssertEqual(ClaudeAssetStore.defaultLegacyRoot.path,
+                       temp.appendingPathComponent("claude").path)
     }
 
     /// Ein einzeln registriertes Set darf überall liegen — es muss nicht im Sammelordner stehen.
