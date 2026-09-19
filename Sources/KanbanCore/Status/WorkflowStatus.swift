@@ -23,7 +23,9 @@ public struct WorkflowResolution: Sendable, Hashable {
 ///   4. marker column   — task-file marker decides the *work* stage: 🔴 Offen → Offen ·
 ///                        🟡 In Arbeit / 🟢 Abgeschlossen → In Bearbeitung · 🔵 Review → Review.
 ///                        ("Abgeschlossen" = Claude finished implementing; stays In Bearbeitung —
-///                        it is NOT the final Done.)
+///                        it is NOT the final Done.) **⏸️ Hold has no column** (`marker.column` is
+///                        nil) and falls through to the artifact rules below: a pause says the work
+///                        rests, not how far it got.
 ///   5. In Bearbeitung  — no marker but a matching worktree exists (work has started)
 ///   6. Offen           — no marker but a task file exists
 ///   7. In Bearbeitung  — nichts davon, aber ein **offener MR**: daran wird gearbeitet. Trägt die
@@ -80,9 +82,11 @@ public enum WorkflowStatus {
             column = .done                   // ✅ user-set final Done wins over an open MR
         } else if !review.isEmpty {
             column = .review                 // a non-draft opened MR
-        } else if let marker = statusMarker, !(reopened && marker == .done) {
-            column = marker.column           // 🔴 Offen · 🟡/🟢 In Bearbeitung · 🔵 Review
-                                             // (das veraltete ✅ wird beim Wiederaufmachen übergangen)
+        } else if let marker = statusMarker, !(reopened && marker == .done),
+                  let markerColumn = marker.column {
+            column = markerColumn            // 🔴 Offen · 🟡/🟢 In Bearbeitung · 🔵 Review
+                                             // (das veraltete ✅ wird beim Wiederaufmachen übergangen;
+                                             //  ⏸️ Hold hat keine Spalte → fällt auf die Artefakte durch)
         } else if worktree != nil {
             column = .inBearbeitung          // work has started (a worktree exists)
         } else if hasTaskFile {
@@ -128,6 +132,11 @@ public enum WorkflowStatus {
     /// Whether the persisted task-file `### Status` marker should be auto-advanced to ✅ Done: the
     /// ticket is Erledigt/Geschlossen in Jira (statusCategory "done") and has a task file whose
     /// marker isn't already ✅ Done. Pure — the caller performs the actual write.
+    ///
+    /// **⏸️ Hold is overwritten here** — deliberately, and unlike in `shouldAutoSetReview`. Jira
+    /// closing the ticket is a statement from outside that there is nothing left to pause; the same
+    /// reason the derivation puts Done ahead of the marker. "In review" is the opposite: one pauses
+    /// *because* of a question on the MR, so a pause outranks it there.
     public static func shouldAutoSetDone(hasTaskFile: Bool,
                                          currentMarker: TaskStatusMarker?,
                                          jiraDone: Bool) -> Bool {
@@ -142,12 +151,17 @@ public enum WorkflowStatus {
     /// das ✅ nachweislich veraltet (Jira führt das Ticket als nicht erledigt, ein neuerer MR ist
     /// offen), und der alte gemergte MR gehört zur vorigen Runde. Sonst bliebe der Marker für immer
     /// auf ✅ stehen — er ist der Grund, warum die Karte in Done klebte.
+    ///
+    /// **⏸️ Hold sperrt unbedingt**, noch vor dieser Ausnahme: ein Hold ist nie veraltet, sondern die
+    /// aktuelle Absicht eines Menschen, und der Normalfall einer Pause *ist* ein offener MR, auf
+    /// dessen Rückfrage man wartet. Ohne die Sperre schriebe der nächste Board-Refresh 🔵 in die
+    /// Datei — der Status hielte keine fünf Minuten.
     public static func shouldAutoSetReview(ticketKey: String,
                                            hasTaskFile: Bool,
                                            currentMarker: TaskStatusMarker?,
                                            mergeRequests: [MergeRequestRef],
                                            jiraState: JiraDoneState = .unknown) -> Bool {
-        guard hasTaskFile, currentMarker != .review else { return false }
+        guard hasTaskFile, currentMarker != .review, currentMarker != .hold else { return false }
         let matching = mergeRequests.filter {
             TicketMatching.references($0.sourceBranch, ticketKey: ticketKey)
                 || TicketMatching.references($0.title, ticketKey: ticketKey)

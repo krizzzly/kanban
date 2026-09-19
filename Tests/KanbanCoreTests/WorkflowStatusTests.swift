@@ -467,6 +467,119 @@ final class WorkflowStatusTests: XCTestCase {
                                        worktree: worktree, mergeRequests: mrs)
         XCTAssertEqual(r.column, .review)
     }
+
+    // MARK: - Hold (⏸️)
+
+    /// Hold pinnt keine Spalte: mit Worktree steht die Karte da, wo die Arbeit steht.
+    func testHoldWithWorktreeStaysInBearbeitung() {
+        let r = WorkflowStatus.resolve(
+            ticketKey: "EVEN-1", hasTaskFile: true, statusMarker: .hold,
+            worktree: worktree, mergeRequests: [])
+        XCTAssertEqual(r.column, .inBearbeitung)
+    }
+
+    /// Ohne Worktree und ohne MR bleibt nur das Task-File — also Offen, nicht „In Bearbeitung".
+    func testHoldWithOnlyATaskFileFallsToOffen() {
+        let r = WorkflowStatus.resolve(
+            ticketKey: "EVEN-1", hasTaskFile: true, statusMarker: .hold,
+            worktree: nil, mergeRequests: [])
+        XCTAssertEqual(r.column, .offen)
+    }
+
+    /// Der Normalfall einer Pause: man wartet auf eine Rückfrage am offenen MR. Die Karte gehört
+    /// weiterhin nach Review — pausiert ist der Mensch, nicht der Merge Request.
+    func testHoldWithAnOpenedReviewReadyMRStillReviews() {
+        let r = WorkflowStatus.resolve(
+            ticketKey: "EVEN-1", hasTaskFile: true, statusMarker: .hold,
+            worktree: worktree, mergeRequests: [mr(7, "opened", branch: "feature/EVEN-1_thing")])
+        XCTAssertEqual(r.column, .review)
+    }
+
+    /// Ein Draft ist nicht review-reif — die Karte bleibt in ihrer Arbeitsspalte, wie bei jedem
+    /// anderen Marker auch.
+    func testHoldWithADraftMRKeepsTheWorkColumn() {
+        let r = WorkflowStatus.resolve(
+            ticketKey: "EVEN-1", hasTaskFile: true, statusMarker: .hold, worktree: worktree,
+            mergeRequests: [mr(7, "opened", branch: "feature/EVEN-1_thing", draft: true)])
+        XCTAssertEqual(r.column, .inBearbeitung)
+        XCTAssertTrue(r.badges.contains(.mergeRequest(iid: 7, draft: true)))
+    }
+
+    /// Was gemergt ist, ist nicht mehr pausiert: Done sticht den Marker, wie überall.
+    func testMergedMRWinsOverHold() {
+        let r = WorkflowStatus.resolve(
+            ticketKey: "EVEN-1", hasTaskFile: true, statusMarker: .hold,
+            worktree: worktree, mergeRequests: [mr(42, "merged", branch: "feature/EVEN-1_thing")])
+        XCTAssertEqual(r.column, .done)
+    }
+
+    /// Dasselbe von der anderen Seite: Jira führt das Ticket als erledigt.
+    func testJiraDoneWinsOverHold() {
+        let r = WorkflowStatus.resolve(
+            ticketKey: "EVEN-1", hasTaskFile: true, statusMarker: .hold,
+            worktree: worktree, mergeRequests: [], jiraState: .done)
+        XCTAssertEqual(r.column, .done)
+    }
+
+    /// **Der Kern des Status:** ein offener, review-reifer MR schreibt Hold nicht auf 🔵 zurück.
+    /// Ohne diese Sperre hielte die Pause bis zum nächsten Board-Refresh.
+    func testHoldIsNotAutoAdvancedToReview() {
+        XCTAssertFalse(WorkflowStatus.shouldAutoSetReview(
+            ticketKey: "EVEN-1", hasTaskFile: true, currentMarker: .hold,
+            mergeRequests: [mr(7, "opened", branch: "feature/EVEN-1_x")]))
+    }
+
+    /// Gegenprobe: unter genau denselben Bedingungen wird 🟡 weiterhin nachgeführt — die Sperre gilt
+    /// dem Hold, nicht der Automatik.
+    func testInArbeitIsStillAutoAdvancedToReview() {
+        XCTAssertTrue(WorkflowStatus.shouldAutoSetReview(
+            ticketKey: "EVEN-1", hasTaskFile: true, currentMarker: .inArbeit,
+            mergeRequests: [mr(7, "opened", branch: "feature/EVEN-1_x")]))
+    }
+
+    /// Ein „wieder aufgemachtes" Ticket hebt ein veraltetes ✅ auf — ein Hold ist aber nie veraltet,
+    /// sondern die aktuelle Absicht eines Menschen. Deshalb sperrt er auch hier.
+    func testHoldSurvivesAReopenedTicket() {
+        let mrs = [mr(1124, "merged", branch: "feature/EVEN-1_first_round"),
+                   mr(1141, "opened", branch: "feature/EVEN-1_second_round")]
+        XCTAssertFalse(WorkflowStatus.shouldAutoSetReview(
+            ticketKey: "EVEN-1", hasTaskFile: true, currentMarker: .hold,
+            mergeRequests: mrs, jiraState: .notDone))
+        // Gegenprobe: dasselbe veraltete ✅ wird sehr wohl zurückgesetzt.
+        XCTAssertTrue(WorkflowStatus.shouldAutoSetReview(
+            ticketKey: "EVEN-1", hasTaskFile: true, currentMarker: .done,
+            mergeRequests: mrs, jiraState: .notDone))
+    }
+
+    /// Die Asymmetrie, ausdrücklich festgehalten: „in Jira erledigt" sticht Hold und schreibt ✅.
+    /// Sie ist eine Entscheidung, kein Versehen — siehe `shouldAutoSetDone`.
+    func testJiraDoneOverwritesTheHoldMarker() {
+        XCTAssertTrue(WorkflowStatus.shouldAutoSetDone(
+            hasTaskFile: true, currentMarker: .hold, jiraDone: true))
+    }
+
+    /// Freier Modus (`usesJira: false`, wie das Kanban-Projekt selbst): ohne Jira-Auskunft ist
+    /// `JiraDoneState` `.unknown` — das darf nicht als „nicht erledigt" gelesen werden, und beide
+    /// Automatiken lassen den Hold in Ruhe.
+    func testHoldIsUntouchedWithoutJiraInformation() {
+        let r = WorkflowStatus.resolve(
+            ticketKey: "EVEN-1", hasTaskFile: true, statusMarker: .hold,
+            worktree: worktree, mergeRequests: [mr(7, "opened", branch: "feature/EVEN-1_thing", draft: true)])
+        XCTAssertEqual(r.column, .inBearbeitung)
+        XCTAssertFalse(WorkflowStatus.shouldAutoSetReview(
+            ticketKey: "EVEN-1", hasTaskFile: true, currentMarker: .hold,
+            mergeRequests: [mr(7, "opened", branch: "feature/EVEN-1_thing")]))
+        XCTAssertFalse(WorkflowStatus.shouldAutoSetDone(
+            hasTaskFile: true, currentMarker: .hold, jiraDone: false))
+    }
+
+    /// Nur `hold` hat keine Spalte — die fünf Pipeline-Status behalten ihre.
+    func testOnlyHoldHasNoColumn() {
+        XCTAssertNil(TaskStatusMarker.hold.column)
+        for marker in TaskStatusMarker.allCases where marker != .hold {
+            XCTAssertNotNil(marker.column, "\(marker) muss eine Spalte behalten")
+        }
+    }
 }
 
 final class TaskFileParsingTests: XCTestCase {
@@ -514,6 +627,62 @@ final class TaskFileParsingTests: XCTestCase {
         XCTAssertTrue(out.contains("### Status\n🔵 Review"))
         let tf = TaskFileLoader.parse(content: out, url: URL(fileURLWithPath: "/x/EVEN-1.md"))
         XCTAssertEqual(tf.statusMarker, .review)
+    }
+
+    // MARK: - Hold (⏸️) in der Status-Zeile
+
+    func testSettingAndParsingTheHoldStatus() {
+        let content = """
+        # EVEN-1 | Title
+
+        ### Status
+        🟡 In Arbeit
+
+        ## Beschreibung
+        x
+        """
+        let held = TaskFileLoader.settingStatus(.hold, in: content)
+        XCTAssertTrue(held.contains("### Status\n⏸️ Hold\n"))
+        XCTAssertFalse(held.contains("🟡"))                       // ersetzt, nicht verdoppelt
+        XCTAssertTrue(held.contains("## Beschreibung"))           // Rest bleibt stehen
+        XCTAssertEqual(TaskFileLoader.parse(content: held,
+                                            url: URL(fileURLWithPath: "/x/EVEN-1.md")).statusMarker, .hold)
+
+        // Und wieder zurück: die Pause ist kein Einbahnweg.
+        let resumed = TaskFileLoader.settingStatus(.inArbeit, in: held)
+        XCTAssertTrue(resumed.contains("### Status\n🟡 In Arbeit\n"))
+        XCTAssertFalse(resumed.unicodeScalars.contains("\u{23F8}"))
+    }
+
+    /// ⏸️ ist U+23F8 **plus** Variation Selector U+FE0F; Swift vergleicht Graphem-Cluster, also ist
+    /// `"⏸️ Hold".contains("⏸")` false. Eine von Hand getippte Zeile ohne Selector muss trotzdem als
+    /// Hold gelten — sonst läse sich die Datei stillschweigend als „gar kein Status".
+    func testHoldIsRecognisedWithAndWithoutTheVariationSelector() {
+        let bare = "# EVEN-1 | Title\n\n### Status\n\u{23F8} Hold\n\n## Beschreibung\nx"
+        XCTAssertFalse(bare.contains("⏸️"))                        // die Messung, auf der die Regel steht
+        XCTAssertEqual(TaskFileLoader.parse(content: bare,
+                                            url: URL(fileURLWithPath: "/x/EVEN-1.md")).statusMarker, .hold)
+
+        // Und die Zeile wird ersetzt, nicht eine zweite darübergesetzt.
+        let out = TaskFileLoader.settingStatus(.review, in: bare)
+        XCTAssertTrue(out.contains("### Status\n🔵 Review\n"))
+        XCTAssertFalse(out.unicodeScalars.contains("\u{23F8}"))
+    }
+
+    /// Erster Treffer gewinnt, und Hold steht zuoberst: eine Zeile, die den Wechsel beschreibt,
+    /// meint den Status, in den gewechselt wurde.
+    func testHoldWinsOnALineThatNamesTwoMarkers() {
+        let content = "# EVEN-1 | Title\n\n### Status\n🟡 → ⏸️ Hold (wartet auf Rückfrage)\n"
+        XCTAssertEqual(TaskFileLoader.parse(content: content,
+                                            url: URL(fileURLWithPath: "/x/EVEN-1.md")).statusMarker, .hold)
+    }
+
+    /// Das Wort „Hold" im Fliesstext ist kein Marker — gesucht werden Emojis, und zuerst im
+    /// `### Status`-Block.
+    func testTheWordHoldInProseIsNotAMarker() {
+        let content = "# EVEN-1 | Title\n\n### Status\n🟡 In Arbeit\n\n## Analyse\nHold bedeutet pausiert.\n"
+        XCTAssertEqual(TaskFileLoader.parse(content: content,
+                                            url: URL(fileURLWithPath: "/x/EVEN-1.md")).statusMarker, .inArbeit)
     }
 
     func testReviewFileExcludedFromFindButFoundSeparately() throws {

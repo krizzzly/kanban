@@ -98,8 +98,12 @@ struct TicketCard: View {
 }
 
 /// Claude's task-file status as a small coloured dot, tinted with the **status's own colour** (its
-/// 🔴🟡🟢🔵 emoji), independent of the card's board column. ✅ Done renders as a check so it reads
-/// apart from 🟢 Abgeschlossen; a faint hollow ring means "no status yet".
+/// 🔴🟡🟢🔵 emoji), independent of the card's board column. A faint hollow ring means "no status yet".
+///
+/// Two states draw a glyph instead of a dot, both because a plain circle would be ambiguous there:
+/// ✅ Done a check, so it reads apart from 🟢 Abgeschlossen; ⏸️ Hold a pause, so it reads apart from
+/// the hollow "no status" ring — grey fill against a faint grey outline is a difference of one shade
+/// at 8 pt, and "paused" and "never touched" are the two things this status exists to separate.
 struct StatusDot: View {
     let marker: TaskStatusMarker?
 
@@ -115,6 +119,10 @@ struct StatusDot: View {
             Image(systemName: "checkmark.circle.fill")
                 .font(.system(size: 10, weight: .bold))
                 .foregroundStyle(TaskStatusMarker.done.statusColor)
+        } else if marker == .hold {
+            Image(systemName: "pause.circle.fill")
+                .font(.system(size: 10, weight: .bold))
+                .foregroundStyle(TaskStatusMarker.hold.statusColor)
         } else {
             Circle()
                 .fill(marker?.statusColor ?? .clear)
@@ -134,6 +142,7 @@ extension TaskStatusMarker {
         case .abgeschlossen: return .green
         case .review: return .blue
         case .done: return .green
+        case .hold: return .gray
         }
     }
 }

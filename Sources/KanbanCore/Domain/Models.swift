@@ -193,17 +193,23 @@ public struct Worktree: Sendable, Hashable {
     }
 }
 
-/// The `### Status` marker parsed out of a task file. Ordered as the workflow pipeline
-/// (Offen → In Arbeit → Abgeschlossen → Review → Done); `allCases` drives the status menu.
+/// The `### Status` marker parsed out of a task file. The first five are the workflow pipeline
+/// (Offen → In Arbeit → Abgeschlossen → Review → Done); `hold` sits **across** it and comes last.
+/// `allCases` drives the status menu, so the menu reads the same way.
 ///
 /// Note: `abgeschlossen` (🟢) is Claude's "finished implementing" state and maps to **In Bearbeitung**
 /// — it is NOT the final `done` (✅), which the user sets after review and maps to the Done column.
+///
+/// `hold` (⏸️) says the work is deliberately paused — waiting on an answer, a decision, another
+/// ticket. It describes *why nothing moves*, not how far the work is, and therefore claims no column
+/// of its own (see `column`).
 public enum TaskStatusMarker: String, Sendable, CaseIterable {
     case offen          // 🔴
     case inArbeit       // 🟡
     case abgeschlossen  // 🟢  (Claude done implementing → still In Bearbeitung)
     case review         // 🔵
     case done           // ✅  (final, user-set → Done)
+    case hold           // ⏸️  (deliberately paused — no column of its own)
 
     public var emoji: String {
         switch self {
@@ -212,6 +218,7 @@ public enum TaskStatusMarker: String, Sendable, CaseIterable {
         case .abgeschlossen: return "🟢"
         case .review: return "🔵"
         case .done: return "✅"
+        case .hold: return "⏸️"
         }
     }
 
@@ -223,17 +230,25 @@ public enum TaskStatusMarker: String, Sendable, CaseIterable {
         case .abgeschlossen: return "Abgeschlossen"
         case .review: return "Review"
         case .done: return "Done"
+        case .hold: return "Hold"
         }
     }
 
-    /// The board column this marker represents (independent of MR state). Used for the column
-    /// derivation and to colour the card's status dot with the matching column accent.
-    public var column: KanbanColumn {
+    /// The board column this marker pins the card to (independent of MR state), read by the column
+    /// derivation in `WorkflowStatus.resolve`.
+    ///
+    /// **nil for `hold`**, and that is the point: a pause says nothing about how far the work is, so
+    /// it pins nothing. The derivation falls through to the artifact rules below the marker — a
+    /// merged MR still means Done, an open review-ready MR still means Review, a worktree still means
+    /// In Bearbeitung, a bare task file still means Offen. The card stays where the work actually is
+    /// and the grey dot says it rests.
+    public var column: KanbanColumn? {
         switch self {
         case .offen: return .offen
         case .inArbeit, .abgeschlossen: return .inBearbeitung
         case .review: return .review
         case .done: return .done
+        case .hold: return nil
         }
     }
 }

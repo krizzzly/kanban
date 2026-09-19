@@ -308,7 +308,18 @@ public enum TaskFileLoader {
         return lines.lazy.compactMap { marker(in: $0) }.first
     }
 
+    /// The marker a status line carries. First match wins, so the order is part of the contract:
+    /// `hold` is checked first because a line naming two markers ("🟡 → ⏸️") describes a ticket being
+    /// paused — the pause must not be swallowed by the emoji it replaces.
+    ///
+    /// ⏸️ is matched **by its base scalar** (U+23F8), not as a string. It is the only marker with an
+    /// emoji-presentation variation selector (U+23F8 U+FE0F), and Swift compares grapheme clusters:
+    /// `"⏸️ Hold".contains("⏸")` is `false`. A hand-typed or copied ⏸ without the selector would
+    /// otherwise read as "no status at all" — silently, since an unparsed marker is indistinguishable
+    /// from a task file that never had one. Written back is always the presentation form (`emoji`),
+    /// so files this app writes stay uniform.
     private static func marker(in line: String) -> TaskStatusMarker? {
+        if line.unicodeScalars.contains("\u{23F8}") { return .hold }
         if line.contains("🟡") { return .inArbeit }
         if line.contains("🔵") { return .review }
         if line.contains("🟢") { return .abgeschlossen }

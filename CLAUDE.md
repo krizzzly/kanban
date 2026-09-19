@@ -114,6 +114,7 @@ Precedence (top-down, first match wins):
 | 1 | Done | merged MR for `<TICKET>` exists | GitLab `merge_requests?state=merged` |
 | 2 | Review | **non-draft** opened MR for `<TICKET>` exists | GitLab `merge_requests?state=opened` |
 | 3 | In Bearbeitung | task-file `### Status` = 🟡 In Arbeit | task-file marker |
+| — | (keine) | task-file `### Status` = ⏸️ Hold — **pinnt nichts**, fällt durch | task-file marker |
 | 4 | Offen | task-file `<TICKET>*.md` exists OR worktree branch `*<TICKET>*` exists | local FS + `git worktree` |
 | 5 | In Bearbeitung | nichts davon, aber ein **offener MR** | GitLab `merge_requests?state=opened` |
 | 6 | Offen | lokal noch nichts, aber das Ticket ist **mir zugewiesen** | Jira `assignee.accountId` == `/myself` |
@@ -128,6 +129,49 @@ von 32 Sprint-Tickets in bfezvm, fast alle in Done). Verglichen wird die **`acco
 Anzeigename: der ist nicht eindeutig und je Instanz anders geschrieben. `/myself` wird je Instanz
 einmal geholt und gemerkt (derselbe Cache, den die `solve-task`-Nachführung benutzt); bleibt die
 Auskunft aus, ist eben kein Ticket „meins" und die Ableitung bleibt, wie sie war.
+
+### Pausiert: der Status ⏸️ Hold (`TaskStatusMarker.hold`)
+
+Die fünf gewachsenen Status beschreiben alle dasselbe: wie weit die Arbeit ist
+(🔴 Offen → 🟡 In Arbeit → 🟢 Abgeschlossen → 🔵 Review → ✅ Done). **Hold** beschreibt etwas
+anderes — dass sie absichtlich **nicht** weitergeht: man wartet auf eine Antwort, eine Entscheidung,
+ein anderes Ticket. Vorher musste man dafür einen der anderen missbrauchen: 🔴 lässt das Ticket
+unangefasst aussehen, 🟡 so, als liefe es gerade.
+
+- **Hold ist orthogonal zur Spalte** — `column` ist deshalb `KanbanColumn?` und für `.hold` **nil**.
+  Die Ableitung fällt auf die Artefakt-Regeln unter dem Marker durch: gemergter MR → Done, offener
+  review-reifer MR → Review, Worktree → In Bearbeitung, nur Task-File → Offen. Die Karte steht, wo
+  die Arbeit wirklich steht, und der graue Punkt sagt, dass sie ruht. Jede feste Zuordnung wäre eine
+  Behauptung gewesen: „Offen" stimmt nicht (es wurde ja angefangen), „In Bearbeitung" auch nicht
+  (es läuft ja gerade nichts). Preis: Hold *pinnt* nicht mehr, die Karte kann sich beim Pausieren
+  also bewegen — ein 🟡-Ticket ohne Worktree rutscht nach Offen (am Bestand gemessen: 31 von 33
+  🟡-Files haben keinen lebenden Worktree). Ohne Worktree und ohne MR ist „Offen" die ehrlichere
+  Auskunft. Eine **eigene Spalte** „Hold" gibt es aus demselben Grund nicht: die Spalten beschreiben
+  einen Fortschritt, und die Karte stünde dann nicht mehr dort, wo ihre Arbeit ist.
+- **Die eine Automatik, die Hold aushebeln würde, nimmt ihn aus.** `shouldAutoSetReview` schreibt den
+  Marker auf 🔵, sobald ein nicht-Draft-MR offen ist — und genau das ist der Normalfall einer Pause
+  (man wartet auf eine Rückfrage am MR). Ohne die Sperre hielte Hold nicht bis zum nächsten Refresh.
+  Sie steht **vor** der Reopened-Ausnahme: ein veraltetes ✅ darf zurückgesetzt werden, ein Hold ist
+  nie veraltet, sondern die aktuelle Absicht eines Menschen.
+- **`shouldAutoSetDone` nimmt ihn bewusst *nicht* aus.** Meldet Jira „Erledigt/Geschlossen", wird ✅
+  geschrieben, auch über ein Hold. Das ist eine Aussage von aussen, dass es nichts mehr zu pausieren
+  gibt — dieselbe Begründung, aus der Done in der Ableitung vor dem Marker steht. Die Asymmetrie
+  steht im Doc-Kommentar beider Funktionen, damit sie später nicht als Versehen „aufgeräumt" wird.
+- **⏸️ wird skalarweise erkannt** (`TaskFile.marker(in:)`: `line.unicodeScalars.contains("\u{23F8}")`).
+  Gemessen, nicht angenommen: ⏸️ ist U+23F8 **plus** Variation Selector U+FE0F (U+23F8 hat
+  `Emoji_Presentation=No` und braucht ihn), Swift vergleicht Graphem-Cluster — `"⏸️ Hold".contains("⏸")`
+  ist **false**. Die fünf bestehenden Marker sind je ein einzelner Skalar ohne Selector, dort trägt
+  `contains`. Ein von Hand getipptes ⏸ ohne Selector wäre sonst „gar kein Status" gewesen, und zwar
+  lautlos: ein ungelesener Marker ist von einer Datei ohne Marker nicht zu unterscheiden. Geschrieben
+  wird immer die Präsentationsform.
+- **Die Prüfung steht zuoberst** in `marker(in:)` (erster Treffer gewinnt): eine Zeile, die zwei
+  Marker nennt („🟡 → ⏸️"), beschreibt ein Ticket, das gerade pausiert wird — die Pause darf nicht
+  von dem Emoji verschluckt werden, das sie ablöst.
+- **Auf der Karte** zeichnet `StatusDot` Hold als graues ⏸-Glyph statt als Punkt, aus demselben Grund,
+  aus dem ✅ ein Häkchen ist: ein gefüllter grauer 8-pt-Kreis steht direkt neben dem „kein
+  Status"-Zustand (hohler Ring in `Color.primary.opacity(0.2)`), und „pausiert" von „nie angefasst"
+  zu unterscheiden ist der ganze Zweck dieses Status. Das **Status-Menü** im Detail-Header braucht
+  keine Änderung — es läuft über `allCases`.
 
 ### Sprint **oder** ganzes Board (`SprintChoice`)
 
