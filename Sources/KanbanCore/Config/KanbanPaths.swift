@@ -77,6 +77,8 @@ public enum KanbanPaths {
     public static var sessionsFile: URL { root.appendingPathComponent("sessions.json") }
     public static var worklogFile: URL { root.appendingPathComponent("worklog.json") }
     public static var watchdogFile: URL { root.appendingPathComponent("watchdog.json") }
+    /// Die von Hand gelegte Reihenfolge der Projekte **ohne** Jira (siehe `LocalOrder`).
+    public static var orderFile: URL { root.appendingPathComponent("order.json") }
     public static var locksDirectory: URL {
         root.appendingPathComponent(".locks", isDirectory: true)
     }

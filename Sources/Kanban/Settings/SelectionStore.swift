@@ -16,6 +16,7 @@ enum SelectionStore {
     private static let openProjectsDefaultsKey = "openProjectKeys"
     private static let sprintDefaultsKey = "selectedSprintByProject"
     private static let boardModeDefaultsKey = "boardModeByProject"
+    private static let autoModeDefaultsKey = "autoModeByProject"
     private static let setsRootDefaultsKey = "claudeSetsRootSeen"
 
     /// Die Schlüssel-Abbildung des aktiven Profils.
@@ -88,6 +89,19 @@ enum SelectionStore {
     static func boardMode(forProject key: String) -> BoardMode? {
         (read(boardModeDefaultsKey, { defaults.dictionary(forKey: $0) })?[key] as? String)
             .flatMap(BoardMode.init(rawValue:))
+    }
+
+    /// Ob der Auto-Modus für dieses Projekt läuft. Wie der Board-Modus je Projekt gemerkt: ein
+    /// Projekt mit geplantem Backlog darf dauerhaft im Auto-Modus stehen, während ein anderes
+    /// davon nichts wissen will.
+    static func autoMode(forProject key: String) -> Bool {
+        (read(autoModeDefaultsKey, { defaults.dictionary(forKey: $0) })?[key] as? Bool) ?? false
+    }
+
+    static func setAutoMode(_ on: Bool, forProject key: String) {
+        var map = read(autoModeDefaultsKey, { defaults.dictionary(forKey: $0) }) ?? [:]
+        map[key] = on
+        defaults.set(map, forKey: keys.key(autoModeDefaultsKey))
     }
 
     static func setBoardMode(_ mode: BoardMode, forProject key: String) {

@@ -4,9 +4,9 @@ import KanbanCore
 
 /// A board card = a ticket plus its derived column + badges.
 struct CardVM: Identifiable, Hashable {
-    let ticket: Ticket
+    var ticket: Ticket
     let column: KanbanColumn
-    let badges: [CardBadge]
+    var badges: [CardBadge]
     let statusMarker: TaskStatusMarker?   // Claude's task-file status (shown as a dot, separate from column)
     /// Von welcher Forge die Requests dieser Karte stammen — entscheidet allein über die
     /// **Beschriftung** („MR !42" gegen „PR #42") und die Badge-Farben, nicht über die Logik.
@@ -18,6 +18,10 @@ struct CardVM: Identifiable, Hashable {
     var mergeRequestURL: String?          // web URL of the MR in the 🔀/🚧 badge — the badge opens it
     var commentsURL: String?              // web URL of the MR the open-comment count belongs to
     var needsAttention: Bool = false      // the ticket's Claude console is waiting for an answer
+    /// Noch offene Sperren dieses Tickets (`Blocks` in Jira) — trägt Badge und Tooltip.
+    var blockedBy: [BlockingRef] = []
+    /// Die oberste freie Karte nach Rank — „das hier ist als nächstes dran".
+    var isNextUp: Bool = false
     var claudeSeconds: TimeInterval = 0       // cumulated prompt→answer time of this ticket's session
     var claudeBaseSeconds: TimeInterval = 0   // the same total without the running turn (live badge ticks on top)
     var claudeRunningSince: Date?             // start of the turn running right now, else nil
@@ -115,6 +119,15 @@ final class AppModel {
 
     /// Sprint- oder freier Modus. Je Projekt gemerkt (`SelectionStore`), Default Sprint.
     private(set) var boardMode: BoardMode = .sprint
+
+    /// Auto-Modus: das Brett führt die geplante Reihenfolge mit — ⛔ an gesperrten Karten, ▶ an der
+    /// nächsten, und eine Meldung, wenn Arbeit an etwas beginnt, das laut Plan noch wartet.
+    ///
+    /// **Warum ein Schalter und nicht immer an:** die beiden Anzeigen beantworten eine Frage, die
+    /// man nur im Abarbeiten stellt („was ist als nächstes dran"). Wer das Brett zum Nachsehen
+    /// öffnet, liest sie als unerklärte Zeichen — ein ⛔ ohne Umgebung sieht aus wie ein Fehler,
+    /// den es nicht gibt. Je Projekt gemerkt, Vorgabe **aus**.
+    private(set) var autoMode: Bool = false
 
     // Board
     private(set) var cards: [CardVM] = []
@@ -251,6 +264,10 @@ final class AppModel {
     /// Ansicht rechts. Sie **ersetzt** Board und Detail im Fenster, statt sich als Sheet
     /// davorzulegen: sie ist selbst ein Zwei-Spalten-Bild und will die ganze Fläche.
     private(set) var knowledgebaseOpen = false
+
+    /// Ob die Reihenfolge-Ansicht statt des Bretts steht. Wie die Knowledgebase: sie ist selbst
+    /// eine ganze Ansicht und tritt an die Stelle von Board und Detail.
+    private(set) var reihenfolgeOffen = false
     private(set) var kbNodes: [KBNode] = []
     private(set) var kbLoading = false
     /// Pfad der gewählten Datei — die Auswahl der Liste, deshalb schreibbar.
@@ -543,6 +560,8 @@ final class AppModel {
         // schlicht falsch. Offen bleibt die Ansicht, wenn das neue Projekt auch eine hat.
         kbNodes = []
         kbSelection = nil
+        // Ein Projekt ohne Jira hat keinen Rang — die Ansicht hätte nichts zu zeigen.
+        if reihenfolgeOffen && !project.usesJira { reihenfolgeOffen = false }
         if knowledgebaseOpen {
             if project.kbPathAbsolute == nil { knowledgebaseOpen = false }
             else { loadKnowledgebase() }
@@ -553,6 +572,7 @@ final class AppModel {
         boardMode = project.usesJira
             ? (SelectionStore.boardMode(forProject: project.key) ?? .sprint)
             : .free
+        autoMode = SelectionStore.autoMode(forProject: project.key)
         sprints = []
         selectedChoice = nil
         board = nil
@@ -604,6 +624,14 @@ final class AppModel {
         case .sprint: await loadSprints()
         case .free: await refresh()
         }
+    }
+
+    /// Schaltet den Auto-Modus um. Ändert **nichts** an den Daten — nur daran, was das Brett
+    /// davon zeigt; die Reihenfolge ist ohnehin abgeleitet und gilt auch im Ausgeschalteten.
+    func setAutoMode(_ on: Bool) {
+        guard on != autoMode else { return }
+        autoMode = on
+        if let project = selectedProject { SelectionStore.setAutoMode(on, forProject: project.key) }
     }
 
     /// Umschalten zwischen Sprint- und freiem Modus. Die Wahl gilt je Projekt und überlebt den
@@ -756,7 +784,13 @@ final class AppModel {
                     isAssignedToMe: Self.isAssigned(ticket, to: myAccountId),
                     branch: branch
                 )
-                var card = CardVM(ticket: ticket, column: res.column, badges: res.badges, statusMarker: info.marker)
+                // Die Sperren wandern **nur** auf die Karte, nicht in ihre Badges: auf dem Brett
+                // beantworten sie keine Frage, die dort gestellt wird — „was hält das auf" gehört
+                // in die Reihenfolge-Ansicht, wo man ordnet. Ein ⛔ zwischen 📄/🌳/🔀 wäre ein
+                // Zeichen ohne Umgebung.
+                var card = CardVM(ticket: ticket, column: res.column, badges: res.badges,
+                                  statusMarker: info.marker)
+                card.blockedBy = TicketOrder.openBlockers(of: ticket)
                 card.forge = project.forge?.kind ?? .gitlab
                 // Review state of the ticket's opened MR (merged MRs always carry the blank one).
                 card.unresolvedMRComments = mr?.unresolvedDiscussions ?? 0
@@ -864,7 +898,26 @@ final class AppModel {
     /// Karten in Spalten. Sortiert wird **numerisch** (`TicketNumber`) statt lexikografisch — sonst
     /// stünde EVEN-999 hinter EVEN-1000. In „Done" absteigend: dort landet im freien Modus die ganze
     /// Historie, und das zuletzt Fertige gehört nach oben.
+    /// Markiert die Karte, die **als nächstes** dran ist — die oberste nach Jiras Rank, die weder
+    /// erledigt noch gesperrt ist (`TicketOrder.nextUp`).
+    ///
+    /// Bewusst abgeleitet und nicht gemerkt: dieselbe Haltung wie bei der Spalte. Sobald ein
+    /// Blocker fertig ist, wandert die Markierung beim nächsten Refresh von selbst weiter — es gibt
+    /// keinen Zustand, der veralten könnte.
+    /// Tickets, an denen gearbeitet wird, obwohl sie noch gesperrt sind — die Toolbar nennt sie.
+    var reihenfolgeVerstoesse: [String] = []
+
+    private func markiereNaechste() {
+        let inRang = cards.map(\.ticket)
+            .filter { $0.rankIndex != nil }
+            .sorted { ($0.rankIndex ?? 0) < ($1.rankIndex ?? 0) }
+        let naechste = TicketOrder.nextUp(inRang)?.key
+        for i in cards.indices { cards[i].isNextUp = (cards[i].ticket.key == naechste) }
+        reihenfolgeVerstoesse = TicketOrder.violations(cards.map { ($0.ticket, $0.column) }).map(\.key)
+    }
+
     private func regroupColumns() {
+        markiereNaechste()
         columns = boardMode.columns.map { col in
             let inColumn = cards.filter { $0.column == col }
             let sorted = col == .done
@@ -1159,8 +1212,14 @@ final class AppModel {
     var agent: AgentKind { selectedProject?.agent ?? .fallback }
 
     /// Ein Command auf dem Weg in die Console: entweder direkt oder über die PROD-Bestätigung.
+    /// Commands, die den Anfang der Arbeit bedeuten — nur bei ihnen ist eine offene Sperre eine
+    /// Auskunft wert. Ein `review-merge` auf einer gesperrten Karte ist dagegen normal: der Request
+    /// liegt ja schon vor.
+    static let orderCheckedCommands: Set<String> = ["start-task", "solve-task"]
+
     private func dispatchClaudeCommand(name: String, argument: String, ticketKey: String) {
         let text = "\(agent.commandPrefix)\(name) \(argument) "
+        meldeSperreFallsNoetig(command: name, ticketKey: ticketKey)
         guard Self.prodConfirmCommands.contains(name) else {
             deliver(commandName: name, text: text, ticketKey: ticketKey)
             return
@@ -1198,6 +1257,26 @@ final class AppModel {
     /// Warum die App und nicht der Skill: Jira schreiben kann hier nur Kanban — es hält Zugang und
     /// Host-Guard, der Agent hat für Transition und Zuweisung kein Werkzeug. Und es ist der einzige
     /// Weg, der nicht davon abhängt, ob die KI den Schritt abarbeitet.
+    /// Sagt in der Toolbar, wenn die Arbeit an einer Karte beginnt, die laut Jira noch wartet.
+    ///
+    /// **Eine Meldung, kein Riegel.** Die Reihenfolge ist ein Plan, kein Gesetz — es gibt gute
+    /// Gründe, vorzuziehen (ein Blocker ist faktisch fertig, nur noch nicht geschlossen; ein Fix
+    /// drängt). Zu verbieten hiesse, den Menschen gegen seinen eigenen Plan zu bevormunden; nichts
+    /// zu sagen hiesse, ihn ins offene Messer laufen zu lassen. Also: benennen, wer blockiert, und
+    /// weitermachen.
+    private func meldeSperreFallsNoetig(command: String, ticketKey: String) {
+        guard autoMode,
+              Self.orderCheckedCommands.contains(command),
+              let card = cards.first(where: { $0.ticket.key == ticketKey }),
+              !card.blockedBy.isEmpty else { return }
+        let namen = card.blockedBy.prefix(3).map(\.key).joined(separator: ", ")
+        let rest = card.blockedBy.count > 3 ? " (+\(card.blockedBy.count - 3))" : ""
+        // Dieselbe Zeile, die auch die Jira-Nachführung benutzt: als Warnung bleibt sie stehen,
+        // statt nach 10 s zu verschwinden — eine übersprungene Sperre soll man noch sehen.
+        startWorkNotice = StartWorkNotice(text: "\(ticketKey) wartet laut Plan noch auf \(namen)\(rest)",
+                                          isWarning: true)
+    }
+
     static let startWorkCommands: Set<String> = ["solve-task"]
 
     /// Zieht das Jira-Ticket auf den Stand, den das Absetzen von `solve-task` bedeutet: Status
@@ -1979,12 +2058,115 @@ final class AppModel {
     /// 📚 auf/zu. Ohne konfigurierten Pfad gibt es den Knopf gar nicht, also auch hier nichts zu tun.
     func toggleKnowledgebase() {
         guard selectedProject?.kbPathAbsolute != nil else { return }
+        reihenfolgeOffen = false   // beide füllen das Fenster ganz — es kann nur eine gelten
         knowledgebaseOpen.toggle()
         if knowledgebaseOpen && kbNodes.isEmpty { loadKnowledgebase() }
     }
 
     func closeKnowledgebase() {
         knowledgebaseOpen = false
+    }
+
+    /// Reihenfolge-Ansicht auf/zu.
+    ///
+    /// Auch **ohne** Jira: dort gibt es keinen Rang aus dem Backlog, aber eine von Hand gelegte
+    /// Reihenfolge (`LocalOrder`) — gerade kleine Projekte ordnet man schneller selbst, als ein
+    /// Orchestrator ihre Beschreibungen liest.
+    func toggleReihenfolge() {
+        knowledgebaseOpen = false
+        reihenfolgeOffen.toggle()
+    }
+
+    /// Woher die Reihenfolge dieses Projekts kommt — und wohin ein Zug geschrieben wird.
+    var reihenfolgeQuelle: ReihenfolgeQuelle {
+        selectedProject?.usesJira == true ? .jira : .lokal
+    }
+
+    /// Die Karten in Rang-Reihenfolge — die Vorlage der Reihenfolge-Ansicht.
+    ///
+    /// Epics bleiben draussen: sie sind Behälter und stehen in Jiras Backlog ebenfalls nicht in
+    /// der Reihe. Karten ohne Rang (lokale Tickets) ebenso — sie gehören keinem Backlog an.
+    var kartenNachRang: [CardVM] {
+        let ohneEpics = cards.filter { !istEpic($0.ticket) }
+        switch reihenfolgeQuelle {
+        case .jira:
+            return ohneEpics.filter { $0.ticket.rankIndex != nil }
+                .sorted { ($0.ticket.rankIndex ?? 0) < ($1.ticket.rankIndex ?? 0) }
+        case .lokal:
+            guard let key = selectedProject?.key else { return ohneEpics }
+            let gemerkt = LocalOrderStore().order(forProject: key)
+            let reihenfolge = LocalOrder.arrange(ohneEpics.map(\.ticket.key), stored: gemerkt)
+            let nachKey = Dictionary(uniqueKeysWithValues: ohneEpics.map { ($0.ticket.key, $0) })
+            return reihenfolge.compactMap { nachKey[$0] }
+        }
+    }
+
+    private func istEpic(_ ticket: Ticket) -> Bool { ticket.type?.lowercased() == "epic" }
+
+    /// Verschiebt Vorgänge in der Reihenfolge und schreibt den neuen Rang **sofort** nach Jira —
+    /// wie Jiras eigener Backlog: loslassen heisst geschrieben.
+    ///
+    /// Die lokale Liste wird zuerst umgestellt, damit die Ansicht nicht auf das Netz wartet.
+    /// Scheitert der Schreibvorgang, sagt die Leiste es **und** der alte Stand kommt zurück: eine
+    /// Reihenfolge, die nur hier anders aussieht als in Jira, wäre schlimmer als eine, die sich
+    /// nicht verschieben liess.
+    func verschiebeReihenfolge(from offsets: IndexSet, to ziel: Int) {
+        switch reihenfolgeQuelle {
+        case .lokal: verschiebeLokal(from: offsets, to: ziel)
+        case .jira:  verschiebeInJira(from: offsets, to: ziel)
+        }
+    }
+
+    /// Ohne Jira: die Reihenfolge steht in Kanbans eigener Datei, ein Zug schreibt sie dorthin.
+    /// Kein Netz, kein Fehlerfall — und deshalb auch kein Zurückrollen.
+    private func verschiebeLokal(from offsets: IndexSet, to ziel: Int) {
+        guard let key = selectedProject?.key, let quelle = offsets.first else { return }
+        let liste = kartenNachRang.map(\.ticket.key)
+        guard let neu = LocalOrder.moved(liste, from: quelle, to: ziel) else { return }
+        LocalOrderStore().setOrder(neu, forProject: key)
+        regroupColumns()   // die Ansicht liest die Reihenfolge neu
+    }
+
+    private func verschiebeInJira(from offsets: IndexSet, to ziel: Int) {
+        let liste = kartenNachRang
+        guard let quelle = offsets.first,
+              let zug = TicketOrder.moveAnchor(keys: liste.map(\.ticket.key),
+                                               from: quelle, to: ziel) else { return }
+
+        var neu = liste
+        neu.move(fromOffsets: offsets, toOffset: ziel)
+        let alteRaenge = cards.map(\.ticket.rankIndex)
+        setzeRaenge(nach: neu)
+
+        guard let project = selectedProject, let jira else { return }
+        Task { [weak self] in
+            do {
+                try await jira.rankIssues([zug.moved], baseUrl: project.jiraBaseUrl,
+                                          before: zug.before ? zug.anchor : nil,
+                                          after: zug.before ? nil : zug.anchor)
+            } catch {
+                await MainActor.run {
+                    guard let self else { return }
+                    for (i, rang) in alteRaenge.enumerated() where i < self.cards.count {
+                        self.cards[i].ticket.rankIndex = rang
+                    }
+                    self.regroupColumns()
+                    self.startWorkNotice = StartWorkNotice(
+                        text: "\(zug.moved) liess sich nicht verschieben: \(error.localizedDescription)",
+                        isWarning: true)
+                }
+            }
+        }
+    }
+
+    /// Schreibt die Rang-Positionen der übergebenen Reihenfolge zurück auf die Karten.
+    private func setzeRaenge(nach liste: [CardVM]) {
+        var rang: [String: Int] = [:]
+        for (i, karte) in liste.enumerated() { rang[karte.ticket.key] = i }
+        for i in cards.indices {
+            if let neuerRang = rang[cards[i].ticket.key] { cards[i].ticket.rankIndex = neuerRang }
+        }
+        regroupColumns()
     }
 
     /// Liest den Baum neu ein — beim Öffnen und über den Aktualisieren-Knopf der Ansicht.

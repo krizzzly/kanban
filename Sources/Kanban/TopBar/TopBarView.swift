@@ -38,7 +38,9 @@ struct TopBarToolbar: ToolbarContent {
         // Board ganz aus.
         ToolbarItemGroup(placement: .navigation) {
             modePicker
+            chrome(autoModeButton)
             searchField
+            chrome(reihenfolgeButton)
             chrome(knowledgebaseButton)
         }
         // Ohne `chrome`: der Status färbt sich selbst — orange heisst Warnung. Die Textfarbe des
@@ -79,6 +81,47 @@ struct TopBarToolbar: ToolbarContent {
                 .frame(height: 18)
                 .accessibilityLabel(model.selectedProject?.key ?? "Projekt")
         }
+    }
+
+    /// Der Auto-Modus: eine **Meldung**, wenn die Arbeit an einem Ticket beginnt, das laut Plan noch
+    /// wartet (`start-task`/`solve-task` auf einer gesperrten Karte).
+    ///
+    /// Auf den Karten steht dazu bewusst **nichts**. Ein ⛔ zwischen 📄/🌳/🔀 beantwortet keine
+    /// Frage, die man beim Blick aufs Brett stellt — „was hält das auf" gehört in die
+    /// Reihenfolge-Ansicht, wo geordnet wird. Der Auto-Modus ist deshalb unsichtbar, bis er etwas
+    /// zu sagen hat.
+    ///
+    /// Ohne Jira gibt es den Knopf nicht: ohne Backlog gibt es keine Reihenfolge, die man führen
+    /// könnte.
+    @ViewBuilder
+    private var autoModeButton: some View {
+        if model.selectedProject?.usesJira == true {
+            Button {
+                model.setAutoMode(!model.autoMode)
+            } label: {
+                Image(systemName: model.autoMode ? "play.circle.fill" : "play.circle")
+            }
+            .help(model.autoMode
+                  ? "Auto-Modus aus — keine Meldung mehr beim Vorziehen"
+                  : "Auto-Modus an — meldet, wenn Arbeit an einem Ticket beginnt, das laut Plan noch wartet")
+        }
+    }
+
+    /// Die Reihenfolge als Liste, per Ziehen umsortierbar.
+    ///
+    /// Auch ohne Jira: dort wird die Reihenfolge lokal gemerkt (`LocalOrder`). Ein kleines Projekt
+    /// ordnet man schneller von Hand, als ein Orchestrator seine Beschreibungen liest.
+    private var reihenfolgeButton: some View {
+        Button {
+            model.toggleReihenfolge()
+        } label: {
+            Image(systemName: model.reihenfolgeOffen ? "list.number.rtl" : "list.number")
+        }
+        .help(model.reihenfolgeOffen
+              ? "Zurück zum Board"
+              : (model.reihenfolgeQuelle == .jira
+                 ? "Reihenfolge öffnen — Ziehen schreibt den Rang nach Jira"
+                 : "Reihenfolge öffnen — Ziehen wird lokal gemerkt"))
     }
 
     /// Schaltet die Knowledgebase des Projekts auf: Ordnerbaum links, Datei rechts, anstelle von
