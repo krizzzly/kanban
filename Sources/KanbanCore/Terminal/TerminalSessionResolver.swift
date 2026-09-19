@@ -44,18 +44,35 @@ public enum TerminalSessionResolver {
     /// `kanban-` bzw. `kanban-<slug>-` — der Namensraum dieses Profils in tmux.
     public static var sessionPrefix: String {
         guard let slug = profileSlug, !slug.isEmpty else { return "kanban-" }
-        return "kanban-\(slug)-"
+        return "kanban-\(tmuxSafe(slug))-"
+    }
+
+    /// Macht aus einem Namensteil einen, den tmux **unverändert** behält.
+    ///
+    /// `.` und `:` sind in tmux keine gewöhnlichen Zeichen, sondern die Trenner eines Ziels
+    /// (`session:window.pane`). tmux nimmt sie beim Anlegen deshalb nicht an, sondern ersetzt sie
+    /// still durch `_` — und danach zeigt jedes `-t <name>` ins Leere: aus
+    /// `kanban-helge-schneider.de-new` wird die Sitzung `kanban-helge-schneider_de-new`, während
+    /// `has-session -t 'kanban-helge-schneider.de-new'` mit „can't find pane: de-new" scheitert.
+    /// Die Sitzung existiert, ist aber unerreichbar — die Konsole öffnet nicht, und der
+    /// „Task erstellen"-Text landet nirgends.
+    ///
+    /// Ersetzt wird deshalb **genau so, wie tmux es selbst tut** (`_`, nicht `-`): so findet Kanban
+    /// auch die Sitzungen wieder, die vor dieser Korrektur angelegt wurden, statt sie verwaist
+    /// stehen zu lassen. Leerzeichen und `/` bleiben — die trägt tmux unverändert (nachgemessen).
+    public static func tmuxSafe(_ part: String) -> String {
+        part.map { $0 == "." || $0 == ":" ? "_" : $0 }.reduce(into: "") { $0.append($1) }
     }
 
     /// Our own deterministic session name for a ticket, e.g. `kanban-BFEZVM-4525`.
     public static func sessionName(forTicket key: String) -> String {
-        sessionPrefix + key.uppercased()
+        sessionPrefix + tmuxSafe(key.uppercased())
     }
 
     /// Eine Nebensitzung desselben Tickets bzw. Projekts (`-wt`, `-new`, `-term-<n>`). Läuft über
     /// dieselbe Stelle, damit der Profil-Namensraum nicht an vier Orten nachgebaut wird.
     public static func sessionName(forTicket key: String, suffix: String) -> String {
-        "\(sessionPrefix)\(key.uppercased())-\(suffix)"
+        "\(sessionPrefix)\(tmuxSafe(key.uppercased()))-\(tmuxSafe(suffix))"
     }
 
     /// The command that starts (or resumes) the ticket's Claude conversation. The caller checks
