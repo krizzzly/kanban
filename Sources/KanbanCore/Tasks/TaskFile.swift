@@ -93,28 +93,31 @@ public enum TaskFileLoader {
         return parse(content: content, url: url)
     }
 
-    /// Reads the ticket's stored Claude session id **without** creating one. Returns nil if there's
-    /// no task file or no marker yet. Used to map hook attention-markers back to tickets.
-    public static func peekSessionId(ticketKey: String, in tasksDirectory: String) -> String? {
+    /// Reads the ticket's stored session id for `agent` **without** creating one. Returns nil if
+    /// there's no task file or no marker yet. Used to map hook attention-markers back to tickets.
+    public static func peekSessionId(ticketKey: String, in tasksDirectory: String,
+                                     agent: AgentKind = .claude) -> String? {
         guard let url = find(ticketKey: ticketKey, in: tasksDirectory),
               let content = try? String(contentsOf: url, encoding: .utf8) else { return nil }
-        return ClaudeSession.parseSessionId(content)
+        return ClaudeSession.parseSessionId(content, agent: agent)
     }
 
-    /// The session id stored in this task file, without creating one.
-    public static func sessionId(in url: URL) -> String? {
+    /// The session id this task file stores for `agent`, without creating one.
+    public static func sessionId(in url: URL, agent: AgentKind = .claude) -> String? {
         guard let content = try? String(contentsOf: url, encoding: .utf8) else { return nil }
-        return ClaudeSession.parseSessionId(content)
+        return ClaudeSession.parseSessionId(content, agent: agent)
     }
 
-    /// Writes `sessionId` into the task file's marker, replacing any previous one. Used to pin the
-    /// ticket's real conversation into the file — see `ClaudeSessionResolution` for why a task file
-    /// may hold an id that no conversation was ever started under.
+    /// Writes `sessionId` into the task file's marker for `agent`, replacing any previous one of the
+    /// same agent and leaving the other agent's marker untouched. Used to pin the ticket's real
+    /// conversation into the file — see `ClaudeSessionResolution` for why a task file may hold an id
+    /// that no conversation was ever started under.
     @discardableResult
-    public static func writeSessionId(_ sessionId: String, url: URL) -> Bool {
+    public static func writeSessionId(_ sessionId: String, url: URL,
+                                      agent: AgentKind = .claude) -> Bool {
         guard let content = try? String(contentsOf: url, encoding: .utf8) else { return false }
-        guard ClaudeSession.parseSessionId(content) != sessionId else { return true }
-        let updated = ClaudeSession.contentInserting(sessionId: sessionId, into: content)
+        guard ClaudeSession.parseSessionId(content, agent: agent) != sessionId else { return true }
+        let updated = ClaudeSession.contentInserting(sessionId: sessionId, agent: agent, into: content)
         do {
             try updated.write(to: url, atomically: true, encoding: .utf8)
             return true
@@ -254,13 +257,15 @@ public enum TaskFileLoader {
     }
 
     /// Extracts the raw preamble markdown (everything before the first H2), dropping only the
-    /// session-id comment line. Rendered as the "Status" tab, so blockquotes / bold / code / emoji
+    /// session-id comment lines. Rendered as the "Status" tab, so blockquotes / bold / code / emoji
     /// display natively. Returns "" when there is no meaningful preamble.
     static func parsePreamble(_ content: String, directory: URL) -> String {
         var lines: [String] = []
         for raw in content.components(separatedBy: "\n") {
             if raw.hasPrefix("## ") && !raw.hasPrefix("### ") { break }   // first H2 → preamble ends
-            if raw.contains(ClaudeSession.markerPrefix) { continue }      // drop session-id comment
+            // Drop every agent's session-id comment — one of them would otherwise sit in plain
+            // sight at the top of the Status tab.
+            if ClaudeSession.markerPrefixes.contains(where: raw.contains) { continue }
             lines.append(raw)
         }
         let body = lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)

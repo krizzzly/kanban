@@ -1009,8 +1009,11 @@ kennt — Board, Console und Asset-Auslieferung fragen dort.
 | Aufruf | `/name args` | `$name args` (der `@`-Picker fügt genau das ein) |
 | Start | `claude --session-id`/`--resume` | `codex`, danach `/rename` |
 | Wiederaufnahme | `claude --resume <id>` | `codex resume <id> -c tui.resume_cwd=current` |
+| tmux-Sitzung | `kanban-<TICKET>` | `kanban-<TICKET>-codex` |
+| Session-Id im Task-File | `<!-- kanban-claude-session: … -->` | `<!-- kanban-codex-session: … -->` |
 | ⏱-Zeit + Timeline | Transcript | Rollout (siehe unten) |
 | Attention | Hook + Pane-Auswertung | **nur** Pane-Auswertung |
+| Reiter über dem Terminal | `AgentKind.displayName` — der des Projekts vorn, der andere daneben, sobald an dem Ticket eine Konversation von ihm liegt ||
 
 Das Format ist bei beiden dasselbe — verifiziert am 2026-08-19/20, nicht aus der Doku geschlossen:
 Claude Code substituiert `$ARGUMENTS` in einem Skill (Probe-Skill mit Argumenten aufgerufen, `$1`
@@ -1038,6 +1041,55 @@ ohne bricht es sichtbar ab („no rollout found for thread id …"), genau die F
 es auf der Claude-Seite kein `||`-Fallback gibt. Dazu `-c tui.resume_cwd=current`, sonst fragt Codex
 „Session- oder aktuelles Verzeichnis?" zurück, sobald die aufgezeichnete cwd abweicht (verifiziert:
 mit dem Schalter kommt die Rückfrage nicht).
+
+### Ein Agent-Wechsel stellt daneben, statt zu ersetzen
+
+`agent` umzustellen ist eine Entscheidung über die **Zukunft** eines Projekts, keine über seine
+Vergangenheit: eine Konversation, in der ein Ticket halb gelöst wurde, ist danach so viel wert wie
+davor. Deshalb hat jeder Agent seinen eigenen Sitzungsnamen, seinen eigenen Marker und seinen eigenen
+Reiter — und der des anderen bleibt stehen.
+
+- **Zwei Sitzungsnamen** (`AgentKind.sessionNameSuffix`): Claude behält `kanban-<TICKET>`, Codex
+  bekommt `kanban-<TICKET>-codex`; Nebensitzungen tragen den Agent an derselben Stelle
+  (`kanban-<KEY>-codex-new`). Bei **einem** Namen übernähme der neue Agent stillschweigend die
+  laufende Sitzung des alten — `resolve` hängt sich an eine gefundene Sitzung an und bestückt sie
+  nie. Umbenannt wird nichts: das liesse jede laufende Sitzung verwaisen, und praktisch jede
+  bestehende wurde unter Claude gestartet.
+- **Der Codex-Name macht Stufe 2 der Auflösung gefährlich, deshalb ist sie enger geworden.**
+  `matchWorktree` nimmt jede Sitzung, deren **Pfad** der Worktree ist — und das ist das
+  Worktree-Terminal (`kanban-<TICKET>-wt`). Weil der Codex-Name beim ersten Öffnen nie existiert,
+  fiele Stufe 1 durch und der Codex-Reiter zeigte die nackte Shell, in der Codex nie startet. Stufe 2
+  überspringt deshalb den **eigenen** Namensraum (`isOwnSession`); für Sitzungen fremder Werkzeuge
+  (kanban-code, `kanban`-CLI) ist sie gedacht, und dafür gilt sie weiter.
+- **Zwei Marker im Task-File**, in fester Reihenfolge (Claude oben, er ist der historische —
+  `AgentKind.allCases`). Schreiben und Lesen fassen nur den eigenen an; `parsePreamble` wirft
+  **beide** weg, sonst stünde einer im Status-Tab. Die Codex-Id ist dabei **gefunden**, nicht
+  erfunden: sie kommt aus dem Thread-Index, sobald `/rename` durch ist, und wird direkt danach
+  nachgeschlagen und geschrieben — ein Dauer-Polling wartete auf etwas, das entweder schon dasteht
+  oder gar nicht kommt.
+- **Welche Id fortgesetzt wird, entscheidet die Aufzeichnung** (`AgentConversationLookup`, Regel aus
+  `ClaudeSessionResolution`): Marker und zweite Fundstelle (`sessions.json` bei Claude, der
+  Thread-Index bei Codex) gehen beide in die Probe, und die Id mit Transcript bzw. Rollout gewinnt.
+  Für Codex ist das kein Randfall — wird eine Session neu gestartet und wieder umbenannt, zeigt der
+  Marker auf den alten Thread, während der Index den laufenden führt; ohne Probe setzte
+  `codex resume` auf der toten Id auf. Gibt es zu keiner eine Aufzeichnung, wird frisch gestartet
+  statt ein `resume` versucht, das sichtbar abbräche.
+- **Ein Thread von vor der Namenstrennung bleibt auffindbar**: `CodexSessions.sessionId(forTicket:)`
+  sucht erst `kanban-<TICKET>-codex`, dann `kanban-<TICKET>`. Ein so benannter Thread in *diesem*
+  Index kann nur von Codex stammen, Claude schreibt dort nicht.
+- **Der zweite Reiter erscheint nur, wenn dort etwas ist** — eine laufende Sitzung oder eine
+  aufgezeichnete Konversation. Ein Marker allein ist bloss eine Id, unter der nie etwas lief; der
+  Reiter zeigte auf nichts. Er **startet auch nichts Neues**, er setzt fort: wer mit dem anderen
+  Agent neu anfangen will, stellt das Projekt um. Angelegt wird seine Sitzung erst beim **Klick** —
+  beim Durchsehen des Bretts entstünde sonst je angeklickter Karte eine Console.
+- **Die Pane-Attention muss den Agent kennen** (`refreshPaneAttention`). Sie bildet den
+  Sitzungsnamen selbst, und für Codex ist sie die **einzige** Quelle für ❓ *und* für das Urteil
+  „arbeitet gerade", an dem der grüne ⏱-Live-Tick hängt (die Hooks sind Claude-Code-Hooks).
+- **Die ⏱-Zeit bleibt die des Projekt-Agents.** Nach einem Wechsel zeigt sie die Historie des anderen
+  nicht mehr, und „Offen zum Buchen" fällt für sie auf 0 — Gebuchtes bleibt im `WorklogLedger`, nur
+  die Messgrundlage verschwindet aus der Anzeige. Summieren hiesse, `sessionIdByTicket` auf
+  Ticket→(Agent→Id) umzubauen und die Turn-Listen zweier Agents zeitlich zu verschränken, damit ⌀ und
+  „längster Turn" noch etwas heissen; das ist ein eigener Schnitt.
 
 ### ⏱-Zeit und Timeline aus Codex' Rollouts
 

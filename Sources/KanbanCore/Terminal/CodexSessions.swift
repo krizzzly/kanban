@@ -16,9 +16,9 @@ public enum CodexSessions {
     public static var defaultCodexDir: URL { AgentKind.codex.homeDir }
 
     /// Der Thread-Name, unter dem Kanban die Console eines Tickets führt — bewusst identisch zum
-    /// tmux-Session-Namen, damit beide Seiten dieselbe Zeichenfolge benutzen.
+    /// tmux-Session-Namen der Codex-Sitzung, damit beide Seiten dieselbe Zeichenfolge benutzen.
     public static func threadName(forTicket key: String) -> String {
-        TerminalSessionResolver.sessionName(forTicket: key)
+        TerminalSessionResolver.sessionName(forTicket: key, agent: .codex)
     }
 
     /// Die Id des benannten Threads, oder nil. Bei mehreren gleichnamigen (Session neu gestartet und
@@ -37,6 +37,17 @@ public enum CodexSessions {
             if best == nil || updated > best!.updated { best = (entry.id, updated) }
         }
         return best?.id
+    }
+
+    /// Die Id der Codex-Konversation eines Tickets: unter dem heutigen Thread-Namen, sonst unter dem
+    /// unsuffixierten (`kanban-<TICKET>`), unter dem Threads vor der Trennung der beiden Agents
+    /// angelegt wurden. Ein so benannter Thread in **diesem** Index kann nur von Codex stammen —
+    /// Claude schreibt hier nicht —, und eine bestehende Konversation zu verlieren, nur weil die
+    /// Namensregel gewachsen ist, wäre der teuerste Teil der Umstellung.
+    public static func sessionId(forTicket key: String, codexDir: URL = defaultCodexDir) -> String? {
+        sessionId(threadName: threadName(forTicket: key), codexDir: codexDir)
+            ?? sessionId(threadName: TerminalSessionResolver.sessionName(forTicket: key),
+                         codexDir: codexDir)
     }
 
     /// Die Rollout-Datei einer Session: `~/.codex/sessions/YYYY/MM/DD/rollout-<ts>-<id>.jsonl`.
