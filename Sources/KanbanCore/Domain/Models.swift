@@ -50,13 +50,22 @@ public struct Ticket: Identifiable, Sendable, Hashable {
     /// Ein Ticket, das es nur als Branch/MR gibt — ohne Nummer, ohne Jira, (noch) ohne Task-File.
     public var isBranchOnly: Bool { sourceBranch != nil }
 
+    /// Vorgänge, die dieses Ticket blockieren (`Blocks`-Verknüpfungen in Jira), samt ihrem Status.
+    /// Leer, solange keine gepflegt sind — dann verhält sich das Brett wie bisher.
+    public var blockedBy: [BlockingRef] = []
+
+    /// Position in Jiras **Rank** — der Backlog-Reihenfolge, wie die Agile-API sie liefert.
+    /// `nil` bei lokalen Tickets (freier Modus), die in keinem Backlog stehen.
+    public var rankIndex: Int?
+
     public init(key: String, summary: String, status: String? = nil, statusCategory: String? = nil,
                 assignee: String? = nil, assigneeAvatarUrl: String? = nil,
                 assigneeAccountId: String? = nil,
                 type: String? = nil, typeIconUrl: String? = nil,
                 priority: String? = nil, storyPoints: Double? = nil,
                 epic: EpicRef? = nil, parentKey: String? = nil, isSubtask: Bool = false,
-                sourceBranch: String? = nil) {
+                sourceBranch: String? = nil,
+                blockedBy: [BlockingRef] = [], rankIndex: Int? = nil) {
         self.key = key
         self.summary = summary
         self.sourceBranch = sourceBranch
@@ -72,6 +81,8 @@ public struct Ticket: Identifiable, Sendable, Hashable {
         self.epic = epic
         self.parentKey = parentKey
         self.isSubtask = isSubtask
+        self.blockedBy = blockedBy
+        self.rankIndex = rankIndex
     }
 
     /// True when Jira considers the issue done (category "done" covers "Erledigt" + "Geschlossen").
