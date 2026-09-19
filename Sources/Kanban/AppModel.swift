@@ -177,7 +177,15 @@ final class AppModel {
     var taskAttachmentSelection: String?
 
     // Terminal
-    private(set) var activeTerminalSession: String?           // left: Claude, main-tree cwd
+    private(set) var activeTerminalSession: String?           // left: the project's agent, main-tree cwd
+
+    /// Der Agent, für den an diesem Ticket **ausser** dem des Projekts noch eine Konversation
+    /// dasteht — nil, wenn es keine gibt. Er trägt den zweiten Reiter über dem Terminal.
+    private(set) var foreignAgent: AgentKind?
+    /// Dessen tmux-Sitzung, sobald sein Reiter einmal geöffnet wurde. Angelegt wird sie erst beim
+    /// Klick: eine Sitzung je angeklickter Karte hinterliesse beim Durchsehen des Bretts eine
+    /// Konsole nach der anderen.
+    private(set) var foreignAgentSession: String?
     private(set) var activeWorktreeTerminalSession: String?   // right: plain shell, worktree cwd
     /// Which ticket `activeTerminalSession` belongs to — guards typing against the *previous*
     /// ticket's session while a newly selected ticket's terminal is still being set up.
@@ -1059,6 +1067,8 @@ final class AppModel {
         selectedTicketKey = nil
         activeTerminalSession = nil
         activeWorktreeTerminalSession = nil
+        foreignAgent = nil
+        foreignAgentSession = nil
         terminalSessionTicket = nil
         pendingConsoleText = nil
     }
@@ -1070,7 +1080,8 @@ final class AppModel {
     /// write the session-id marker to the task file. See `TerminalSessionResolver`.
     private func setupTerminal(for key: String) {
         guard let project = selectedProject else {
-            activeTerminalSession = nil; activeWorktreeTerminalSession = nil; return
+            activeTerminalSession = nil; activeWorktreeTerminalSession = nil
+            foreignAgent = nil; foreignAgentSession = nil; return
         }
         let repoDir = project.repoDir
         let tasksDir = project.tasksPathAbsolute
@@ -1084,25 +1095,27 @@ final class AppModel {
                     guard let self, self.selectedTicketKey == key else { return }
                     self.activeTerminalSession = nil
                     self.activeWorktreeTerminalSession = nil
+                    self.foreignAgent = nil
+                    self.foreignAgentSession = nil
                     self.terminalSessionTicket = nil
                     self.pendingConsoleText = nil
                 }
                 return
             }
 
+            let taskFileURL = TaskFileLoader.find(ticketKey: key, in: tasksDir)
+
             // One id per ticket, written to both stores: the task-file marker (where it belongs) and
             // `sessions.json` (which also covers tickets that have no task file yet). Without the
             // write-through the two drift apart as soon as Claude creates the task file mid-session,
             // and the board then watches a conversation that never existed.
             //
-            // Nur für Agents, die eine Id **annehmen** (`claude --session-id`). Codex erfindet sie
-            // selbst; eine hier erzeugte Id in das Task-File zu schreiben würde eine Konversation
-            // behaupten, die es nicht gibt — und die ⏱-Zeit auf ein Transcript zeigen lassen, das
-            // nie entsteht. Lieber nichts als etwas Falsches.
+            // Der Store trägt nur Ids, die Kanban selbst vergibt (`claude --session-id`). Codex'
+            // Id gehört Codex; sie steht im Task-File, sobald sie **gefunden** ist — ein dritter
+            // Speicher, der dasselbe anders erzählt, wäre die Verwirrung, die man später sucht.
             var sessionId: String?
             var hasTranscript = false
             if agent.supportsPresetSessionId {
-                let taskFileURL = TaskFileLoader.find(ticketKey: key, in: tasksDir)
                 let resolved = ClaudeSessionResolution.resolve(
                     taskFileId: taskFileURL.flatMap { TaskFileLoader.sessionId(in: $0) },
                     storeId: SessionIdStore.peek(forTicket: key),
@@ -1111,18 +1124,20 @@ final class AppModel {
                 SessionIdStore.set(resolved, forTicket: key)
                 sessionId = resolved
                 hasTranscript = ClaudeTranscripts.transcriptExists(sessionId: resolved, cwd: repoDir)
-            } else {
-                // Codex: die Id gehört Codex, wir finden sie über den Thread-Namen (siehe
-                // `CodexSessions`). `hasTranscript` heisst hier „es gibt einen Rollout" — und nur
-                // dann kann `codex resume` gelingen: ohne Rollout bricht es sichtbar ab
-                // („no rollout found for thread id …"), verifiziert gegen 0.147.
-                let name = CodexSessions.threadName(forTicket: key)
-                if let known = CodexSessions.sessionId(threadName: name) {
-                    sessionId = known
-                    hasTranscript = CodexSessions.rolloutURL(sessionId: known) != nil
+            } else if let found = AgentConversationLookup.existing(agent: agent, ticketKey: key,
+                                                                  taskFileURL: taskFileURL,
+                                                                  cwd: repoDir) {
+                // `hasTranscript` heisst hier „es gibt einen Rollout" — und nur dann kann
+                // `codex resume` gelingen: ohne Rollout bricht es sichtbar ab („no rollout found for
+                // thread id …"), verifiziert gegen 0.147.
+                sessionId = found.sessionId
+                hasTranscript = found.hasTranscript
+                if let taskFileURL {
+                    TaskFileLoader.writeSessionId(found.sessionId, url: taskFileURL, agent: agent)
                 }
             }
 
+            let existing = tmux.listSessions()
             let plan = TerminalSessionResolver.resolve(
                 ticketKey: key,
                 repoDir: repoDir,
@@ -1130,7 +1145,7 @@ final class AppModel {
                 sessionId: sessionId,
                 hasTranscript: hasTranscript,
                 agent: agent,
-                existing: tmux.listSessions()
+                existing: existing
             )
             _ = tmux.run(plan: plan)
             tmux.setStatusBar(plan.name, visible: false)   // hide the green tmux status bar
@@ -1151,7 +1166,28 @@ final class AppModel {
                 try? await Task.sleep(for: .seconds(2))    // Codex nimmt erst nach dem Start Eingaben
                 tmux.sendText(plan.name, "/rename \(CodexSessions.threadName(forTicket: key))")
                 tmux.sendKeys(plan.name, "Enter")
+                // Der Rename schreibt die Zeile sofort in den Index — der Rollout entsteht erst mit
+                // dem ersten Turn, die Id nicht. Einmal nachschlagen genügt deshalb; ein
+                // Dauer-Polling wartete auf etwas, das entweder schon dasteht oder gar nicht kommt.
+                try? await Task.sleep(for: .seconds(1))
+                let named = CodexSessions.sessionId(threadName: CodexSessions.threadName(forTicket: key))
+                if let named {
+                    sessionId = named
+                    if let taskFileURL {
+                        TaskFileLoader.writeSessionId(named, url: taskFileURL, agent: agent)
+                    }
+                }
             }
+
+            // Der zweite Reiter: was am Ticket vom anderen Agent noch dasteht. Belege sind eine
+            // laufende Sitzung oder eine aufgezeichnete Konversation — ein Marker allein ist nur
+            // eine Id, unter der nie etwas lief, und der Reiter zeigte auf nichts.
+            let otherAgent = agent.other
+            let otherSession = TerminalSessionResolver.sessionName(forTicket: key, agent: otherAgent)
+            let otherLives = existing.contains { $0.name == otherSession }
+            let otherResumable = AgentConversationLookup.existing(
+                agent: otherAgent, ticketKey: key, taskFileURL: taskFileURL,
+                storeId: SessionIdStore.peek(forTicket: key), cwd: repoDir)?.hasTranscript ?? false
 
             // Second (right) terminal: a plain shell opened in the worktree, if one exists.
             var worktreeSession: String? = nil
@@ -1168,6 +1204,8 @@ final class AppModel {
                 self.activeTerminalSession = plan.name
                 self.terminalSessionTicket = key
                 self.activeWorktreeTerminalSession = worktreeSession
+                self.foreignAgent = (otherLives || otherResumable) ? otherAgent : nil
+                self.foreignAgentSession = otherLives ? otherSession : nil
                 // The id may have been created just now — arm the ⏱ transcript watch on it.
                 if let sessionId { self.sessionIdByTicket[key] = sessionId }
                 self.startTimingWatch(for: key)
@@ -1178,6 +1216,48 @@ final class AppModel {
                     Self.typeText(pending.text, session: plan.name,
                                   delaySeconds: plan.needsCreate ? 2.0 : 0)
                 }
+            }
+        }
+    }
+
+    /// Verbindet den Reiter des zweiten Agents: hängt sich an dessen laufende Sitzung an, sonst
+    /// setzt er die aufgezeichnete Konversation fort (`--resume`).
+    ///
+    /// **Angefangen wird hier nie etwas.** Eine leere Console des anderen Agents wäre kein Zugang zu
+    /// dem, was dort steht, sondern eine zweite Baustelle — wer mit ihm neu beginnen will, stellt
+    /// das Projekt um.
+    func showForeignAgentTerminal() {
+        guard let key = selectedTicketKey, let project = selectedProject,
+              let other = foreignAgent, foreignAgentSession == nil else { return }
+        let repoDir = project.repoDir
+        let tasksDir = project.tasksPathAbsolute
+        let name = TerminalSessionResolver.sessionName(forTicket: key, agent: other)
+
+        Task.detached { [weak self] in
+            let tmux = TmuxController()
+            guard tmux.isAvailable else { return }
+
+            if !tmux.hasSession(name) {
+                let taskFileURL = TaskFileLoader.find(ticketKey: key, in: tasksDir)
+                guard let conversation = AgentConversationLookup.existing(
+                        agent: other, ticketKey: key, taskFileURL: taskFileURL,
+                        storeId: SessionIdStore.peek(forTicket: key), cwd: repoDir),
+                      conversation.hasTranscript,
+                      tmux.createSession(
+                        name: name, cwd: repoDir,
+                        command: TerminalSessionResolver.launchCommand(
+                            agent: other, sessionId: conversation.sessionId, hasTranscript: true))
+                else { return }
+                tmux.setStatusBar(name, visible: false)
+                // Was es eben noch nicht gab, kann keine lebende Ansicht haben; ein gescheitertes
+                // Attach bliebe sonst als tote über der frischen Sitzung stehen.
+                await MainActor.run { TerminalCache.shared.remove(name) }
+            }
+            tmux.cancelCopyMode(name)
+
+            await MainActor.run {
+                guard let self, self.selectedTicketKey == key else { return }
+                self.foreignAgentSession = name
             }
         }
     }
@@ -1530,8 +1610,13 @@ final class AppModel {
             isWarning: true)
     }
 
+    /// Die Projekt-Console („Task erstellen") trägt den Agent im Namen wie die Ticket-Console:
+    /// `ensureNewTaskSession` hängt sich an eine vorhandene Sitzung an, ohne zu prüfen, was darin
+    /// läuft — bei gemeinsamem Namen ginge der `create-task`-Text an den Agent, der gerade nicht
+    /// gemeint ist.
     static func newTaskSessionName(project: ProjectConfig) -> String {
-        TerminalSessionResolver.sessionName(forTicket: project.key, suffix: "new")
+        TerminalSessionResolver.sessionName(forTicket: project.key, suffix: "new",
+                                            agent: project.agent)
     }
 
     /// Pseudo-Ticket-Key im `SessionIdStore` — kollidiert nicht mit echten Keys (`PREFIX-123`).
@@ -2614,6 +2699,10 @@ final class AppModel {
     private func refreshPaneAttention() async {
         let map = sessionIdByTicket
         let tickets = Array(map.keys)
+        // Der Sitzungsname trägt den Agent (`AgentKind.sessionNameSuffix`). Ohne ihn sähe der Scan
+        // an einem Codex-Projekt eine Console an, die es nicht gibt — und dort ist die Pane die
+        // **einzige** Quelle für ❓ und für das Urteil „arbeitet gerade", an dem der ⏱-Live-Tick hängt.
+        let agent = self.agent
         let scan: (waiting: Set<String>, working: Set<String>, resumed: [String]) = await Task.detached {
             let tmux = TmuxController()
             guard tmux.isAvailable else { return ([], [], []) }
@@ -2622,7 +2711,7 @@ final class AppModel {
             var working: Set<String> = []
             var resumed: [String] = []
             for ticket in tickets {
-                let session = TerminalSessionResolver.sessionName(forTicket: ticket)
+                let session = TerminalSessionResolver.sessionName(forTicket: ticket, agent: agent)
                 guard live.contains(session), let pane = tmux.capturePane(session) else { continue }
                 if PaneAttention.showsQuestion(pane) {
                     waiting.insert(ticket)

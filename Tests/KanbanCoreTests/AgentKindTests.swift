@@ -28,11 +28,12 @@ final class AgentKindTests: XCTestCase {
         XCTAssertFalse(AgentKind.codex.supportsPresetSessionId)
     }
 
-    /// Der Thread-Name ist die Brücke Ticket → Codex-Session und muss zum tmux-Namen passen.
+    /// Der Thread-Name ist die Brücke Ticket → Codex-Session und muss zum tmux-Namen **der
+    /// Codex-Sitzung** passen — beide Seiten benutzen dieselbe Zeichenfolge.
     func testCodexThreadNameMatchesTheTmuxSessionName() {
-        XCTAssertEqual(CodexSessions.threadName(forTicket: "even-3687"), "kanban-EVEN-3687")
+        XCTAssertEqual(CodexSessions.threadName(forTicket: "even-3687"), "kanban-EVEN-3687-codex")
         XCTAssertEqual(CodexSessions.threadName(forTicket: "EVEN-3687"),
-                       TerminalSessionResolver.sessionName(forTicket: "EVEN-3687"))
+                       TerminalSessionResolver.sessionName(forTicket: "EVEN-3687", agent: .codex))
     }
 
     /// Resume nur mit Rollout — ohne bricht `codex resume` sichtbar ab („no rollout found").
@@ -69,7 +70,31 @@ final class AgentKindTests: XCTestCase {
         let plan = TerminalSessionResolver.resolve(ticketKey: "EVEN-1", repoDir: "/repo",
                                                   worktree: nil, sessionId: "abc",
                                                   agent: .codex, existing: [])
-        XCTAssertEqual(plan.name, "kanban-EVEN-1")
+        XCTAssertEqual(plan.name, "kanban-EVEN-1-codex")
         XCTAssertEqual(plan.launchCommand, "codex")
+    }
+
+    /// Claude behält den unsuffixierten Namen, Codex bekommt den zusätzlichen: so bleibt jede
+    /// bestehende Sitzung erreichbar, und die beiden kommen sich nie ins Gehege.
+    func testSessionNamesAreDistinctPerAgent() {
+        XCTAssertEqual(TerminalSessionResolver.sessionName(forTicket: "even-1", agent: .claude),
+                       "kanban-EVEN-1")
+        XCTAssertEqual(TerminalSessionResolver.sessionName(forTicket: "even-1", agent: .codex),
+                       "kanban-EVEN-1-codex")
+        XCTAssertEqual(TerminalSessionResolver.sessionName(forTicket: "even-1", agent: .claude),
+                       TerminalSessionResolver.sessionName(forTicket: "even-1"))
+        XCTAssertNil(AgentKind.claude.sessionNameSuffix)
+        XCTAssertEqual(AgentKind.claude.other, .codex)
+        XCTAssertEqual(AgentKind.codex.other, .claude)
+    }
+
+    /// Nebensitzungen tragen den Agent an derselben Stelle wie die Hauptsitzung: direkt hinter dem
+    /// Key. Die Projekt-Console hängt daran — sie hängt sich an einen vorhandenen Namen an, ohne zu
+    /// prüfen, welcher Agent darin läuft.
+    func testSideSessionNamesCarryTheAgentToo() {
+        XCTAssertEqual(TerminalSessionResolver.sessionName(forTicket: "kanban", suffix: "new",
+                                                           agent: .claude), "kanban-KANBAN-new")
+        XCTAssertEqual(TerminalSessionResolver.sessionName(forTicket: "kanban", suffix: "new",
+                                                           agent: .codex), "kanban-KANBAN-codex-new")
     }
 }

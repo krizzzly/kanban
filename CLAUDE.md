@@ -515,6 +515,57 @@ Zeitpunkt und Turn-Dauer; Klick springt im Terminal an die Stelle, an der er abg
   Rad-Event ins tmux-copy-mode gehört — eine Bounds-Prüfung würde jedes Event innerhalb des
   Terminal-Rechtecks abfangen und das darüberliegende Panel unscrollbar machen.
 
+## Markdown verfassen: zwei Fenster, ein Bauteil (`MarkdownComposer`)
+
+„Prompt verfassen“ (Bubble-Knopf in der Terminal-Tableiste) und „Neuen Task beschreiben“
+(„Task erstellen“ im freien Modus) schreiben beide Markdown für dieselbe Console — also sind sie
+auch gleich gebaut: Werkzeugleiste (Fett, Kursiv, Code, Überschrift, Liste, Zitat, Link + Vorschau),
+`MarkdownSourceEditor` links, `MarkdownWebView` rechts, derselbe Platzhalter, dieselben Masse
+(880 mit Vorschau, 520 ohne, Höhe 560). Verschieden ist nur der **Rahmen**: Kopfzeile und Fusszeile
+stehen im jeweiligen Sheet, denn dort steht, wohin der Text geht.
+
+Das Task-Sheet hatte vorher einen nackten `TextEditor`. Ausgerechnet die Task-Beschreibung braucht
+Struktur am dringendsten: sie geht als `/create-task …` in die Console, und was dort strukturiert
+ankommt, landet strukturiert im Task-File.
+
+| | Prompt verfassen | Neuen Task beschreiben |
+|---|---|---|
+| Ziel | `sendComposedPrompt` → Console des Tickets | `createTask` → Projekt-Console |
+| Knöpfe | Abbrechen · **Einfügen** · **Absenden** | Abbrechen · **Erstellen** (nur einfügen) |
+| Entwurf | — | `model.newTaskDraft` aus einer Karte ohne Nummer |
+
+**Kein „Absenden“ im Task-Sheet**, obwohl man den Text neben der Vorschau ja gegengelesen hat: wie
+bei jedem anderen Command liest man in der Console gegen und drückt selbst Enter. Die Hausregel
+steht an drei Stellen und fällt nicht nebenbei.
+
+Vier Dinge sind gemessen, nicht angenommen — die ersten beiden an echtem AppKit (Wegwerf-Bundle, das
+sich selbst Tastendrücke schickt: Fenster key, Cursor im `NSTextView`, `NSApp.sendEvent`):
+
+1. **⌘B/⌘I greifen aus dem Editor heraus.** AppKit lässt `performKeyEquivalent` über die
+   View-Hierarchie laufen, bevor der First Responder sein `keyDown` sieht — der SwiftUI-Knopf bekommt
+   den Tastendruck also auch dann, wenn man gerade tippt. Die Hilfetexte versprachen die beiden
+   Kurzbefehle vorher, ohne dass sie irgendwo gebunden waren.
+2. **Return macht einen Zeilenumbruch, kein Absenden**, obwohl „Absenden“/„Erstellen“ auf
+   `.keyboardShortcut(.defaultAction)` steht: der Text-View gewinnt (gemessen: die Knopf-Aktion lief
+   **nicht**, der Text bekam sein `\n`). Das ist der Grund, warum der Editor den Fokus bekommen
+   darf — beanspruchte der Default-Knopf den Tastendruck, legte der erste Absatzwechsel beim Tippen
+   den Task an. ⌘⏎ würde übrigens beim Knopf landen (auch gemessen), ist aber nicht gebunden.
+3. **`@FocusState` greift hier nicht** — es wirkt nur auf SwiftUI-Views, und der Editor ist ein
+   `NSViewRepresentable`. Den Fokus setzt deshalb `MarkdownSourceEditor` selbst über
+   `window.makeFirstResponder`, und zwar **erst wenn es ein Fenster gibt**: beim ersten
+   `updateNSView` gibt es keins, und ein vorschnell gesetztes Flag hätte den Fokus für immer
+   verschluckt.
+4. **Der Vorschau-Schalter steht im Bauteil, sein Zustand gehört dem Sheet.** Die Fensterbreite
+   hängt an ihm und das `frame` sitzt aussen — ein `@State` im Bauteil wäre von dort nicht lesbar.
+   Nebenbei erledigt das die Frage, was beim nächsten Öffnen gilt: wieder die Vorgabe.
+
+**Der Cursor steht hinter einem übernommenen Entwurf**, nicht davor: AppKit setzt den Einfügepunkt
+beim Zuweisen von `string` auf 0, und man täte in den fremden Text hinein. Beim Tippen greift die
+Regel nie — dann hat der Coordinator den Text längst gemeldet und beide Seiten sind gleich.
+
+Die Rechenarbeit der Knöpfe steht unverändert in `MarkdownFormatting` (`KanbanCore`, getestet) —
+das Bauteil reicht sie nur weiter.
+
 ## Wortweises Bearbeiten in der Konsole (⌥← / ⌥→ / ⌥⌫)
 
 ⌥← ein Wort zurück, ⌥→ ein Wort vorwärts, ⌥⌫ das Wort davor löschen — in der Claude-Console wie im
@@ -1053,8 +1104,11 @@ kennt — Board, Console und Asset-Auslieferung fragen dort.
 | Aufruf | `/name args` | `$name args` (der `@`-Picker fügt genau das ein) |
 | Start | `claude --session-id`/`--resume` | `codex`, danach `/rename` |
 | Wiederaufnahme | `claude --resume <id>` | `codex resume <id> -c tui.resume_cwd=current` |
+| tmux-Sitzung | `kanban-<TICKET>` | `kanban-<TICKET>-codex` |
+| Session-Id im Task-File | `<!-- kanban-claude-session: … -->` | `<!-- kanban-codex-session: … -->` |
 | ⏱-Zeit + Timeline | Transcript | Rollout (siehe unten) |
 | Attention | Hook + Pane-Auswertung | **nur** Pane-Auswertung |
+| Reiter über dem Terminal | `AgentKind.displayName` — der des Projekts vorn, der andere daneben, sobald an dem Ticket eine Konversation von ihm liegt ||
 
 Das Format ist bei beiden dasselbe — verifiziert am 2026-08-19/20, nicht aus der Doku geschlossen:
 Claude Code substituiert `$ARGUMENTS` in einem Skill (Probe-Skill mit Argumenten aufgerufen, `$1`
@@ -1082,6 +1136,55 @@ ohne bricht es sichtbar ab („no rollout found for thread id …"), genau die F
 es auf der Claude-Seite kein `||`-Fallback gibt. Dazu `-c tui.resume_cwd=current`, sonst fragt Codex
 „Session- oder aktuelles Verzeichnis?" zurück, sobald die aufgezeichnete cwd abweicht (verifiziert:
 mit dem Schalter kommt die Rückfrage nicht).
+
+### Ein Agent-Wechsel stellt daneben, statt zu ersetzen
+
+`agent` umzustellen ist eine Entscheidung über die **Zukunft** eines Projekts, keine über seine
+Vergangenheit: eine Konversation, in der ein Ticket halb gelöst wurde, ist danach so viel wert wie
+davor. Deshalb hat jeder Agent seinen eigenen Sitzungsnamen, seinen eigenen Marker und seinen eigenen
+Reiter — und der des anderen bleibt stehen.
+
+- **Zwei Sitzungsnamen** (`AgentKind.sessionNameSuffix`): Claude behält `kanban-<TICKET>`, Codex
+  bekommt `kanban-<TICKET>-codex`; Nebensitzungen tragen den Agent an derselben Stelle
+  (`kanban-<KEY>-codex-new`). Bei **einem** Namen übernähme der neue Agent stillschweigend die
+  laufende Sitzung des alten — `resolve` hängt sich an eine gefundene Sitzung an und bestückt sie
+  nie. Umbenannt wird nichts: das liesse jede laufende Sitzung verwaisen, und praktisch jede
+  bestehende wurde unter Claude gestartet.
+- **Der Codex-Name macht Stufe 2 der Auflösung gefährlich, deshalb ist sie enger geworden.**
+  `matchWorktree` nimmt jede Sitzung, deren **Pfad** der Worktree ist — und das ist das
+  Worktree-Terminal (`kanban-<TICKET>-wt`). Weil der Codex-Name beim ersten Öffnen nie existiert,
+  fiele Stufe 1 durch und der Codex-Reiter zeigte die nackte Shell, in der Codex nie startet. Stufe 2
+  überspringt deshalb den **eigenen** Namensraum (`isOwnSession`); für Sitzungen fremder Werkzeuge
+  (kanban-code, `kanban`-CLI) ist sie gedacht, und dafür gilt sie weiter.
+- **Zwei Marker im Task-File**, in fester Reihenfolge (Claude oben, er ist der historische —
+  `AgentKind.allCases`). Schreiben und Lesen fassen nur den eigenen an; `parsePreamble` wirft
+  **beide** weg, sonst stünde einer im Status-Tab. Die Codex-Id ist dabei **gefunden**, nicht
+  erfunden: sie kommt aus dem Thread-Index, sobald `/rename` durch ist, und wird direkt danach
+  nachgeschlagen und geschrieben — ein Dauer-Polling wartete auf etwas, das entweder schon dasteht
+  oder gar nicht kommt.
+- **Welche Id fortgesetzt wird, entscheidet die Aufzeichnung** (`AgentConversationLookup`, Regel aus
+  `ClaudeSessionResolution`): Marker und zweite Fundstelle (`sessions.json` bei Claude, der
+  Thread-Index bei Codex) gehen beide in die Probe, und die Id mit Transcript bzw. Rollout gewinnt.
+  Für Codex ist das kein Randfall — wird eine Session neu gestartet und wieder umbenannt, zeigt der
+  Marker auf den alten Thread, während der Index den laufenden führt; ohne Probe setzte
+  `codex resume` auf der toten Id auf. Gibt es zu keiner eine Aufzeichnung, wird frisch gestartet
+  statt ein `resume` versucht, das sichtbar abbräche.
+- **Ein Thread von vor der Namenstrennung bleibt auffindbar**: `CodexSessions.sessionId(forTicket:)`
+  sucht erst `kanban-<TICKET>-codex`, dann `kanban-<TICKET>`. Ein so benannter Thread in *diesem*
+  Index kann nur von Codex stammen, Claude schreibt dort nicht.
+- **Der zweite Reiter erscheint nur, wenn dort etwas ist** — eine laufende Sitzung oder eine
+  aufgezeichnete Konversation. Ein Marker allein ist bloss eine Id, unter der nie etwas lief; der
+  Reiter zeigte auf nichts. Er **startet auch nichts Neues**, er setzt fort: wer mit dem anderen
+  Agent neu anfangen will, stellt das Projekt um. Angelegt wird seine Sitzung erst beim **Klick** —
+  beim Durchsehen des Bretts entstünde sonst je angeklickter Karte eine Console.
+- **Die Pane-Attention muss den Agent kennen** (`refreshPaneAttention`). Sie bildet den
+  Sitzungsnamen selbst, und für Codex ist sie die **einzige** Quelle für ❓ *und* für das Urteil
+  „arbeitet gerade", an dem der grüne ⏱-Live-Tick hängt (die Hooks sind Claude-Code-Hooks).
+- **Die ⏱-Zeit bleibt die des Projekt-Agents.** Nach einem Wechsel zeigt sie die Historie des anderen
+  nicht mehr, und „Offen zum Buchen" fällt für sie auf 0 — Gebuchtes bleibt im `WorklogLedger`, nur
+  die Messgrundlage verschwindet aus der Anzeige. Summieren hiesse, `sessionIdByTicket` auf
+  Ticket→(Agent→Id) umzubauen und die Turn-Listen zweier Agents zeitlich zu verschränken, damit ⌀ und
+  „längster Turn" noch etwas heissen; das ist ein eigener Schnitt.
 
 ### ⏱-Zeit und Timeline aus Codex' Rollouts
 
@@ -2123,7 +2226,7 @@ Sources/
     │                      offene Projekte, zuletzt benutztes, Sprint/Modus je Projekt)
     ├── Board/             BoardSidebar / ColumnSection / TicketCard / EpicViews (Stripe + Pill) /
     │                      AvatarView (+ AvatarCache: Jira-Bilder mit Auth) / IssueTypeIcon /
-    │                      NewTaskSheet (freier Modus)
+    │                      NewTaskSheet (freier Modus, auf `MarkdownComposer`)
     ├── Detail/            DetailView (Teiler beim Öffnen auf die Hälfte) + DetailSplit
     │                      (SplitFractionSetter: setzt den NSSplitView einmal — `idealHeight` wirkt nicht) /
     │                      TaskTabsView / TerminalTabsView (Maintree|Worktree|Claude…) /
@@ -2133,6 +2236,9 @@ Sources/
     │                      SolutionSheet (WYSIWYG + Markdown-Ansicht) /
     │                      RichTextEditor (contenteditable in WKWebView) / MarkdownWebView +
     │                      HTMLTemplate (Stylesheet, lesend und beschreibbar) /
+    │                      MarkdownComposer (Werkzeugleiste + Editor + Vorschau: beide
+    │                      Verfasser-Fenster) / MarkdownSourceEditor (AppKit, meldet die Auswahl) /
+    │                      PromptComposerSheet (Prompt verfassen) /
     │                      TerminalPlaceholderView / NewTaskConsoleView (Projekt-Console)
     ├── Watchdog/          WatchdogModel (Takt + angezeigter Stand, prozessweit `.shared`) +
     │                      WatchdogPanel (Liste + Knopf)

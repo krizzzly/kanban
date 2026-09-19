@@ -1,13 +1,15 @@
 import SwiftUI
 import KanbanCore
 
-/// Lower detail zone: a tab bar over the terminals. **Claude** (main tree) and **Terminal** (plain
-/// shell in the worktree, only when one exists) are always present; the user can spawn any number of
-/// extra terminals via the trailing "+" button, each with its own closable "✕" tab. All terminals
-/// stay alive in `TerminalCache` / tmux; the tab bar only chooses which one is visible.
+/// Lower detail zone: a tab bar over the terminals. The **project's agent** (main tree) and
+/// **Terminal** (plain shell in the worktree, only when one exists) are always present; a **second
+/// agent** tab joins them for a ticket that carries a conversation of the other one, and the user
+/// can spawn any number of extra terminals via the trailing "+" button, each with its own closable
+/// "✕" tab. All terminals stay alive in `TerminalCache` / tmux; the tab bar only chooses which one
+/// is visible.
 struct TerminalTabsView: View {
     @Bindable var model: AppModel
-    @State private var selected: Tab = .claude
+    @State private var selected: Tab = .agent
     /// The prompt timeline slides in over the terminal (see `PromptTimelinePanel`).
     @State private var showPrompts = false
     /// Das Verfassen-Fenster (siehe `PromptComposerSheet`).
@@ -15,21 +17,21 @@ struct TerminalTabsView: View {
 
     private static let promptPanelWidth: CGFloat = 380
 
-    private enum Tab: Hashable { case maintree, stack, claude, worktree, extra(String) }
+    private enum Tab: Hashable { case maintree, stack, agent, foreignAgent, worktree, extra(String) }
 
-    private var claudeSession: String? { model.activeTerminalSession }
+    private var agentSession: String? { model.activeTerminalSession }
     private var worktreeSession: String? { model.activeWorktreeTerminalSession }
     private var extras: [String] { model.extraTerminalSessions }
 
     var body: some View {
-        if let claude = claudeSession {
+        if let agentSession {
             VStack(spacing: 0) {
                 tabBar
                 Divider()
                 // Overlay, not a split: the panel must not resize the pane — a SIGWINCH would make
                 // tmux reflow Claude's whole TUI just to look at what was typed.
                 ZStack(alignment: .topTrailing) {
-                    content(claude: claude)
+                    content(agentSession: agentSession)
                     if showPrompts {
                         PromptTimelinePanel(model: model) { showPrompts = false }
                             .frame(width: Self.promptPanelWidth)
@@ -44,18 +46,23 @@ struct TerminalTabsView: View {
                 .clipped()
                 .animation(.snappy(duration: 0.22), value: showPrompts)
             }
-            .onChange(of: model.selectedTicketKey) { selected = .claude }
-            .onChange(of: model.claudeTerminalFocusRequest) { selected = .claude }
+            .onChange(of: model.selectedTicketKey) { selected = .agent }
+            .onChange(of: model.claudeTerminalFocusRequest) { selected = .agent }
             // Back to the console → the overlay gets out of the way. The click itself still reaches
             // the terminal (see `TerminalCache.handleClick`), so this costs no extra click.
             .onChange(of: model.terminalClickTick) { showPrompts = false }
             .onChange(of: worktreeSession) {
-                if worktreeSession == nil, selected == .worktree { selected = .claude }
+                if worktreeSession == nil, selected == .worktree { selected = .agent }
+            }
+            // Ticket ohne Konversation des anderen Agents: der Reiter fällt weg, und mit ihm die
+            // Auswahl, die sonst auf eine Fläche zeigte, die es nicht mehr gibt.
+            .onChange(of: model.foreignAgent) {
+                if model.foreignAgent == nil, selected == .foreignAgent { selected = .agent }
             }
             // Projektwechsel auf eins ohne Stack: der offene Stack-Reiter hat keinen Knopf mehr und
             // zeigte sonst weiter ein Panel, das es nicht mehr gibt.
             .onChange(of: model.hasStack) { _, hasStack in
-                if !hasStack, selected == .maintree || selected == .stack { selected = .claude }
+                if !hasStack, selected == .maintree || selected == .stack { selected = .agent }
             }
             .sheet(isPresented: $composing) {
                 PromptComposerSheet(model: model)
@@ -75,7 +82,15 @@ struct TerminalTabsView: View {
                 pill("Maintree", active: selected == .maintree) { selected = .maintree }
                 pill("Worktree", active: selected == .stack) { selected = .stack }
             }
-            pill("Claude", active: selected == .claude) { selected = .claude }
+            pill(model.agent.displayName, active: selected == .agent) { selected = .agent }
+            // Der zweite Agent steht daneben, sobald an diesem Ticket eine Konversation von ihm
+            // liegt — ein Agent-Wechsel nimmt nichts weg, er stellt etwas daneben.
+            if let foreign = model.foreignAgent {
+                pill(foreign.displayName, active: selected == .foreignAgent) {
+                    selected = .foreignAgent
+                    model.showForeignAgentTerminal()
+                }
+            }
             if worktreeSession != nil {
                 pill("Terminal", active: selected == .worktree) { selected = .worktree }
             }
@@ -98,7 +113,7 @@ struct TerminalTabsView: View {
     /// the Claude console — the worktree/extra shells have no prompts.
     @ViewBuilder
     private var promptsButton: some View {
-        if selected == .claude || (selected == .stack && model.hasStack) {
+        if selected == .agent || (selected == .stack && model.hasStack) {
             Button { showPrompts.toggle() } label: {
                 Image(systemName: showPrompts ? "sidebar.right" : "text.bubble")
                     .font(.system(size: 12, weight: .semibold))
@@ -119,7 +134,7 @@ struct TerminalTabsView: View {
     /// Verwechslung mit Ansage. Die Sprechblase bindet es zusätzlich an den Prompt-Knopf daneben.
     @ViewBuilder
     private var composeButton: some View {
-        if selected == .claude {
+        if selected == .agent {
             Button { composing = true } label: {
                 Image(systemName: "plus.bubble")
                     .font(.system(size: 12, weight: .semibold))
@@ -147,7 +162,7 @@ struct TerminalTabsView: View {
     }
 
     @ViewBuilder
-    private func content(claude: String) -> some View {
+    private func content(agentSession: String) -> some View {
         switch selected {
         case .maintree where model.hasStack:
             WorktreeStackView(model: model, target: .maintree)
@@ -157,17 +172,25 @@ struct TerminalTabsView: View {
             if let worktreeSession {
                 TerminalContainerView(session: worktreeSession).id(worktreeSession)
             } else {
-                TerminalContainerView(session: claude).id(claude)
+                TerminalContainerView(session: agentSession).id(agentSession)
+            }
+        case .foreignAgent:
+            // Solange die Sitzung des zweiten Agents noch aufgelöst wird, steht hier der
+            // Platzhalter — sie wird erst beim Klick auf den Reiter angelegt.
+            if let foreignSession = model.foreignAgentSession {
+                TerminalContainerView(session: foreignSession).id(foreignSession)
+            } else {
+                TerminalPlaceholderView(ticketKey: model.selectedTicketKey)
             }
         case .extra(let session) where extras.contains(session):
             TerminalContainerView(session: session).id(session)
         default:
-            TerminalContainerView(session: claude).id(claude)
+            TerminalContainerView(session: agentSession).id(agentSession)
         }
     }
 
     private func closeExtra(_ session: String) {
-        if selected == .extra(session) { selected = .claude }
+        if selected == .extra(session) { selected = .agent }
         model.closeExtraTerminal(session)
     }
 

@@ -33,6 +33,9 @@ struct MarkdownSourceEditor: NSViewRepresentable {
         textView.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
         textView.textContainerInset = NSSize(width: 6, height: 6)
         textView.string = text
+        // Steht schon Text da (ein übernommener Entwurf), gehört der Cursor dahinter — je nachdem,
+        // wann SwiftUI `onAppear` ausführt, kommt er hier oder in `updateNSView` an.
+        textView.setSelectedRange(NSRange(location: (text as NSString).length, length: 0))
         context.coordinator.zuletztGesetzt = applyToken
         return scroll
     }
@@ -42,7 +45,15 @@ struct MarkdownSourceEditor: NSViewRepresentable {
         context.coordinator.parent = self
 
         if textView.string != text {
+            // Text von aussen in einen leeren Editor — das ist der Entwurf aus einer Karte ohne
+            // Nummer. AppKit setzt den Einfügepunkt beim Zuweisen auf 0; man täte also mitten in
+            // den fremden Text hinein. Beim Tippen wird dieser Zweig nie betreten: dann hat der
+            // Coordinator den Text längst gemeldet und beide Seiten sind gleich.
+            let warLeer = textView.string.isEmpty
             textView.string = text
+            if warLeer, !text.isEmpty {
+                textView.setSelectedRange(NSRange(location: (text as NSString).length, length: 0))
+            }
         }
         // Nur nach einem Knopfdruck die Auswahl setzen — siehe `applyToken`.
         if context.coordinator.zuletztGesetzt != applyToken {
@@ -56,11 +67,22 @@ struct MarkdownSourceEditor: NSViewRepresentable {
             // nächste Tastendruck ginge ins Leere statt in den Text.
             textView.window?.makeFirstResponder(textView)
         }
+
+        // Der Editor ist das Feld, in dem geschrieben wird — er bekommt den Fokus, sobald er in
+        // einem Fenster hängt, damit das Sheet tippbereit aufgeht. Vermerkt wird das **erst dann**:
+        // beim ersten Durchlauf gibt es noch kein Fenster, und ein vorschnelles Flag hätte den
+        // Fokus für immer verschluckt. (`@FocusState` hilft hier nicht, das greift nur auf
+        // SwiftUI-Views.)
+        if !context.coordinator.fokusGesetzt, let window = textView.window {
+            context.coordinator.fokusGesetzt = true
+            window.makeFirstResponder(textView)
+        }
     }
 
     final class Coordinator: NSObject, NSTextViewDelegate {
         var parent: MarkdownSourceEditor
         var zuletztGesetzt = -1
+        var fokusGesetzt = false
 
         init(_ parent: MarkdownSourceEditor) { self.parent = parent }
 
