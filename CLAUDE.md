@@ -515,6 +515,57 @@ Zeitpunkt und Turn-Dauer; Klick springt im Terminal an die Stelle, an der er abg
   Rad-Event ins tmux-copy-mode gehört — eine Bounds-Prüfung würde jedes Event innerhalb des
   Terminal-Rechtecks abfangen und das darüberliegende Panel unscrollbar machen.
 
+## Markdown verfassen: zwei Fenster, ein Bauteil (`MarkdownComposer`)
+
+„Prompt verfassen“ (Bubble-Knopf in der Terminal-Tableiste) und „Neuen Task beschreiben“
+(„Task erstellen“ im freien Modus) schreiben beide Markdown für dieselbe Console — also sind sie
+auch gleich gebaut: Werkzeugleiste (Fett, Kursiv, Code, Überschrift, Liste, Zitat, Link + Vorschau),
+`MarkdownSourceEditor` links, `MarkdownWebView` rechts, derselbe Platzhalter, dieselben Masse
+(880 mit Vorschau, 520 ohne, Höhe 560). Verschieden ist nur der **Rahmen**: Kopfzeile und Fusszeile
+stehen im jeweiligen Sheet, denn dort steht, wohin der Text geht.
+
+Das Task-Sheet hatte vorher einen nackten `TextEditor`. Ausgerechnet die Task-Beschreibung braucht
+Struktur am dringendsten: sie geht als `/create-task …` in die Console, und was dort strukturiert
+ankommt, landet strukturiert im Task-File.
+
+| | Prompt verfassen | Neuen Task beschreiben |
+|---|---|---|
+| Ziel | `sendComposedPrompt` → Console des Tickets | `createTask` → Projekt-Console |
+| Knöpfe | Abbrechen · **Einfügen** · **Absenden** | Abbrechen · **Erstellen** (nur einfügen) |
+| Entwurf | — | `model.newTaskDraft` aus einer Karte ohne Nummer |
+
+**Kein „Absenden“ im Task-Sheet**, obwohl man den Text neben der Vorschau ja gegengelesen hat: wie
+bei jedem anderen Command liest man in der Console gegen und drückt selbst Enter. Die Hausregel
+steht an drei Stellen und fällt nicht nebenbei.
+
+Vier Dinge sind gemessen, nicht angenommen — die ersten beiden an echtem AppKit (Wegwerf-Bundle, das
+sich selbst Tastendrücke schickt: Fenster key, Cursor im `NSTextView`, `NSApp.sendEvent`):
+
+1. **⌘B/⌘I greifen aus dem Editor heraus.** AppKit lässt `performKeyEquivalent` über die
+   View-Hierarchie laufen, bevor der First Responder sein `keyDown` sieht — der SwiftUI-Knopf bekommt
+   den Tastendruck also auch dann, wenn man gerade tippt. Die Hilfetexte versprachen die beiden
+   Kurzbefehle vorher, ohne dass sie irgendwo gebunden waren.
+2. **Return macht einen Zeilenumbruch, kein Absenden**, obwohl „Absenden“/„Erstellen“ auf
+   `.keyboardShortcut(.defaultAction)` steht: der Text-View gewinnt (gemessen: die Knopf-Aktion lief
+   **nicht**, der Text bekam sein `\n`). Das ist der Grund, warum der Editor den Fokus bekommen
+   darf — beanspruchte der Default-Knopf den Tastendruck, legte der erste Absatzwechsel beim Tippen
+   den Task an. ⌘⏎ würde übrigens beim Knopf landen (auch gemessen), ist aber nicht gebunden.
+3. **`@FocusState` greift hier nicht** — es wirkt nur auf SwiftUI-Views, und der Editor ist ein
+   `NSViewRepresentable`. Den Fokus setzt deshalb `MarkdownSourceEditor` selbst über
+   `window.makeFirstResponder`, und zwar **erst wenn es ein Fenster gibt**: beim ersten
+   `updateNSView` gibt es keins, und ein vorschnell gesetztes Flag hätte den Fokus für immer
+   verschluckt.
+4. **Der Vorschau-Schalter steht im Bauteil, sein Zustand gehört dem Sheet.** Die Fensterbreite
+   hängt an ihm und das `frame` sitzt aussen — ein `@State` im Bauteil wäre von dort nicht lesbar.
+   Nebenbei erledigt das die Frage, was beim nächsten Öffnen gilt: wieder die Vorgabe.
+
+**Der Cursor steht hinter einem übernommenen Entwurf**, nicht davor: AppKit setzt den Einfügepunkt
+beim Zuweisen von `string` auf 0, und man täte in den fremden Text hinein. Beim Tippen greift die
+Regel nie — dann hat der Coordinator den Text längst gemeldet und beide Seiten sind gleich.
+
+Die Rechenarbeit der Knöpfe steht unverändert in `MarkdownFormatting` (`KanbanCore`, getestet) —
+das Bauteil reicht sie nur weiter.
+
 ## Wortweises Bearbeiten in der Konsole (⌥← / ⌥→ / ⌥⌫)
 
 ⌥← ein Wort zurück, ⌥→ ein Wort vorwärts, ⌥⌫ das Wort davor löschen — in der Claude-Console wie im
@@ -2175,7 +2226,7 @@ Sources/
     │                      offene Projekte, zuletzt benutztes, Sprint/Modus je Projekt)
     ├── Board/             BoardSidebar / ColumnSection / TicketCard / EpicViews (Stripe + Pill) /
     │                      AvatarView (+ AvatarCache: Jira-Bilder mit Auth) / IssueTypeIcon /
-    │                      NewTaskSheet (freier Modus)
+    │                      NewTaskSheet (freier Modus, auf `MarkdownComposer`)
     ├── Detail/            DetailView (Teiler beim Öffnen auf die Hälfte) + DetailSplit
     │                      (SplitFractionSetter: setzt den NSSplitView einmal — `idealHeight` wirkt nicht) /
     │                      TaskTabsView / TerminalTabsView (Maintree|Worktree|Claude…) /
@@ -2185,6 +2236,9 @@ Sources/
     │                      SolutionSheet (WYSIWYG + Markdown-Ansicht) /
     │                      RichTextEditor (contenteditable in WKWebView) / MarkdownWebView +
     │                      HTMLTemplate (Stylesheet, lesend und beschreibbar) /
+    │                      MarkdownComposer (Werkzeugleiste + Editor + Vorschau: beide
+    │                      Verfasser-Fenster) / MarkdownSourceEditor (AppKit, meldet die Auswahl) /
+    │                      PromptComposerSheet (Prompt verfassen) /
     │                      TerminalPlaceholderView / NewTaskConsoleView (Projekt-Console)
     ├── Watchdog/          WatchdogModel (Takt + angezeigter Stand, prozessweit `.shared`) +
     │                      WatchdogPanel (Liste + Knopf)

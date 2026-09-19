@@ -1,8 +1,12 @@
 import SwiftUI
 import KanbanCore
 
-/// „Task erstellen" im freien Modus: eine Beschreibung eintippen, den Rest macht `/create-task` in
-/// der Projekt-Console (Ticket-Nummer, Task-File, Worktree).
+/// „Task erstellen“ im freien Modus: eine Beschreibung schreiben, den Rest macht `/create-task` in der
+/// Projekt-Console (Ticket-Nummer, Task-File, Worktree).
+///
+/// Geschrieben wird in `MarkdownComposer`, demselben Bauteil wie in „Prompt verfassen“ — gerade die
+/// Task-Beschreibung braucht Struktur: was strukturiert in der Console ankommt, landet strukturiert im
+/// Task-File.
 ///
 /// Der Text wird nur **eingefügt**, nicht abgeschickt — wie bei jedem anderen Command liest du in der
 /// Console gegen und drückst selbst Enter.
@@ -11,64 +15,47 @@ struct NewTaskSheet: View {
     @Bindable var model: AppModel
 
     @State private var text = ""
-    @FocusState private var focused: Bool
+    @State private var vorschauAn = true
 
     private var trimmed: String { text.trimmingCharacters(in: .whitespacesAndNewlines) }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Neuen Task beschreiben")
-                    .font(.app(.headline))
-                Text("Geht als `/create-task …` in die Claude-Console von "
-                     + "\(model.selectedProject?.key.uppercased() ?? "—"). Abgeschickt wird dort, "
-                     + "nicht hier.")
-                    .font(.app(.callout))
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            TextEditor(text: $text)
-                .font(.app(.body, design: .default))
-                .focused($focused)
-                .frame(minHeight: 180)
-                .padding(6)
-                .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 6))
-                .overlay(RoundedRectangle(cornerRadius: 6)
-                    .strokeBorder(Color.secondary.opacity(0.25), lineWidth: 1))
-                .overlay(alignment: .topLeading) {
-                    if text.isEmpty {
-                        Text("z. B. „Pendenz soll sich auch bei zurückgezogenem Nachtrag auflösen“")
-                            .font(.app(.body))
-                            .foregroundStyle(.tertiary)
-                            .padding(.horizontal, 11).padding(.vertical, 14)
-                            .allowsHitTesting(false)
-                    }
-                }
-
-            HStack {
-                Spacer()
-                Button("Abbrechen") { dismiss() }
-                    .keyboardShortcut(.cancelAction)
-                Button("Erstellen") {
-                    model.createTask(description: trimmed)
-                    dismiss()
-                }
-                .keyboardShortcut(.defaultAction)
-                .disabled(trimmed.isEmpty || model.selectedProject == nil)
-            }
+        VStack(alignment: .leading, spacing: 10) {
+            ComposerKopf(
+                titel: "Neuen Task beschreiben",
+                untertitel: "Geht als `/create-task …` in die Claude-Console von "
+                    + "\(model.selectedProject?.key.uppercased() ?? "—"). Abgeschickt wird dort, "
+                    + "nicht hier.")
+            MarkdownComposer(text: $text, vorschauAn: $vorschauAn)
+            fusszeile
         }
         .padding(16)
-        .frame(width: 560)
+        .frame(width: MarkdownComposer.breite(vorschau: vorschauAn), height: MarkdownComposer.hoehe)
         .onAppear {
-            // Aus einer Karte ohne Nummer heraus steht Titel und Branch schon da (siehe
+            // Aus einer Karte ohne Nummer heraus stehen Titel und Branch schon da (siehe
             // `AppModel.startTaskFromBranch`); der Entwurf wird dabei verbraucht, damit das nächste
-            // „Task erstellen" wieder leer aufgeht.
+            // „Task erstellen“ wieder leer aufgeht.
             if !model.newTaskDraft.isEmpty {
                 text = model.newTaskDraft
                 model.newTaskDraft = ""
             }
-            focused = true
+        }
+    }
+
+    private var fusszeile: some View {
+        HStack(spacing: 8) {
+            Text("Erstellen legt den Text in die Console, ohne ihn abzuschicken.")
+                .font(.app(.caption))
+                .foregroundStyle(.secondary)
+            Spacer()
+            Button("Abbrechen") { dismiss() }
+                .keyboardShortcut(.cancelAction)
+            Button("Erstellen") {
+                model.createTask(description: trimmed)
+                dismiss()
+            }
+            .keyboardShortcut(.defaultAction)
+            .disabled(trimmed.isEmpty || model.selectedProject == nil)
         }
     }
 }
