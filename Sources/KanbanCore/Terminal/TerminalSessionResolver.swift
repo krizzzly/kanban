@@ -58,6 +58,30 @@ public enum TerminalSessionResolver {
         "\(sessionPrefix)\(key.uppercased())-\(suffix)"
     }
 
+    /// Die Sitzung, in der **dieser** Agent das Ticket bedient: `kanban-<TICKET>` für Claude,
+    /// `kanban-<TICKET>-codex` für Codex (`AgentKind.sessionNameSuffix`).
+    ///
+    /// Zwei Agents nebeneinander brauchen zwei Namen — hinge beides am selben, übernähme der eine
+    /// stillschweigend die laufende Sitzung des anderen, denn eine gefundene Sitzung wird
+    /// angehängt, nie neu bestückt. Gebaut wird über die beiden Funktionen oben statt daneben, damit
+    /// jede Namensregel (Profil-Präfix und was dort sonst noch gilt) für beide dieselbe ist.
+    public static func sessionName(forTicket key: String, agent: AgentKind) -> String {
+        guard let part = agent.sessionNameSuffix else { return sessionName(forTicket: key) }
+        return sessionName(forTicket: key, suffix: part)
+    }
+
+    /// Die Nebensitzung eines Agents (`kanban-<KEY>-new` / `kanban-<KEY>-codex-new`). Der Agent-Teil
+    /// steht direkt hinter dem Key, wie bei der Hauptsitzung.
+    public static func sessionName(forTicket key: String, suffix: String,
+                                   agent: AgentKind) -> String {
+        guard let part = agent.sessionNameSuffix else { return sessionName(forTicket: key, suffix: suffix) }
+        return sessionName(forTicket: key, suffix: "\(part)-\(suffix)")
+    }
+
+    /// Gehört die Sitzung in den Namensraum dieses Profils? Dann ist sie **unsere** — die des
+    /// Tickets selbst, seines Worktree-Terminals, seiner Extra-Terminals.
+    public static func isOwnSession(_ name: String) -> Bool { name.hasPrefix(sessionPrefix) }
+
     /// The command that starts (or resumes) the ticket's Claude conversation. The caller checks
     /// via `ClaudeTranscripts` whether a conversation for the id already exists in the cwd:
     /// `--resume` when it does, `--session-id` (create with exactly that id) when it doesn't.
@@ -91,9 +115,9 @@ public enum TerminalSessionResolver {
     }
 
     /// Resolution order (first match wins):
-    /// 1. Our own `kanban-<TICKET>` session already exists → attach.
+    /// 1. This agent's own session already exists → attach.
     /// 2. A foreign session matches the worktree (path / dir name / branch) → attach (compat).
-    /// 3. Nothing yet → create `kanban-<TICKET>` in the **main tree** and launch the project's agent.
+    /// 3. Nothing yet → create the agent's session in the **main tree** and launch it.
     public static func resolve(ticketKey: String,
                                repoDir: String,
                                worktree: Worktree?,
@@ -101,13 +125,18 @@ public enum TerminalSessionResolver {
                                hasTranscript: Bool = false,
                                agent: AgentKind = .claude,
                                existing: [TmuxSession]) -> TerminalSessionPlan {
-        let own = sessionName(forTicket: ticketKey)
+        let own = sessionName(forTicket: ticketKey, agent: agent)
 
         if existing.contains(where: { $0.name == own }) {
             return TerminalSessionPlan(name: own, cwd: repoDir, launchCommand: nil)
         }
 
-        if let worktree, let match = matchWorktree(worktree, in: existing) {
+        // Stufe 2 gilt Sitzungen **fremder Werkzeuge** (kanban-code, die `kanban`-CLI). Unsere
+        // eigenen sind keine Kandidaten: das Worktree-Terminal (`-wt`) läuft im Worktree und
+        // bestünde damit die Pfad-Prüfung — der Agent-Reiter zeigte eine nackte Shell, und der Agent
+        // startete nie, weil eine gefundene Sitzung angehängt statt bestückt wird.
+        let foreign = existing.filter { !isOwnSession($0.name) }
+        if let worktree, let match = matchWorktree(worktree, in: foreign) {
             let cwd = match.path.isEmpty ? repoDir : match.path
             return TerminalSessionPlan(name: match.name, cwd: cwd, launchCommand: nil)
         }
