@@ -145,14 +145,22 @@ final class ClaudeAssetsTests: XCTestCase {
     /// Ein Codex-Projekt bekommt seine Skills in `.codex/skills` — die Rules aber trotzdem nach
     /// `.claude/rules`: die Skills verweisen im Text auf `.claude/rules/…`, und dieser Pfad muss
     /// unter beiden Agents aufgehen (dieselbe Überlegung wie bei `.claude/project.json`).
-    func testCodexProjektBekommtSkillsInCodexUndRulesInClaude() throws {
+    /// Skills landen in **beiden** Agent-Ordnern, Rules nur unter `.claude/`.
+    ///
+    /// Der eingestellte Agent sagt, womit gerade gearbeitet wird — nicht, was das Projekt kann. Wer
+    /// in einem Codex-Projekt eine Claude-Console öffnet, stand vorher vor einem leeren
+    /// `.claude/skills`.
+    func testBeideAgentOrdnerBekommenDieSkills() throws {
         store.link(try set("iwf"), toProject: repo.path, agent: .codex)
         XCTAssertEqual(try String(contentsOf: repo.appendingPathComponent(".codex/skills/get-task/SKILL.md"),
                                   encoding: .utf8), "iwf/get-task")
+        XCTAssertEqual(try String(contentsOf: repo.appendingPathComponent(".claude/skills/get-task/SKILL.md"),
+                                  encoding: .utf8), "iwf/get-task")
         XCTAssertTrue(FileManager.default.fileExists(
             atPath: repo.appendingPathComponent(".claude/rules/worktree.md").path))
+        // Rules haben genau einen Ort — auch bei `agent: codex`.
         XCTAssertFalse(FileManager.default.fileExists(
-            atPath: repo.appendingPathComponent(".claude/skills/get-task").path))
+            atPath: repo.appendingPathComponent(".codex/rules/worktree.md").path))
     }
 
     /// Zwei Projekte, zwei Sets, **gleichzeitig** — der eigentliche Punkt des Umbaus.
@@ -182,22 +190,31 @@ final class ClaudeAssetsTests: XCTestCase {
         store.link(try set("iwf"), toProject: repo.path, agent: .claude)
         let report = store.link(try set("swift"), toProject: repo.path, agent: .claude)
 
-        XCTAssertFalse(FileManager.default.fileExists(
-            atPath: repo.appendingPathComponent(".claude/skills/solve-task").path))
+        for dir in [".claude", ".codex"] {
+            XCTAssertFalse(FileManager.default.fileExists(
+                atPath: repo.appendingPathComponent("\(dir)/skills/solve-task").path),
+                "\(dir)/skills/solve-task gehört zum alten Set und muss weg sein")
+        }
         XCTAssertFalse(FileManager.default.fileExists(
             atPath: repo.appendingPathComponent(".claude/rules/worktree.md").path))
-        XCTAssertEqual(report.removed.count, 2)
+        // Drei, nicht zwei: der Skill lag in **beiden** Agent-Ordnern, die Rule nur einmal.
+        XCTAssertEqual(report.removed.count, 3)
         // Der gleichnamige Skill zeigt jetzt ins neue Set.
         XCTAssertEqual(try String(contentsOf: repo.appendingPathComponent(".claude/skills/get-task/SKILL.md"),
                                   encoding: .utf8), "swift/get-task")
     }
 
     /// Wechselt ein Projekt den Agent, sind die Links im Ordner des alten Überbleibsel.
-    func testAgentWechselRaeumtDenAnderenOrdnerWeg() throws {
+    /// Ein Agent-Wechsel lässt die Skills stehen — genau das ist der Zweck: umschalten, ohne neu
+    /// zu verlinken.
+    func testAgentWechselLaesstBeideOrdnerStehen() throws {
         store.link(try set("iwf"), toProject: repo.path, agent: .claude)
         store.link(try set("iwf"), toProject: repo.path, agent: .codex)
-        XCTAssertFalse(FileManager.default.fileExists(
-            atPath: repo.appendingPathComponent(".claude/skills/get-task").path))
+        for dir in [".claude", ".codex"] {
+            XCTAssertTrue(FileManager.default.fileExists(
+                atPath: repo.appendingPathComponent("\(dir)/skills/get-task").path),
+                "\(dir)/skills/get-task fehlt nach dem Agent-Wechsel")
+        }
     }
 
     // MARK: Fremdes
@@ -382,10 +399,37 @@ final class ClaudeAssetsTests: XCTestCase {
 
     /// Ohne Eintrag in der Config liegen die Sets in Kanbans eigenem Datenordner — **nicht** im
     /// Kanban-Repo: die Skills sind die Arbeit des Benutzers, nicht Teil der App.
+    /// Ohne Profil zeigen beide Vorgaben auf denselben Ordner.
+    ///
+    /// Die Wurzel wird dafür **festgelegt**: `KanbanPaths.root` liest sonst das *gerade aktive*
+    /// Profil dieser Maschine, und der Test wäre grün oder rot, je nachdem welches Fenster offen
+    /// ist. (Genau so war es: er kippte zwischen zwei Läufen ohne eine Zeile Codeänderung.)
     func testVorgabePfadIstKanbansDatenordner() {
+        let temp = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("Kanban-\(UUID().uuidString)", isDirectory: true)
+        KanbanPaths.setGlobalRoot(temp)
+        KanbanPaths.reset()
+        defer { KanbanPaths.setGlobalRoot(nil); KanbanPaths.reset() }
+
         XCTAssertEqual(ClaudeAssetStore.defaultSetsRoot(basePath: "/Users/x/code"),
                        ClaudeAssetStore.defaultLegacyRoot)
-        XCTAssertTrue(ClaudeAssetStore.defaultLegacyRoot.path.hasSuffix("Kanban/claude"))
+        XCTAssertEqual(ClaudeAssetStore.defaultLegacyRoot.path,
+                       temp.appendingPathComponent("claude").path)
+    }
+
+    /// Mit aktivem Profil trennen sich die beiden: die Sets liegen beim Profil, der Altbestand
+    /// global. Das ist der Unterschied, über den der Test oben früher gestolpert ist.
+    func testMitProfilTrenntSichSetsOrdnerVomAltbestand() {
+        let temp = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("Kanban-\(UUID().uuidString)", isDirectory: true)
+        KanbanPaths.setGlobalRoot(temp)
+        KanbanPaths.setRoot(temp.appendingPathComponent("profiles/privat", isDirectory: true))
+        defer { KanbanPaths.setGlobalRoot(nil); KanbanPaths.reset() }
+
+        XCTAssertEqual(ClaudeAssetStore.defaultSetsRoot(basePath: "/Users/x/code").path,
+                       temp.appendingPathComponent("profiles/privat/claude").path)
+        XCTAssertEqual(ClaudeAssetStore.defaultLegacyRoot.path,
+                       temp.appendingPathComponent("claude").path)
     }
 
     /// Ein einzeln registriertes Set darf überall liegen — es muss nicht im Sammelordner stehen.
@@ -405,9 +449,10 @@ final class ClaudeAssetsTests: XCTestCase {
         mit.link(eigen, toProject: repo.path, agent: .claude)
         XCTAssertEqual(try String(contentsOf: repo.appendingPathComponent(".claude/skills/mein-skill/SKILL.md"),
                                   encoding: .utf8), "eigen")
-        // Und der Ordner gehört uns: ein Wechsel räumt seine Links wieder weg.
+        // Und der Ordner gehört uns: ein Wechsel räumt seine Links wieder weg — in beiden
+        // Agent-Ordnern, deshalb zwei.
         let report = mit.link(try XCTUnwrap(mit.set(named: "swift")), toProject: repo.path, agent: .claude)
-        XCTAssertEqual(report.removed.count, 1)
+        XCTAssertEqual(report.removed.count, 2)
     }
 
     /// Ein registriertes Set, dessen Ordner verschwunden ist, wird gemeldet statt verschwiegen.

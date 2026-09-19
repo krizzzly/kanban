@@ -443,9 +443,14 @@ public struct ClaudeAssetStore: Sendable {
 
     /// Verlinkt ein Set ins Projekt und räumt auf, was von einem vorher verlinkten Set übrig ist.
     ///
-    /// Aufgeräumt wird auch das Skills-Verzeichnis des **anderen** Agents: ein Projekt hat genau
-    /// einen, ein Link im Ordner des anderen ist damit per Definition ein Überbleibsel. Fremdes
-    /// bleibt überall liegen.
+    /// **Beide Agent-Ordner bekommen die Skills**, nicht nur der eingestellte. Der `agent` des
+    /// Projekts sagt, womit man *gerade* arbeitet — nicht, was das Projekt kann. Wer zwischen
+    /// Claude und Codex umschaltet, will die Skills danach vorfinden und nicht erst neu verlinken;
+    /// und wer in einem Projekt mit `agent: codex` eine Claude-Console öffnet, stand vorher vor
+    /// einem leeren `.claude/skills`.
+    ///
+    /// Zwei Symlinks auf denselben gepflegten Ordner kosten nichts — eine Änderung am Skill wirkt
+    /// in beiden sofort. Fremdes bleibt überall liegen.
     @discardableResult
     public func link(_ set: ClaudeAssetSet, toProject repoDir: String,
                      agent: AgentKind) -> ClaudeLinkReport {
@@ -454,21 +459,25 @@ public struct ClaudeAssetStore: Sendable {
         let skills = assets(.skill, in: set)
         let rules = assets(.rule, in: set)
 
-        for other in AgentKind.allCases where other != agent {
+        for kind in AgentKind.allCases {
             report.removed += cleanUp(
-                in: repo.appendingPathComponent("\(other.projectDirName)/skills", isDirectory: true),
-                keeping: [])
+                in: repo.appendingPathComponent("\(kind.projectDirName)/skills", isDirectory: true),
+                keeping: Set(skills.map(\.name)))
         }
-        report.removed += cleanUp(
-            in: repo.appendingPathComponent("\(agent.projectDirName)/skills", isDirectory: true),
-            keeping: Set(skills.map(\.name)))
         report.removed += cleanUp(
             in: repo.appendingPathComponent("\(AgentKind.claude.projectDirName)/rules",
                                             isDirectory: true),
             keeping: Set(rules.map { "\($0.name).md" }))
 
-        for asset in skills + rules {
-            install(asset, scope: .project(repoDir: repoDir, agent: agent), into: &report)
+        // Rules haben genau einen Ort (immer `.claude/rules/`, siehe Typ-Kommentar) — deshalb nur
+        // die Skills je Agent, die Rules einmal.
+        for kind in AgentKind.allCases {
+            for skill in skills {
+                install(skill, scope: .project(repoDir: repoDir, agent: kind), into: &report)
+            }
+        }
+        for rule in rules {
+            install(rule, scope: .project(repoDir: repoDir, agent: agent), into: &report)
         }
         return report
     }

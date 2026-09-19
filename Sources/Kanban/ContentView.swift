@@ -22,6 +22,12 @@ struct ContentView: View {
                 ConfigErrorView(message: error) { model.settingsPresented = true }
             } else if model.needsSetup {
                 SetupView { model.settingsPresented = true }
+            } else if model.reihenfolgeOffen {
+                // Wie die Knowledgebase: eine ganze Ansicht, die an die Stelle von Board und Detail
+                // tritt — eine Reihenfolge ist eine Liste und braucht die Breite.
+                ReihenfolgeView(model: model)
+                    .toolbar { TopBarToolbar(model: model) }
+                    .headerChrome(model.selectedProject?.appearance ?? .none)
             } else if model.knowledgebaseOpen {
                 // Die Knowledgebase bringt ihre eigene Zweiteilung mit (Baum | Inhalt) und tritt
                 // deshalb an die Stelle von Board und Detail, statt sich in eine der Spalten zu

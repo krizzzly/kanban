@@ -74,7 +74,7 @@ public struct JiraClient: Sendable {
             let url = "\(baseUrl)/rest/agile/1.0/sprint/\(sprintId)/issue"
                 + "?maxResults=100&startAt=\(page * 100)&fields=\(Self.issueFields)"
             let list: IssueList = try await http.getJSON(url)
-            tickets += Self.tickets(from: list)
+            tickets += Self.tickets(from: list, rankOffset: tickets.count)
             if list.issues.count < 100 { return tickets }
         }
         throw APIError.tooManyPages(module: "jira", pages: Self.boardIssuePageLimit)
@@ -103,17 +103,22 @@ public struct JiraClient: Sendable {
             let url = "\(baseUrl)/rest/agile/1.0/board/\(boardId)/issue"
                 + "?maxResults=100&startAt=\(page * 100)&jql=\(encoded)&fields=\(Self.issueFields)"
             let list: IssueList = try await http.getJSON(url)
-            tickets += Self.tickets(from: list)
+            tickets += Self.tickets(from: list, rankOffset: tickets.count)
             if list.issues.count < 100 { return tickets }
         }
         throw APIError.tooManyPages(module: "jira", pages: Self.boardIssuePageLimit)
     }
 
+    /// `issuelinks` trägt die `Blocks`-Verknüpfungen **samt Status des verknüpften Vorgangs** —
+    /// deshalb kostet die Sperr-Ableitung keine einzige Zusatzanfrage (siehe `TicketOrder`).
     private static let issueFields =
-        "summary,status,assignee,issuetype,priority,storyPoints,customfield_10016,epic,parent"
+        "summary,status,assignee,issuetype,priority,storyPoints,customfield_10016,epic,parent,issuelinks"
 
-    private static func tickets(from list: IssueList) -> [Ticket] {
-        list.issues.map { issue in
+    /// `rankOffset` setzt die Rank-Position über Seitengrenzen hinweg fort: die Agile-API liefert
+    /// Issues in **Rank-Reihenfolge**, die Position in der Liste *ist* also der Rang. Ohne den
+    /// Versatz begänne jede Seite wieder bei 0 und „als nächstes" zeigte auf die falsche Karte.
+    static func tickets(from list: IssueList, rankOffset: Int = 0) -> [Ticket] {
+        list.issues.enumerated().map { index, issue in
             let fields = issue.fields
             let points: Double? = fields.customfield_10016 ?? fields.storyPoints
             return Ticket(
@@ -130,9 +135,30 @@ public struct JiraClient: Sendable {
                 storyPoints: points,
                 epic: fields.epic?.asEpicRef,
                 parentKey: fields.parent?.key,
-                isSubtask: fields.issuetype?.subtask ?? false
+                isSubtask: fields.issuetype?.subtask ?? false,
+                blockedBy: fields.blockers,
+                rankIndex: rankOffset + index
             )
         }
+    }
+
+    /// Schiebt Vorgänge im Backlog an eine neue Stelle — Jiras **Rank**, dieselbe Ordnung, die die
+    /// Backlog-Ansicht per Ziehen ändert.
+    ///
+    /// Die Agile-API kennt nur „vor" oder „hinter" einem Anker, keine absolute Position: LexoRank
+    /// vergibt Schlüssel *zwischen* zwei bestehenden, damit ein Verschieben nicht die ganze Liste
+    /// neu nummerieren muss. Genau eines von beidem muss gesetzt sein.
+    ///
+    /// Höchstens 50 Keys je Aufruf (Jiras Grenze); die Reihenfolge **innerhalb** der Liste bleibt
+    /// erhalten.
+    public func rankIssues(_ keys: [String], baseUrl: String,
+                           before: String? = nil, after: String? = nil) async throws {
+        guard !keys.isEmpty else { return }
+        precondition(before != nil || after != nil, "rankIssues braucht einen Anker")
+        var body: [String: Any] = ["issues": Array(keys.prefix(50))]
+        if let before { body["rankBeforeIssue"] = before }
+        if let after { body["rankAfterIssue"] = after }
+        _ = try await http.putJSON("\(baseUrl)/rest/agile/1.0/issue/rank", body: body)
     }
 
     /// Books a worklog on `issueKey`. `started` is when the work is logged (Jira keys the day off it);
@@ -185,9 +211,9 @@ public struct JiraClient: Sendable {
         let startDate: String?; let endDate: String?
     }
 
-    private struct IssueList: Decodable { let issues: [RawIssue] }
-    private struct RawIssue: Decodable { let key: String; let fields: RawFields }
-    private struct RawFields: Decodable {
+    struct IssueList: Decodable { let issues: [RawIssue] }
+    struct RawIssue: Decodable { let key: String; let fields: RawFields }
+    struct RawFields: Decodable {
         let summary: String?
         let status: RawStatus?
         let assignee: RawUser?
@@ -197,11 +223,44 @@ public struct JiraClient: Sendable {
         let storyPoints: Double?
         let epic: RawEpic?
         let parent: RawParent?
+        let issuelinks: [RawLink]?
+
+        /// Nur die Vorgänge, die **dieses** Ticket blockieren.
+        ///
+        /// Die Richtung ist die Falle, und sie ist nicht zu erraten: im `issuelinks` des gelesenen
+        /// Vorgangs steht immer nur die **Gegenseite**. Ein Eintrag mit `inwardIssue` heisst „der
+        /// dort blockiert mich", einer mit `outwardIssue` heisst „ich blockiere den dort". Gesucht
+        /// ist hier also `inwardIssue`.
+        ///
+        /// Am echten Jira abgelesen (CENTRISBAU-9, der Compose-Stack): `inwardIssue` ist -8, das
+        /// Monorepo-Gerüst, ohne das er nicht gebaut werden kann; `outwardIssue` sind -10, -12, -21,
+        /// die auf ihn warten. Aus den Feldnamen allein käme man auf das Gegenteil — siehe
+        /// `JiraBlockingLinkTests`, das genau diese Antwort als Testdaten führt.
+        var blockers: [BlockingRef] {
+            (issuelinks ?? []).compactMap { link in
+                guard link.type?.name == "Blocks", let other = link.inwardIssue else { return nil }
+                guard let key = other.key else { return nil }
+                return BlockingRef(key: key,
+                                   summary: other.fields?.summary ?? "",
+                                   statusCategory: other.fields?.status?.statusCategory?.key)
+            }
+        }
+    }
+    struct RawLink: Decodable {
+        let type: LinkType?
+        let inwardIssue: LinkedIssue?
+        let outwardIssue: LinkedIssue?
+        struct LinkType: Decodable { let name: String? }
+        struct LinkedIssue: Decodable {
+            let key: String?
+            let fields: LinkedFields?
+            struct LinkedFields: Decodable { let summary: String?; let status: RawStatus? }
+        }
     }
     /// `issuetype` and `priority` — `iconUrl` is only ever set on the issue type (an SVG on the Jira host).
-    private struct Named: Decodable { let name: String?; let subtask: Bool?; let iconUrl: String? }
-    private struct RawParent: Decodable { let key: String? }
-    private struct RawEpic: Decodable {
+    struct Named: Decodable { let name: String?; let subtask: Bool?; let iconUrl: String? }
+    struct RawParent: Decodable { let key: String? }
+    struct RawEpic: Decodable {
         let key: String?
         let name: String?         // empty on issue-type epics — the summary holds the name there
         let summary: String?
@@ -217,12 +276,12 @@ public struct JiraClient: Sendable {
                            colorName: issueColor?.key, paletteKey: color?.key)
         }
     }
-    private struct RawStatus: Decodable {
+    struct RawStatus: Decodable {
         let name: String?
         let statusCategory: RawStatusCategory?
     }
-    private struct RawStatusCategory: Decodable { let key: String? }   // new / indeterminate / done
-    private struct RawUser: Decodable {
+    struct RawStatusCategory: Decodable { let key: String? }   // new / indeterminate / done
+    struct RawUser: Decodable {
         let accountId: String?
         let displayName: String?
         let avatarUrls: [String: String]?

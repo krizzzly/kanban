@@ -78,7 +78,15 @@ final class KanbanConfigTests: XCTestCase {
     }
 
     /// Ohne Eintrag gilt Kanbans eigener Datenordner — die Skills liegen nicht im Repo.
+    /// Sagt die Config nichts, gilt Kanbans Datenordner. Die Wurzel wird dafür festgelegt — sonst
+    /// hängt das Ergebnis am gerade aktiven Profil der Maschine statt am Code.
     func testSetsPathDefaultsToKanbansDataFolder() throws {
+        let temp = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("Kanban-\(UUID().uuidString)", isDirectory: true)
+        KanbanPaths.setGlobalRoot(temp)
+        KanbanPaths.reset()
+        defer { KanbanPaths.setGlobalRoot(nil); KanbanPaths.reset() }
+
         let config = try load(#""even": {"prefix": "EVEN", "tasksPath": "even/docs/tasks"}"#)
         XCTAssertEqual(config.skillSetsPath, ClaudeAssetStore.defaultLegacyRoot.path)
         XCTAssertTrue(config.skillSets.isEmpty)
